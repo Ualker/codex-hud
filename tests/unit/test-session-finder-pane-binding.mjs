@@ -90,17 +90,22 @@ try {
     process.env.CODEX_HUD_MAIN_PANE = '%70';
 
     const modifiedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    writeRollout(home, {
+    const rolloutPath = writeRollout(home, {
       sessionId: '019d7291-a135-7fe1-b46f-8f3eca4fa451',
       cwd,
       modifiedAt,
     });
 
-    const finder = new SessionFinder(cwd);
+    const finder = new SessionFinder(cwd, undefined, new Date());
+    const resolved = finder.check();
+    assert.ok(
+      resolved,
+      'fresh launch without a bound shell snapshot should fall back to a recent cwd rollout'
+    );
     assert.equal(
-      finder.check(),
-      null,
-      'fresh launch without a bound shell snapshot should stay in initialization state'
+      resolved.path,
+      fs.realpathSync(rolloutPath),
+      'fallback should bind to the recent rollout in the current working directory'
     );
   }
 
@@ -132,7 +137,7 @@ try {
     assert.ok(resolved, 'expected a pane-bound session to resolve');
     assert.equal(
       resolved.path,
-      boundRollout,
+      fs.realpathSync(boundRollout),
       'pane-bound shell snapshot should override the newest unrelated rollout'
     );
   }
@@ -165,13 +170,21 @@ try {
     const finderOne = new SessionFinder(cwd);
     const resultOne = finderOne.check();
     assert.ok(resultOne, 'expected pane one to resolve');
-    assert.equal(resultOne.path, paneOneRollout, 'pane one should stay on its own thread');
+    assert.equal(
+      resultOne.path,
+      fs.realpathSync(paneOneRollout),
+      'pane one should stay on its own thread'
+    );
 
     process.env.CODEX_HUD_MAIN_PANE = '%72';
     const finderTwo = new SessionFinder(cwd);
     const resultTwo = finderTwo.check();
     assert.ok(resultTwo, 'expected pane two to resolve');
-    assert.equal(resultTwo.path, paneTwoRollout, 'pane two should stay on its own thread');
+    assert.equal(
+      resultTwo.path,
+      fs.realpathSync(paneTwoRollout),
+      'pane two should stay on its own thread'
+    );
   }
 } finally {
   if (originalCodexHome === undefined) {
