@@ -8,6 +8,7 @@ import * as path from 'path';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 
 const DEFAULT_LOOKBACK_DAYS = 30;
+const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
 
 export interface SessionFile {
   path: string;
@@ -556,7 +557,7 @@ export class SessionFinder {
       return this.resolveNextSession(this.findFallbackSession(), currentExists);
     }
 
-    return this.resolveNextSession(next, currentExists);
+    return this.resolveNextSession(this.selectPaneBoundSession(next), currentExists);
   }
 
   /**
@@ -594,17 +595,16 @@ export class SessionFinder {
   }
 
   private findFallbackSession(): SessionFile | null {
+    const active = findActiveRollouts(60, this.targetCwd || undefined, DEFAULT_LOOKBACK_DAYS);
+    if (active.length > 0) {
+      return active[0] ?? null;
+    }
+
     if (this.targetStartTime) {
       const recent = this.findBestRecentSession();
       if (recent) {
         return recent;
       }
-    }
-
-    const active = findActiveRollouts(60, this.targetCwd || undefined, DEFAULT_LOOKBACK_DAYS);
-    const activeSession = this.selectBestSession(active);
-    if (activeSession) {
-      return activeSession;
     }
 
     return this.findBestRecentSession();
@@ -623,6 +623,44 @@ export class SessionFinder {
     return this.selectBestSession(rollouts);
   }
 
+  /**
+   * Keep pane binding by default, but ignore it when it is clearly stale for this HUD launch.
+   */
+  private selectPaneBoundSession(boundSession: SessionFile): SessionFile {
+    if (this.isSessionAlignedWithTargetStart(boundSession)) {
+      return boundSession;
+    }
+
+    const fallback = this.findLatestSessionForTargetCwd();
+    if (fallback && fallback.path !== boundSession.path) {
+      return fallback;
+    }
+
+    return boundSession;
+  }
+
+  private findLatestSessionForTargetCwd(): SessionFile | null {
+    const active = findActiveRollouts(60, this.targetCwd || undefined, DEFAULT_LOOKBACK_DAYS);
+    if (active.length > 0) {
+      return active[0] ?? null;
+    }
+
+    return findMostRecentRollout(DEFAULT_LOOKBACK_DAYS, this.targetCwd || undefined);
+  }
+
+  private isSessionAlignedWithTargetStart(session: SessionFile): boolean {
+    if (!this.targetStartTime) {
+      return true;
+    }
+
+    const targetMs = this.targetStartTime.getTime();
+    const timestampDelta = Math.abs(session.timestamp.getTime() - targetMs);
+    const modifiedDelta = session.modifiedAt.getTime() - targetMs;
+    return (
+      timestampDelta <= TARGET_START_TOLERANCE_MS || modifiedDelta >= -TARGET_START_TOLERANCE_MS
+    );
+  }
+
   private selectBestSession(sessions: SessionFile[]): SessionFile | null {
     if (sessions.length === 0) {
       return null;
@@ -634,10 +672,9 @@ export class SessionFinder {
     }
 
     const targetMs = this.targetStartTime.getTime();
-    const toleranceMs = 10 * 60 * 1000;
 
     let candidates = sessions.filter(
-      (session) => Math.abs(session.timestamp.getTime() - targetMs) <= toleranceMs
+      (session) => Math.abs(session.timestamp.getTime() - targetMs) <= TARGET_START_TOLERANCE_MS
     );
 
     if (candidates.length === 0) {
