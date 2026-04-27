@@ -16,6 +16,11 @@ NC='\033[0m'
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WRAPPER_PATH="$SCRIPT_DIR/bin/codex-hud"
+INSTALL_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-install"
+SYNC_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-sync"
+UPGRADE_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-upgrade"
+UNINSTALL_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-uninstall"
 BACKUP_FILE="$HOME/.codex-hud-backup-aliases"
 MARKER="# codex-hud alias"
 
@@ -87,6 +92,59 @@ get_rc_file() {
     esac
 }
 
+strip_managed_aliases() {
+    local rc_file="$1"
+    local temp_file
+    temp_file=$(mktemp)
+
+    awk \
+        -v marker="$MARKER" \
+        -v wrapper="$WRAPPER_PATH" \
+        -v install_cmd="$INSTALL_CMD_PATH" \
+        -v sync_cmd="$SYNC_CMD_PATH" \
+        -v upgrade_cmd="$UPGRADE_CMD_PATH" \
+        -v uninstall_cmd="$UNINSTALL_CMD_PATH" '
+        function managed_alias(line) {
+            return line ~ /^alias (codex-hud|codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
+        }
+        function current_managed_alias(line) {
+            return line == "alias codex-hud=\047" wrapper "\047" ||
+                line == "alias codex=\047" wrapper "\047" ||
+                line == "alias codex-resume=\047" wrapper " resume\047" ||
+                line == "alias codex-hud-install=\047" install_cmd "\047" ||
+                line == "alias codex-hud-sync=\047" sync_cmd "\047" ||
+                line == "alias codex-hud-upgrade=\047" upgrade_cmd "\047" ||
+                line == "alias codex-hud-uninstall=\047" uninstall_cmd "\047" ||
+                line == "alias codex-hud \047" wrapper "\047" ||
+                line == "alias codex \047" wrapper "\047" ||
+                line == "alias codex-resume \047" wrapper " resume\047" ||
+                line == "alias codex-hud-install \047" install_cmd "\047" ||
+                line == "alias codex-hud-sync \047" sync_cmd "\047" ||
+                line == "alias codex-hud-upgrade \047" upgrade_cmd "\047" ||
+                line == "alias codex-hud-uninstall \047" uninstall_cmd "\047"
+        }
+        index($0, marker) {
+            if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*$") {
+                legacy_block = 1
+            }
+            next
+        }
+        legacy_block && managed_alias($0) {
+            next
+        }
+        legacy_block {
+            legacy_block = 0
+        }
+        current_managed_alias($0) {
+            next
+        }
+        {
+            print
+        }
+    ' "$rc_file" > "$temp_file"
+    mv "$temp_file" "$rc_file"
+}
+
 # Remove our alias from RC file
 remove_alias() {
     local rc_file="$1"
@@ -101,11 +159,7 @@ remove_alias() {
         return 0
     fi
     
-    # Remove lines containing our marker
-    local temp_file
-    temp_file=$(mktemp)
-    grep -v "$MARKER" "$rc_file" > "$temp_file" || true
-    mv "$temp_file" "$rc_file"
+    strip_managed_aliases "$rc_file"
     
     info "Removed codex-hud alias from $rc_file"
 }

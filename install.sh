@@ -234,6 +234,7 @@ backup_existing_aliases() {
     
     local existing_aliases=""
     local alias_names=(
+        "codex-hud"
         "codex"
         "codex-resume"
         "codex-hud-install"
@@ -257,7 +258,7 @@ backup_existing_aliases() {
         
         local temp_file
         temp_file=$(mktemp)
-        grep -Ev "^alias (codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)[= ]" "$rc_file" > "$temp_file" || true
+        grep -Ev "^alias (codex-hud|codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)[= ]" "$rc_file" > "$temp_file" || true
         mv "$temp_file" "$rc_file"
     fi
 }
@@ -267,6 +268,7 @@ write_aliases() {
     local shell_name="$2"
 
     if [[ "$shell_name" == "fish" ]]; then
+        echo "alias codex-hud '$WRAPPER_PATH'  $MARKER" >> "$rc_file"
         echo "alias codex '$WRAPPER_PATH'  $MARKER" >> "$rc_file"
         echo "alias codex-resume '$WRAPPER_PATH resume'  $MARKER" >> "$rc_file"
         echo "alias codex-hud-install '$INSTALL_CMD_PATH'  $MARKER" >> "$rc_file"
@@ -276,6 +278,7 @@ write_aliases() {
         return 0
     fi
 
+    echo "alias codex-hud='$WRAPPER_PATH'  $MARKER" >> "$rc_file"
     echo "alias codex='$WRAPPER_PATH'  $MARKER" >> "$rc_file"
     echo "alias codex-resume='$WRAPPER_PATH resume'  $MARKER" >> "$rc_file"
     echo "alias codex-hud-install='$INSTALL_CMD_PATH'  $MARKER" >> "$rc_file"
@@ -284,11 +287,66 @@ write_aliases() {
     echo "alias codex-hud-uninstall='$UNINSTALL_CMD_PATH'  $MARKER" >> "$rc_file"
 }
 
+strip_managed_aliases() {
+    local rc_file="$1"
+    local temp_file
+    temp_file=$(mktemp)
+
+    awk \
+        -v marker="$MARKER" \
+        -v wrapper="$WRAPPER_PATH" \
+        -v install_cmd="$INSTALL_CMD_PATH" \
+        -v sync_cmd="$SYNC_CMD_PATH" \
+        -v upgrade_cmd="$UPGRADE_CMD_PATH" \
+        -v uninstall_cmd="$UNINSTALL_CMD_PATH" '
+        function managed_alias(line) {
+            return line ~ /^alias (codex-hud|codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
+        }
+        function current_managed_alias(line) {
+            return line == "alias codex-hud=\047" wrapper "\047" ||
+                line == "alias codex=\047" wrapper "\047" ||
+                line == "alias codex-resume=\047" wrapper " resume\047" ||
+                line == "alias codex-hud-install=\047" install_cmd "\047" ||
+                line == "alias codex-hud-sync=\047" sync_cmd "\047" ||
+                line == "alias codex-hud-upgrade=\047" upgrade_cmd "\047" ||
+                line == "alias codex-hud-uninstall=\047" uninstall_cmd "\047" ||
+                line == "alias codex-hud \047" wrapper "\047" ||
+                line == "alias codex \047" wrapper "\047" ||
+                line == "alias codex-resume \047" wrapper " resume\047" ||
+                line == "alias codex-hud-install \047" install_cmd "\047" ||
+                line == "alias codex-hud-sync \047" sync_cmd "\047" ||
+                line == "alias codex-hud-upgrade \047" upgrade_cmd "\047" ||
+                line == "alias codex-hud-uninstall \047" uninstall_cmd "\047"
+        }
+        index($0, marker) {
+            if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*$") {
+                legacy_block = 1
+            }
+            next
+        }
+        legacy_block && managed_alias($0) {
+            next
+        }
+        legacy_block {
+            legacy_block = 0
+        }
+        current_managed_alias($0) {
+            next
+        }
+        {
+            print
+        }
+    ' "$rc_file" > "$temp_file"
+    mv "$temp_file" "$rc_file"
+}
+
 # Add our alias to the RC file
 add_alias() {
     local rc_file="$1"
     local shell_name="$2"
     
+    mkdir -p "$(dirname "$rc_file")"
+
     # Create RC file if it doesn't exist
     if [[ ! -f "$rc_file" ]]; then
         touch "$rc_file"
@@ -299,10 +357,7 @@ add_alias() {
         backup_existing_aliases "$rc_file"
     fi
 
-    local temp_file
-    temp_file=$(mktemp)
-    grep -v "$MARKER" "$rc_file" > "$temp_file" || true
-    mv "$temp_file" "$rc_file"
+    strip_managed_aliases "$rc_file"
 
     echo "" >> "$rc_file"
     write_aliases "$rc_file" "$shell_name"
@@ -421,6 +476,10 @@ main() {
     
     step "Configuring aliases in $zsh_rc..."
     add_alias "$zsh_rc" "zsh"
+
+    local fish_config="$HOME/.config/fish/config.fish"
+    step "Configuring aliases in $fish_config..."
+    add_alias "$fish_config" "fish"
     
     case "$MODE" in
         install)
@@ -439,7 +498,7 @@ main() {
     echo "  2. Run: ${CYAN}source $bash_rc${NC} (bash)"
     echo "     or: ${CYAN}source $zsh_rc${NC} (zsh)"
     echo ""
-    echo "Then just type ${GREEN}codex${NC} to start Codex with the HUD!"
+    echo "Then type ${GREEN}codex${NC} or ${GREEN}codex-hud${NC} to start Codex with the HUD!"
     echo "Or use ${GREEN}codex-resume${NC} to resume with the HUD wrapper."
     echo "Management commands: ${GREEN}codex-hud-sync${NC}, ${GREEN}codex-hud-upgrade${NC}, ${GREEN}codex-hud-uninstall${NC}"
     echo ""

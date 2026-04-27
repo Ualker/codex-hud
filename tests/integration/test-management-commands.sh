@@ -7,6 +7,8 @@ FAKE_BIN_DIR="$(mktemp -d)"
 TEST_HOME="$(mktemp -d)"
 LOG_DIR="$(mktemp -d)"
 ZDOTDIR_DIR="$TEST_HOME/zdotdir"
+FISH_CONFIG_DIR="$TEST_HOME/.config/fish"
+FISH_CONFIG="$FISH_CONFIG_DIR/config.fish"
 MARKER="# codex-hud alias"
 
 cleanup() {
@@ -14,8 +16,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$ZDOTDIR_DIR"
+mkdir -p "$ZDOTDIR_DIR" "$FISH_CONFIG_DIR"
 touch "$TEST_HOME/.bashrc" "$TEST_HOME/.bash_profile" "$ZDOTDIR_DIR/.zshrc"
+
+cat > "$FISH_CONFIG" <<EOF
+alias codex '$ROOT_DIR/bin/codex-hud'
+alias codex-resume '$ROOT_DIR/bin/codex-hud resume'
+alias codex-hud-install '$ROOT_DIR/bin/codex-hud-install'
+alias codex-hud-sync '$ROOT_DIR/bin/codex-hud-sync'
+alias codex-hud-upgrade '$ROOT_DIR/bin/codex-hud-upgrade'
+alias codex-hud-uninstall '$ROOT_DIR/bin/codex-hud-uninstall'
+
+alias codex-hud '$ROOT_DIR/bin/codex-hud'  $MARKER
+alias codex '$ROOT_DIR/bin/codex-hud'  $MARKER
+EOF
 
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
@@ -91,7 +105,11 @@ export SHELL="/bin/bash"
 assert_alias_present() {
   local file="$1"
   local alias_name="$2"
-  if ! grep -q "^alias $alias_name=" "$file"; then
+  if [[ ! -f "$file" ]]; then
+    echo "expected rc file to exist: $file" >&2
+    exit 1
+  fi
+  if ! grep -Eq "^alias $alias_name(=| )" "$file"; then
     echo "expected alias $alias_name in $file" >&2
     cat "$file" >&2
     exit 1
@@ -101,8 +119,21 @@ assert_alias_present() {
 assert_alias_absent() {
   local file="$1"
   local alias_name="$2"
-  if grep -q "^alias $alias_name=" "$file"; then
+  if grep -Eq "^alias $alias_name(=| )" "$file"; then
     echo "expected alias $alias_name to be removed from $file" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+assert_alias_count() {
+  local file="$1"
+  local alias_name="$2"
+  local expected_count="$3"
+  local actual_count
+  actual_count=$(grep -Ec "^alias $alias_name(=| )" "$file" || true)
+  if [[ "$actual_count" != "$expected_count" ]]; then
+    echo "expected $expected_count alias $alias_name entries in $file, got $actual_count" >&2
     cat "$file" >&2
     exit 1
   fi
@@ -110,13 +141,16 @@ assert_alias_absent() {
 
 "$ROOT_DIR/bin/codex-hud-install" >/tmp/codex-hud-manage-install.log 2>&1
 
-for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc"; do
+for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFIG"; do
+  assert_alias_present "$file" "codex-hud"
   assert_alias_present "$file" "codex"
   assert_alias_present "$file" "codex-resume"
   assert_alias_present "$file" "codex-hud-install"
   assert_alias_present "$file" "codex-hud-sync"
   assert_alias_present "$file" "codex-hud-upgrade"
   assert_alias_present "$file" "codex-hud-uninstall"
+  assert_alias_count "$file" "codex" "1"
+  assert_alias_count "$file" "codex-resume" "1"
 done
 
 cat > "$HOME/.bashrc" <<EOF
@@ -129,6 +163,7 @@ EOF
 assert_alias_present "$HOME/.bashrc" "codex-hud-sync"
 assert_alias_present "$HOME/.bashrc" "codex-hud-upgrade"
 assert_alias_present "$HOME/.bashrc" "codex-hud-uninstall"
+assert_alias_present "$HOME/.bashrc" "codex-hud"
 
 "$ROOT_DIR/bin/codex-hud-upgrade" >/tmp/codex-hud-manage-upgrade.log 2>&1
 
@@ -140,7 +175,8 @@ fi
 
 "$ROOT_DIR/bin/codex-hud-uninstall" >/tmp/codex-hud-manage-uninstall.log 2>&1
 
-for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc"; do
+for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFIG"; do
+  assert_alias_absent "$file" "codex-hud"
   assert_alias_absent "$file" "codex"
   assert_alias_absent "$file" "codex-resume"
   assert_alias_absent "$file" "codex-hud-install"
