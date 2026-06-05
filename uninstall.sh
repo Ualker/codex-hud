@@ -306,21 +306,21 @@ main() {
     echo ""
     echo "To complete the uninstall, either:"
     echo "  1. Open a new terminal, or"
-    echo "  2. Run: ${CYAN}source $rc_file${NC}"
+    echo -e "  2. Run: ${CYAN}source $rc_file${NC}"
     echo ""
     echo "The 'codex' command will now use the original Codex CLI."
     
     if [[ -f "$BACKUP_FILE" ]]; then
         echo ""
         echo "Note: Your original codex alias was backed up to:"
-        echo "  ${CYAN}$BACKUP_FILE${NC}"
+        echo -e "  ${CYAN}$BACKUP_FILE${NC}"
         echo ""
         echo "To restore it manually, copy the alias from that file to your shell config."
     fi
     
     echo ""
     echo "To completely remove codex-hud, you can delete this directory:"
-    echo "  ${YELLOW}rm -rf $SCRIPT_DIR${NC}"
+    echo -e "  ${YELLOW}rm -rf $SCRIPT_DIR${NC}"
 }
 
 case "${1:-}" in
