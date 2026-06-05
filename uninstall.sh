@@ -23,6 +23,7 @@ UPGRADE_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-upgrade"
 UNINSTALL_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-uninstall"
 BACKUP_FILE="$HOME/.codex-hud-backup-aliases"
 MARKER="# codex-hud alias"
+SOURCE_MARKER="# codex-hud: load bashrc"
 
 # Print functions
 error() { echo -e "${RED}Error:${NC} $1" >&2; exit 1; }
@@ -233,6 +234,26 @@ cleanup_fish() {
     fi
 }
 
+# Clean up bash_profile load block
+cleanup_bash_loader() {
+    local bash_profile="$HOME/.bash_profile"
+    if [[ -f "$bash_profile" ]]; then
+        if grep -q "$SOURCE_MARKER" "$bash_profile" 2>/dev/null; then
+            step "Cleaning up bash profile configuration..."
+            local temp_file
+            temp_file=$(mktemp)
+            awk -v marker="$SOURCE_MARKER" '
+                BEGIN { skip_lines = 0 }
+                $0 ~ marker { skip_lines = 4 }
+                skip_lines > 0 { skip_lines--; next }
+                { print }
+            ' "$bash_profile" > "$temp_file"
+            mv "$temp_file" "$bash_profile"
+            info "Removed bashrc loader block from $bash_profile"
+        fi
+    fi
+}
+
 # Main uninstall
 main() {
     header "Codex HUD Uninstaller"
@@ -273,6 +294,9 @@ main() {
     
     # Clean up fish configuration if exists
     cleanup_fish
+    
+    # Clean up bash profile configuration if exists
+    cleanup_bash_loader
     
     # Restore original codex alias from backup
     restore_backup
