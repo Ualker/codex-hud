@@ -37,12 +37,30 @@ No. Codex HUD auto-activates tmux for you. Just type `codex` and the HUD appears
 
 ## Quick Start
 
+### macOS/Linux (`main`)
+
 ```bash
 git clone https://github.com/fwyc0573/codex-hud.git
 cd codex-hud
+git switch main
 ./bin/codex-hud-install
 
 # Refresh your shell, then just type:
+codex
+```
+
+### Windows (WSL) (`feature/windows-support-dual-entry`)
+
+```powershell
+git clone https://github.com/fwyc0573/codex-hud.git
+cd codex-hud
+git switch feature/windows-support-dual-entry
+.\bin\codex-hud-install.ps1
+
+# Open a new PowerShell or cmd window, then check:
+codex --self-check
+
+# Run with the WSL HUD:
 codex
 ```
 
@@ -147,7 +165,7 @@ enabled = true
 | Linux | Supported |
 | macOS (Apple Silicon) | Supported |
 | macOS (Intel) | Testing pending |
-| Windows | Testing pending |
+| Windows (WSL) | Supported on `feature/windows-support-dual-entry` |
 
 ## Development
 
