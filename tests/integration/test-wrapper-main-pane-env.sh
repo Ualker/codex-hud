@@ -48,6 +48,7 @@ chmod +x "$FAKE_BIN_DIR/codex" "$FAKE_BIN_DIR/node" "$FAKE_BIN_DIR/npm" "$FAKE_B
 export PATH="$FAKE_BIN_DIR:$FAKE_TMUX_DIR:$PATH"
 export CODEX_HUD_HEIGHT="5"
 export CODEX_HUD_HEIGHT_AUTO="0"
+unset CHOKIDAR_USEPOLLING
 
 log_file="$(mktemp)"
 export TMUX_LOG_FILE="$log_file"
@@ -75,6 +76,12 @@ fi
 
 if ! grep -q "CODEX_HUD_MAIN_PANE='%1'" "$log_file"; then
   echo "expected HUD command to include CODEX_HUD_MAIN_PANE for pane-bound session resolution" >&2
+  cat "$log_file" >&2
+  exit 1
+fi
+
+if ! grep -q "CHOKIDAR_USEPOLLING='1'" "$log_file"; then
+  echo "expected HUD command to default CHOKIDAR_USEPOLLING=1 for tmux pane startup" >&2
   cat "$log_file" >&2
   exit 1
 fi
