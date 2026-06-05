@@ -81,6 +81,7 @@ prepare_tmux_env() {
   export TMUX_PANE_HEIGHT="5"
   export TMUX_MAIN_PANE_IN_MODE="0"
   export TMUX_REJECT_TARGET_0="1"
+  export TMUX_HAS_SESSION="1"
 }
 
 run_and_assert_new_session() {
@@ -100,6 +101,11 @@ run_and_assert_new_session() {
   fi
   if grep -q "attach-session -t $existing_session" "$log_file"; then
     echo "[$label] should not attach existing session" >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
+  if grep -q '^kill-session ' "$log_file"; then
+    echo "[$label] should keep the tmux session after the attached client exits" >&2
     cat "$log_file" >&2
     exit 1
   fi
@@ -125,11 +131,17 @@ run_and_assert_attach_existing() {
     cat "$log_file" >&2
     exit 1
   fi
+  if grep -q '^kill-session ' "$log_file"; then
+    echo "[$label] should keep the tmux session after the attached client exits" >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
 }
 
 unset CODEX_HUD_AUTO_ATTACH
 unset CODEX_HUD_NO_ATTACH
-run_and_assert_new_session "default-new-session"
+run_and_assert_attach_existing "default-plain-attach-existing"
+run_and_assert_new_session "default-with-codex-args-starts-new" "hello"
 
 export CODEX_HUD_AUTO_ATTACH="1"
 run_and_assert_attach_existing "env-auto-attach"

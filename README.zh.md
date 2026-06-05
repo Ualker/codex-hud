@@ -83,6 +83,9 @@ codex "help me debug this"   # 带初始提示
 codex-resume                 # 恢复上次会话
 ```
 
+不带 Codex CLI 参数运行 `codex` 时，如果同目录已有 HUD tmux 会话，会自动重连到
+最新会话。需要强制新开会话时使用 `codex-hud --new-session`。
+
 <details>
 <summary>更多命令</summary>
 
@@ -114,7 +117,7 @@ codex-hud --self-check       # 运行环境诊断
 | `CODEX_HUD_HEIGHT_AUTO` | `0` | 根据宽度自动调整高度 |
 | `CODEX_HUD_HEIGHT_MIN` | `CODEX_HUD_HEIGHT` | 自动模式最小高度 |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 自动模式最大高度 |
-| `CODEX_HUD_AUTO_ATTACH` | `0` | 自动复用同目录最新会话 |
+| `CODEX_HUD_AUTO_ATTACH` | `0` | 即使传入 Codex CLI 参数也自动复用会话 |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex pane 的 tmux alternate-screen |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
 | `CODEX_HUD_CWD` | （未设置） | 覆盖工作目录 |

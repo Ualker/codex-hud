@@ -83,6 +83,10 @@ codex "help me debug this"   # With prompt
 codex-resume                 # Resume last session
 ```
 
+Running `codex` without Codex CLI arguments reconnects to the latest HUD tmux
+session in the same directory when one exists. Use `codex-hud --new-session` to
+force a separate session.
+
 <details>
 <summary>More commands</summary>
 
@@ -113,7 +117,7 @@ codex-hud --self-check       # Run diagnostics
 | `CODEX_HUD_HEIGHT_AUTO` | `0` | Auto-adjust height based on width |
 | `CODEX_HUD_HEIGHT_MIN` | `CODEX_HUD_HEIGHT` | Min height in auto mode |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | Max height in auto mode |
-| `CODEX_HUD_AUTO_ATTACH` | `0` | Auto-attach to latest session in same dir |
+| `CODEX_HUD_AUTO_ATTACH` | `0` | Auto-attach even when Codex CLI args are provided |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | tmux alternate-screen for codex pane |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_CWD` | (unset) | Override working directory |

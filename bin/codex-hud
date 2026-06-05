@@ -9,7 +9,7 @@
 #   CODEX_HUD_HEIGHT_AUTO - Auto-adjust HUD height based on pane width (default: 0)
 #   CODEX_HUD_HEIGHT_MIN - Minimum HUD height when auto-adjusting (default: CODEX_HUD_HEIGHT)
 #   CODEX_HUD_HEIGHT_MAX - Maximum HUD height when auto-adjusting (default: 12)
-#   CODEX_HUD_AUTO_ATTACH - If set to true, auto-attach to existing session
+#   CODEX_HUD_AUTO_ATTACH - If set to true, auto-attach even when Codex args are provided
 #   CODEX_HUD_NO_ATTACH - Deprecated: if set to true, do not attach to existing session
 #   CODEX_HUD_ALTERNATE_SCREEN - Use alternate screen in codex pane (default: 0)
 #   CODEX_HUD_MOUSE - Enable tmux mouse mode for this session (default: 1)
@@ -89,6 +89,7 @@ parse_boolean_setting() {
 }
 
 resolve_attach_policy() {
+    local has_codex_args="${1:-0}"
     local auto_attach
     local no_attach
 
@@ -112,6 +113,11 @@ resolve_attach_policy() {
     fi
 
     if [[ "$auto_attach" == "1" ]]; then
+        echo "attach"
+        return 0
+    fi
+
+    if [[ "$has_codex_args" != "1" ]]; then
         echo "attach"
         return 0
     fi
@@ -437,8 +443,9 @@ set_fixed_hud_height() {
 
 # Check if session already exists and is usable
 check_existing_session() {
+    local has_codex_args="${1:-0}"
     local attach_policy
-    attach_policy=$(resolve_attach_policy) || exit 1
+    attach_policy=$(resolve_attach_policy "$has_codex_args") || exit 1
     if [[ "$attach_policy" != "attach" ]]; then
         return 1
     fi
@@ -452,10 +459,15 @@ check_existing_session() {
     return 1
 }
 
-# Cleanup function - only cleanup on explicit exit, not on attach to existing
-cleanup() {
-    # Only kill session if we created it (not if we attached to existing)
-    if [[ "${SESSION_CREATED:-}" == "true" ]]; then
+# Cleanup function - only removes incomplete sessions during startup failures.
+cleanup_incomplete_session() {
+    local status="$?"
+
+    if [[ "$status" -eq 0 ]]; then
+        return 0
+    fi
+
+    if [[ "${SESSION_CREATED:-}" == "true" && "${SESSION_READY:-}" != "true" ]]; then
         if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
             tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
         fi
@@ -524,6 +536,7 @@ create_session() {
     
     # Create new detached session
     tmux new-session -d -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
+    SESSION_CREATED="true"
     # Keep wheel scrolling available in Codex pane by default.
     local mouse_setting
     mouse_setting=$(parse_boolean_setting "CODEX_HUD_MOUSE" "${CODEX_HUD_MOUSE:-}" "1") || exit 1
@@ -583,7 +596,7 @@ create_session() {
     # Bind toggle key (Prefix + H) to switch HUD modes for this session
     tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'tmux send-keys -t #{@codex_hud_pane} C-t' ''"
     
-    SESSION_CREATED="true"
+    SESSION_READY="true"
 }
 
 # Main function
@@ -621,8 +634,13 @@ main() {
     local cwd
     cwd=$(get_cwd)
     
+    local has_codex_args="0"
+    if [[ "${#codex_args[@]}" -gt 0 ]]; then
+        has_codex_args="1"
+    fi
+
     # Check for existing session
-    if check_existing_session; then
+    if check_existing_session "$has_codex_args"; then
         info "Attaching to existing session: $SESSION_NAME"
         local main_pane_id
         main_pane_id=$(get_main_pane_id_for_session "$SESSION_NAME")
@@ -639,7 +657,7 @@ main() {
     fi
     
     # Set up cleanup trap
-    trap cleanup EXIT
+    trap cleanup_incomplete_session EXIT
     
     # Create new session
     info "Starting Codex with HUD (session: $SESSION_NAME)..."
@@ -680,7 +698,7 @@ Environment Variables:
   CODEX_HUD_HEIGHT_AUTO Auto-adjust HUD height based on pane width (default: 0)
   CODEX_HUD_HEIGHT_MIN Minimum HUD height when auto-adjusting (default: CODEX_HUD_HEIGHT)
   CODEX_HUD_HEIGHT_MAX Maximum HUD height when auto-adjusting (default: 12)
-  CODEX_HUD_AUTO_ATTACH Auto-attach to latest existing session (default: 0)
+  CODEX_HUD_AUTO_ATTACH Auto-attach even when Codex args are provided (default: 0)
   CODEX_HUD_NO_ATTACH Deprecated: force new session (overrides auto attach)
   CODEX_HUD_ALTERNATE_SCREEN Use alternate screen in codex pane (default: 0)
   CODEX_HUD_MOUSE Enable tmux mouse mode for this session (default: 1)
