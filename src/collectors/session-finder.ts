@@ -9,6 +9,8 @@ import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 
 const DEFAULT_LOOKBACK_DAYS = 30;
 const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
+const PANE_SNAPSHOT_STALE_TOLERANCE_MS = 30 * 1000;
+const LAUNCH_ROLLOUT_BACKDATE_TOLERANCE_MS = 30 * 1000;
 
 export interface SessionFile {
   path: string;
@@ -16,6 +18,13 @@ export interface SessionFile {
   timestamp: Date;
   size: number;
   modifiedAt: Date;
+}
+
+interface PaneSnapshot {
+  threadId: string;
+  nonce: bigint;
+  path: string;
+  timestamp: Date | null;
 }
 
 export { getCodexHome, getSessionsDir };
@@ -354,13 +363,30 @@ function readSnapshotPane(filePath: string): string | null {
   }
 }
 
-function findThreadIdForPane(mainPaneId: string): string | null {
+function snapshotTimestampFromNonce(nonce: bigint): Date | null {
+  const milliseconds = nonce / 1_000_000n;
+  const timestamp = Number(milliseconds);
+  const minReasonableTimestamp = Date.UTC(2020, 0, 1);
+  const maxReasonableTimestamp = Date.UTC(2100, 0, 1);
+
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    timestamp < minReasonableTimestamp ||
+    timestamp > maxReasonableTimestamp
+  ) {
+    return null;
+  }
+
+  return new Date(timestamp);
+}
+
+function findSnapshotForPane(mainPaneId: string): PaneSnapshot | null {
   const snapshotsDir = path.join(getCodexHome(), SHELL_SNAPSHOTS_SUBDIR);
   if (!fs.existsSync(snapshotsDir)) {
     return null;
   }
 
-  const matches: Array<{ threadId: string; nonce: bigint; path: string }> = [];
+  const matches: PaneSnapshot[] = [];
 
   try {
     const files = fs.readdirSync(snapshotsDir);
@@ -375,10 +401,20 @@ function findThreadIdForPane(mainPaneId: string): string | null {
         continue;
       }
 
+      let timestamp = snapshotTimestampFromNonce(parsed.nonce);
+      if (!timestamp) {
+        try {
+          timestamp = fs.statSync(filePath).mtime;
+        } catch {
+          timestamp = null;
+        }
+      }
+
       matches.push({
         threadId: parsed.threadId,
         nonce: parsed.nonce,
         path: filePath,
+        timestamp,
       });
     }
   } catch {
@@ -392,7 +428,7 @@ function findThreadIdForPane(mainPaneId: string): string | null {
     return a.nonce > b.nonce ? -1 : 1;
   });
 
-  return matches[0]?.threadId ?? null;
+  return matches[0] ?? null;
 }
 
 function findRolloutPathBySessionIdInRoot(rootDir: string, sessionId: string): string | null {
@@ -528,12 +564,13 @@ export class SessionFinder {
       return this.resolveNextSession(this.findFallbackSession(), currentExists);
     }
 
-    const threadId = findThreadIdForPane(mainPaneId);
-    if (!threadId) {
+    const paneSnapshot = findSnapshotForPane(mainPaneId);
+    if (!paneSnapshot || !this.isFreshPaneSnapshot(paneSnapshot)) {
       this.currentThreadId = null;
-      return this.resolveNextSession(this.findFallbackSession(), currentExists);
+      return this.resolveNextSession(this.findPaneLaunchSession(), currentExists);
     }
 
+    const threadId = paneSnapshot.threadId;
     if (
       this.currentSession &&
       this.currentSession.sessionId === threadId &&
@@ -550,14 +587,15 @@ export class SessionFinder {
       return this.currentSession;
     }
 
+    const previousThreadId = this.currentThreadId;
     this.currentThreadId = threadId;
     const next = findSessionByThreadId(threadId);
 
     if (!next) {
-      return this.resolveNextSession(this.findFallbackSession(), currentExists);
+      return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
     }
 
-    return this.resolveNextSession(this.selectPaneBoundSession(next), currentExists);
+    return this.resolveNextSession(next, currentExists);
   }
 
   /**
@@ -610,6 +648,25 @@ export class SessionFinder {
     return this.findBestRecentSession();
   }
 
+  private findPaneLaunchSession(): SessionFile | null {
+    if (!this.targetStartTime) {
+      return this.findFallbackSession();
+    }
+
+    let rollouts = findRolloutsInDays(DEFAULT_LOOKBACK_DAYS);
+    if (this.targetCwd) {
+      rollouts = rollouts.filter((rollout) => peekRolloutCwd(rollout.path) === this.targetCwd);
+    }
+
+    const targetMs = this.targetStartTime.getTime();
+    const candidates = rollouts.filter(
+      (session) =>
+        session.timestamp.getTime() >= targetMs - LAUNCH_ROLLOUT_BACKDATE_TOLERANCE_MS
+    );
+
+    return this.selectUniqueClosestSession(candidates);
+  }
+
   private findBestRecentSession(): SessionFile | null {
     if (!this.targetStartTime) {
       return findMostRecentRollout(DEFAULT_LOOKBACK_DAYS, this.targetCwd || undefined);
@@ -623,42 +680,13 @@ export class SessionFinder {
     return this.selectBestSession(rollouts);
   }
 
-  /**
-   * Keep pane binding by default, but ignore it when it is clearly stale for this HUD launch.
-   */
-  private selectPaneBoundSession(boundSession: SessionFile): SessionFile {
-    if (this.isSessionAlignedWithTargetStart(boundSession)) {
-      return boundSession;
-    }
-
-    const fallback = this.findLatestSessionForTargetCwd();
-    if (fallback && fallback.path !== boundSession.path) {
-      return fallback;
-    }
-
-    return boundSession;
-  }
-
-  private findLatestSessionForTargetCwd(): SessionFile | null {
-    const active = findActiveRollouts(60, this.targetCwd || undefined, DEFAULT_LOOKBACK_DAYS);
-    if (active.length > 0) {
-      return active[0] ?? null;
-    }
-
-    return findMostRecentRollout(DEFAULT_LOOKBACK_DAYS, this.targetCwd || undefined);
-  }
-
-  private isSessionAlignedWithTargetStart(session: SessionFile): boolean {
-    if (!this.targetStartTime) {
+  private isFreshPaneSnapshot(snapshot: PaneSnapshot): boolean {
+    if (!this.targetStartTime || !snapshot.timestamp) {
       return true;
     }
 
     const targetMs = this.targetStartTime.getTime();
-    const timestampDelta = Math.abs(session.timestamp.getTime() - targetMs);
-    const modifiedDelta = session.modifiedAt.getTime() - targetMs;
-    return (
-      timestampDelta <= TARGET_START_TOLERANCE_MS || modifiedDelta >= -TARGET_START_TOLERANCE_MS
-    );
+    return snapshot.timestamp.getTime() >= targetMs - PANE_SNAPSHOT_STALE_TOLERANCE_MS;
   }
 
   private selectBestSession(sessions: SessionFile[]): SessionFile | null {
@@ -691,5 +719,41 @@ export class SessionFinder {
     });
 
     return candidates[0] ?? null;
+  }
+
+  private selectUniqueClosestSession(sessions: SessionFile[]): SessionFile | null {
+    if (sessions.length === 0) {
+      return null;
+    }
+
+    if (!this.targetStartTime) {
+      return this.selectBestSession(sessions);
+    }
+
+    const targetMs = this.targetStartTime.getTime();
+    const sorted = [...sessions].sort((left, right) => {
+      const leftDelta = Math.abs(left.timestamp.getTime() - targetMs);
+      const rightDelta = Math.abs(right.timestamp.getTime() - targetMs);
+      if (leftDelta !== rightDelta) {
+        return leftDelta - rightDelta;
+      }
+      return right.modifiedAt.getTime() - left.modifiedAt.getTime();
+    });
+
+    const best = sorted[0];
+    const second = sorted[1];
+    if (!best) {
+      return null;
+    }
+
+    if (
+      second &&
+      Math.abs(second.timestamp.getTime() - targetMs) ===
+        Math.abs(best.timestamp.getTime() - targetMs)
+    ) {
+      return null;
+    }
+
+    return best;
   }
 }

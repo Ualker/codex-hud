@@ -77,6 +77,10 @@ function writeSnapshot(home, threadId, paneId, nonce) {
   return filePath;
 }
 
+function snapshotNonce(date = new Date()) {
+  return BigInt(date.getTime()) * 1_000_000n;
+}
+
 const originalCodexHome = process.env.CODEX_HOME;
 const originalMainPane = process.env.CODEX_HUD_MAIN_PANE;
 const originalSessionsPath = process.env.CODEX_SESSIONS_PATH;
@@ -120,13 +124,13 @@ try {
     const latestThread = '019d7295-3ef8-7292-a039-fdf7ecd4f53e';
     const targetStartTime = new Date(Date.now() - 4 * 60 * 60 * 1000);
 
-    writeRollout(home, {
+    const launchRollout = writeRollout(home, {
       sessionId: launchThread,
       cwd,
       fileOffsetMinutes: -240,
       modifiedAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
     });
-    const latestRollout = writeRollout(home, {
+    writeRollout(home, {
       sessionId: latestThread,
       cwd,
       modifiedAt: new Date(),
@@ -134,11 +138,11 @@ try {
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
     const resolved = finder.check();
-    assert.ok(resolved, 'expected fallback to resolve the latest active rollout');
+    assert.ok(resolved, 'expected fallback to resolve the launch-scoped rollout');
     assert.equal(
       resolved.path,
-      fs.realpathSync(latestRollout),
-      'missing shell snapshots should not lock fallback selection to HUD launch time'
+      fs.realpathSync(launchRollout),
+      'missing shell snapshots should not drift to a newer unrelated active rollout'
     );
   }
 
@@ -194,13 +198,13 @@ try {
       fileOffsetMinutes: -360,
       modifiedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
     });
-    writeRollout(home, {
+    const earlierRollout = writeRollout(home, {
       sessionId: earlierThread,
       cwd,
       fileOffsetMinutes: -235,
       modifiedAt: new Date(Date.now() - 235 * 60 * 1000),
     });
-    const latestRollout = writeRollout(home, {
+    writeRollout(home, {
       sessionId: latestThread,
       cwd,
       modifiedAt: new Date(),
@@ -209,11 +213,102 @@ try {
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
     const resolved = finder.check();
-    assert.ok(resolved, 'expected the newest rollout to resolve when pane binding is stale');
+    assert.ok(resolved, 'expected a launch-scoped rollout to resolve when pane binding is stale');
     assert.equal(
       resolved.path,
-      fs.realpathSync(latestRollout),
-      'stale pane-bound snapshots should follow the latest rollout, not merely the closest launch-time match'
+      fs.realpathSync(earlierRollout),
+      'stale pane-bound snapshots should prefer the launch-scoped rollout over the newest unrelated activity'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const previousThread = '019d7291-a135-7fe1-b46f-8f3eca4fa451';
+    const targetStartTime = new Date();
+
+    writeRollout(home, {
+      sessionId: previousThread,
+      cwd,
+      fileOffsetMinutes: -120,
+      modifiedAt: new Date(),
+    });
+
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+    const resolved = finder.check();
+    assert.equal(
+      resolved,
+      null,
+      'fresh HUD launch should not show a previous active rollout before pane binding is available'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const firstThread = '019d7291-a135-7fe1-b46f-8f3eca4fa451';
+    const secondThread = '019d7295-3ef8-7292-a039-fdf7ecd4f53e';
+    const targetStartTime = new Date();
+
+    writeRollout(home, {
+      sessionId: firstThread,
+      cwd,
+      modifiedAt: new Date(),
+    });
+    writeRollout(home, {
+      sessionId: secondThread,
+      cwd,
+      modifiedAt: new Date(),
+    });
+
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+    const resolved = finder.check();
+    assert.equal(
+      resolved,
+      null,
+      'ambiguous same-directory launch candidates should not bind to an arbitrary active session'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const boundThread = '019d7291-a135-7fe1-b46f-8f3eca4fa451';
+    const newerThread = '019d7295-3ef8-7292-a039-fdf7ecd4f53e';
+    const targetStartTime = new Date();
+
+    const boundRollout = writeRollout(home, {
+      sessionId: boundThread,
+      cwd,
+      modifiedAt: new Date(Date.now() - 60 * 1000),
+    });
+    writeRollout(home, {
+      sessionId: newerThread,
+      cwd,
+      fileOffsetMinutes: 1,
+      modifiedAt: new Date(),
+    });
+    writeSnapshot(home, boundThread, '%70', snapshotNonce(targetStartTime));
+
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+    const resolved = finder.check();
+    assert.ok(resolved, 'expected fresh pane snapshot to resolve its bound rollout');
+    assert.equal(
+      resolved.path,
+      fs.realpathSync(boundRollout),
+      'fresh pane snapshot should keep each HUD on its own session even when another rollout is newer'
     );
   }
 
