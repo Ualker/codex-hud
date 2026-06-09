@@ -109,6 +109,11 @@ run_and_assert_new_session() {
     cat "$log_file" >&2
     exit 1
   fi
+  if grep -q 'tmux kill-session' "$log_file"; then
+    echo "[$label] should not inject tmux kill-session into the Codex pane command" >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
 }
 
 run_and_assert_attach_existing() {

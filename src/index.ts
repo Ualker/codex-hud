@@ -216,7 +216,7 @@ async function collectData(): Promise<HudData> {
   const session = sessionFinder.check();
 
   // If we have a session, parse the rollout
-  let rolloutData = rolloutParser.getCached();
+  let rolloutData = session ? rolloutParser.getCached() : null;
   if (session && (!rolloutData || configNeedsRefresh)) {
     rolloutData = await parseRolloutSafely();
     configNeedsRefresh = false;
