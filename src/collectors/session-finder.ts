@@ -5,7 +5,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
+import type { SessionInfo } from '../types.js';
 
 const DEFAULT_LOOKBACK_DAYS = 30;
 const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
@@ -18,6 +20,7 @@ export interface SessionFile {
   timestamp: Date;
   size: number;
   modifiedAt: Date;
+  metadata?: SessionInfo;
 }
 
 interface PaneSnapshot {
@@ -31,6 +34,7 @@ export { getCodexHome, getSessionsDir };
 
 const SHELL_SNAPSHOTS_SUBDIR = 'shell_snapshots';
 const ARCHIVED_SESSIONS_SUBDIR = 'archived_sessions';
+const LOG_SESSION_PATH_PREFIX = 'codex-log://';
 
 function normalizePath(input?: string | null): string | null {
   if (!input) {
@@ -492,7 +496,7 @@ function buildSessionFile(filePath: string): SessionFile | null {
   }
 }
 
-function findSessionByThreadId(sessionId: string): SessionFile | null {
+function findSessionByThreadId(sessionId: string, targetCwd: string | null): SessionFile | null {
   const codexHome = getCodexHome();
   const activePath = findRolloutPathBySessionIdInRoot(path.join(codexHome, 'sessions'), sessionId);
   const archivedPath = findRolloutPathBySessionIdInRoot(
@@ -500,7 +504,245 @@ function findSessionByThreadId(sessionId: string): SessionFile | null {
     sessionId
   );
 
-  return buildSessionFile(activePath ?? archivedPath ?? '');
+  const rolloutSession = buildSessionFile(activePath ?? archivedPath ?? '');
+  if (rolloutSession) {
+    return rolloutSession;
+  }
+
+  return buildLogBackedSession(sessionId, targetCwd);
+}
+
+function isThreadId(value: string): boolean {
+  return /^[a-f0-9-]+$/i.test(value);
+}
+
+function escapeSqlString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function getLogDatabaseCandidates(): string[] {
+  const codexHome = getCodexHome();
+  let entries: string[];
+
+  try {
+    entries = fs.readdirSync(codexHome);
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((entry) => /^logs(?:_\d+)?\.sqlite$/.test(entry))
+    .map((entry) => path.join(codexHome, entry))
+    .filter((entryPath) => {
+      try {
+        return fs.statSync(entryPath).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .sort((left, right) => {
+      try {
+        return fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs;
+      } catch {
+        return right.localeCompare(left);
+      }
+    });
+}
+
+function querySqlite(dbPath: string, sql: string): string | null {
+  try {
+    return execFileSync('sqlite3', ['-readonly', '-separator', '\x1f', dbPath, sql], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    }).trimEnd();
+  } catch {
+    return null;
+  }
+}
+
+function getPaneProcessId(mainPaneId: string): string | null {
+  try {
+    const output = execFileSync('tmux', ['display', '-p', '-t', mainPaneId, '#{pane_pid}'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    }).trim();
+    return /^\d+$/.test(output) ? output : null;
+  } catch {
+    return null;
+  }
+}
+
+function getDescendantProcessIds(rootPid: string): string[] {
+  if (!/^\d+$/.test(rootPid)) {
+    return [];
+  }
+
+  let output: string;
+  try {
+    output = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    });
+  } catch {
+    return [rootPid];
+  }
+
+  const childrenByParent = new Map<string, string[]>();
+  for (const line of output.split('\n')) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+/);
+    if (!match) {
+      continue;
+    }
+
+    const pid = match[1];
+    const parentPid = match[2];
+    const children = childrenByParent.get(parentPid) ?? [];
+    children.push(pid);
+    childrenByParent.set(parentPid, children);
+  }
+
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const queue = [rootPid];
+
+  while (queue.length > 0 && result.length < 32) {
+    const pid = queue.shift();
+    if (!pid || seen.has(pid)) {
+      continue;
+    }
+
+    seen.add(pid);
+    result.push(pid);
+    queue.push(...(childrenByParent.get(pid) ?? []));
+  }
+
+  return result;
+}
+
+function extractLogField(body: string, field: string): string | undefined {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = body.match(new RegExp(`(?:^|[\\s{])${escaped}=([^\\s}]+)`));
+  return match?.[1];
+}
+
+function buildLogBackedSession(
+  threadId: string,
+  targetCwd: string | null
+): SessionFile | null {
+  if (!isThreadId(threadId)) {
+    return null;
+  }
+
+  const escapedThreadId = escapeSqlString(threadId);
+  const sql = `
+SELECT
+  COALESCE((SELECT min(ts) FROM logs WHERE thread_id = '${escapedThreadId}'), 0),
+  COALESCE((SELECT max(ts) FROM logs WHERE thread_id = '${escapedThreadId}'), 0),
+  COALESCE((
+    SELECT replace(replace(feedback_log_body, char(10), ' '), char(13), ' ')
+    FROM logs
+    WHERE thread_id = '${escapedThreadId}' AND feedback_log_body IS NOT NULL
+    ORDER BY ts DESC, ts_nanos DESC, id DESC
+    LIMIT 1
+  ), '');
+`.trim();
+
+  for (const dbPath of getLogDatabaseCandidates()) {
+    const output = querySqlite(dbPath, sql);
+    if (!output) {
+      continue;
+    }
+
+    const [firstTsRaw, latestTsRaw, body = ''] = output.split('\x1f');
+    const firstTs = Number(firstTsRaw);
+    const latestTs = Number(latestTsRaw);
+    if (!Number.isFinite(firstTs) || firstTs <= 0) {
+      continue;
+    }
+
+    const startTime = new Date(firstTs * 1000);
+    const modifiedAt = new Date((Number.isFinite(latestTs) && latestTs > 0 ? latestTs : firstTs) * 1000);
+    const model = extractLogField(body, 'model');
+    const reasoningEffort = extractLogField(body, 'codex.turn.reasoning_effort');
+    const cwd = targetCwd ?? normalizePath(extractLogField(body, 'cwd')) ?? '';
+    const sessionPath = `${LOG_SESSION_PATH_PREFIX}${threadId}`;
+
+    return {
+      path: sessionPath,
+      sessionId: threadId,
+      timestamp: startTime,
+      size: 0,
+      modifiedAt,
+      metadata: {
+        id: threadId,
+        rolloutPath: sessionPath,
+        startTime,
+        cwd,
+        cliVersion: '',
+        model,
+        reasoningEffort,
+      },
+    };
+  }
+
+  return null;
+}
+
+function buildLatestLogBackedSessionForProcesses(
+  processIds: string[],
+  targetCwd: string | null
+): SessionFile | null {
+  const validProcessIds = processIds.filter((processId) => /^\d+$/.test(processId)).slice(0, 32);
+  if (validProcessIds.length === 0) {
+    return null;
+  }
+
+  const processFilter = validProcessIds
+    .map((processId) => `process_uuid LIKE '${escapeSqlString(`pid:${processId}:%`)}'`)
+    .join(' OR ');
+  const sql = `
+SELECT thread_id
+FROM logs
+WHERE (${processFilter})
+  AND thread_id IS NOT NULL
+  AND thread_id != ''
+GROUP BY thread_id
+ORDER BY max(ts) DESC, max(ts_nanos) DESC
+LIMIT 1;
+`.trim();
+
+  for (const dbPath of getLogDatabaseCandidates()) {
+    const threadId = querySqlite(dbPath, sql)?.trim();
+    if (!threadId || !isThreadId(threadId)) {
+      continue;
+    }
+
+    const session = buildLogBackedSession(threadId, targetCwd);
+    if (session) {
+      return session;
+    }
+  }
+
+  return null;
+}
+
+function buildLogBackedSessionForPane(
+  mainPaneId: string,
+  targetCwd: string | null
+): SessionFile | null {
+  const processId = getPaneProcessId(mainPaneId);
+  if (!processId) {
+    return null;
+  }
+
+  return buildLatestLogBackedSessionForProcesses(getDescendantProcessIds(processId), targetCwd);
+}
+
+function isLogBackedSession(session: SessionFile | null): boolean {
+  return Boolean(session?.metadata && session.path.startsWith(LOG_SESSION_PATH_PREFIX));
 }
 
 /**
@@ -546,7 +788,7 @@ export class SessionFinder {
    */
   check(): SessionFile | null {
     const current = this.currentSession;
-    const currentExists = current ? fs.existsSync(current.path) : false;
+    const currentExists = current ? fs.existsSync(current.path) || isLogBackedSession(current) : false;
 
     if (current && currentExists) {
       try {
@@ -566,6 +808,12 @@ export class SessionFinder {
 
     const paneSnapshot = findSnapshotForPane(mainPaneId);
     if (!paneSnapshot || !this.isFreshPaneSnapshot(paneSnapshot)) {
+      const processSession = buildLogBackedSessionForPane(mainPaneId, this.targetCwd);
+      if (processSession) {
+        this.currentThreadId = processSession.sessionId;
+        return this.resolveNextSession(processSession, currentExists);
+      }
+
       this.currentThreadId = null;
       return this.resolveNextSession(this.findPaneLaunchSession(), currentExists);
     }
@@ -574,7 +822,7 @@ export class SessionFinder {
     if (
       this.currentSession &&
       this.currentSession.sessionId === threadId &&
-      fs.existsSync(this.currentSession.path)
+      (fs.existsSync(this.currentSession.path) || isLogBackedSession(this.currentSession))
     ) {
       try {
         const stats = fs.statSync(this.currentSession.path);
@@ -589,9 +837,15 @@ export class SessionFinder {
 
     const previousThreadId = this.currentThreadId;
     this.currentThreadId = threadId;
-    const next = findSessionByThreadId(threadId);
+    const next = findSessionByThreadId(threadId, this.targetCwd);
 
     if (!next) {
+      const processSession = buildLogBackedSessionForPane(mainPaneId, this.targetCwd);
+      if (processSession) {
+        this.currentThreadId = processSession.sessionId;
+        return this.resolveNextSession(processSession, currentExists);
+      }
+
       return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
     }
 

@@ -306,7 +306,7 @@ Install Node.js 18+ from: https://nodejs.org/"
 # Build the HUD renderer if needed
 build_hud() {
     local dist_file="$HUD_DIR/dist/index.js"
-    local src_file="$HUD_DIR/src/index.ts"
+    local needs_build="0"
     
     # Check if node_modules exists
     if [[ ! -d "$HUD_DIR/node_modules" ]]; then
@@ -315,7 +315,13 @@ build_hud() {
     fi
     
     # Check if we need to build
-    if [[ ! -f "$dist_file" ]] || [[ "$src_file" -nt "$dist_file" ]]; then
+    if [[ ! -f "$dist_file" ]]; then
+        needs_build="1"
+    elif find "$HUD_DIR/src" -type f \( -name '*.ts' -o -name '*.tsx' \) -newer "$dist_file" -print -quit | grep -q .; then
+        needs_build="1"
+    fi
+
+    if [[ "$needs_build" == "1" ]]; then
         step "Building HUD renderer..."
         (cd "$HUD_DIR" && npm run build) || error "Failed to build HUD renderer"
     fi
