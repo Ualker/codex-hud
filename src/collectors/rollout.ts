@@ -68,7 +68,8 @@ function extractToolTarget(toolName: string, argsStr?: string): string | undefin
         return args.pattern;
       case 'bash':
       case 'run_terminal_command':
-        const cmd = args.command as string;
+      case 'exec_command':
+        const cmd = (args.command ?? args.cmd) as string;
         if (cmd) {
           return cmd.length > 40 ? cmd.slice(0, 37) + '...' : cmd;
         }

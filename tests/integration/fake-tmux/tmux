@@ -137,7 +137,21 @@ case "$cmd" in
       shift
     done
     ;;
-  new-session|send-keys|select-pane|attach-session|set-hook|bind-key|kill-session)
+  set-hook)
+    append_log "$cmd $*"
+    if [[ "${TMUX_FAIL_SET_HOOK:-0}" == "1" ]]; then
+      echo "set-hook failed" >&2
+      exit 1
+    fi
+    ;;
+  bind-key)
+    append_log "$cmd $*"
+    if [[ "${TMUX_FAIL_BIND_KEY:-0}" == "1" ]]; then
+      echo "bind-key failed" >&2
+      exit 1
+    fi
+    ;;
+  new-session|send-keys|select-pane|attach-session|kill-session)
     append_log "$cmd $*"
     ;;
   has-session)

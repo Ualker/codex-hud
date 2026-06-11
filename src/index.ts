@@ -124,7 +124,7 @@ function buildContextUsage(
 // Phase 2: Session and rollout tracking
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   // When session changes, update rollout path
-  if (session) {
+  if (session && fs.existsSync(session.path)) {
     rolloutParser.setRolloutPath(session.path);
     hudFileWatcher.setRolloutPath(session.path);
     return;
@@ -216,8 +216,9 @@ async function collectData(): Promise<HudData> {
   const session = sessionFinder.check();
 
   // If we have a session, parse the rollout
-  let rolloutData = session ? rolloutParser.getCached() : null;
-  if (session && (!rolloutData || configNeedsRefresh)) {
+  const hasRolloutFile = session ? fs.existsSync(session.path) : false;
+  let rolloutData = hasRolloutFile ? rolloutParser.getCached() : null;
+  if (hasRolloutFile && (!rolloutData || configNeedsRefresh)) {
     rolloutData = await parseRolloutSafely();
     configNeedsRefresh = false;
   }
@@ -232,7 +233,7 @@ async function collectData(): Promise<HudData> {
 
   const hudData: HudData = {
     ...syncData,
-    session: rolloutData?.session ?? undefined,
+    session: rolloutData?.session ?? session?.metadata ?? undefined,
     toolActivity: rolloutData?.toolActivity ?? undefined,
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
@@ -312,7 +313,10 @@ async function main(): Promise<void> {
     configNeedsRefresh = true;
   });
 
-  hudFileWatcher.onRolloutChange(async () => {
+  hudFileWatcher.onRolloutChange(async (rolloutPath) => {
+    // A new rollout file may establish a freshly created (/new) session;
+    // let the finder re-rank it immediately instead of waiting out the poll.
+    sessionFinder.noteRolloutAppeared(rolloutPath);
     const session = sessionFinder.check();
     if (session) {
       await parseRolloutSafely();

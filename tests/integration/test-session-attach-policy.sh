@@ -143,6 +143,37 @@ run_and_assert_attach_existing() {
   fi
 }
 
+run_and_assert_noncritical_setup_failure_keeps_session() {
+  local label="$1"
+  local log_file
+  log_file="$(mktemp)"
+  prepare_tmux_env "$log_file"
+  export TMUX_SESSION_LIST=""
+  export TMUX_FAIL_SET_HOOK="1"
+
+  set +e
+  "$ROOT_DIR/bin/codex-hud" >/tmp/codex-hud-test.log 2>&1
+  local status=$?
+  set -e
+  unset TMUX_FAIL_SET_HOOK
+
+  if [[ "$status" -ne 0 ]]; then
+    echo "[$label] noncritical set-hook failure should not abort the wrapper" >&2
+    cat /tmp/codex-hud-test.log >&2
+    exit 1
+  fi
+  if ! grep -q '^new-session ' "$log_file"; then
+    echo "[$label] expected new-session command" >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
+  if grep -q '^kill-session ' "$log_file"; then
+    echo "[$label] noncritical HUD setup failure should not kill the Codex tmux session" >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
+}
+
 unset CODEX_HUD_AUTO_ATTACH
 unset CODEX_HUD_NO_ATTACH
 run_and_assert_attach_existing "default-plain-attach-existing"
@@ -176,5 +207,7 @@ if ! grep -q 'CODEX_HUD_AUTO_ATTACH must be one of' /tmp/codex-hud-test.log; the
   exit 1
 fi
 unset CODEX_HUD_AUTO_ATTACH
+
+run_and_assert_noncritical_setup_failure_keeps_session "noncritical-setup-failure-keeps-session"
 
 echo "test-session-attach-policy: PASS"

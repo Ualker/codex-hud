@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,6 +78,145 @@ function writeSnapshot(home, threadId, paneId, nonce) {
   return filePath;
 }
 
+function sql(value) {
+  return String(value).replaceAll("'", "''");
+}
+
+function writeLogsDb(home, rows) {
+  const dbPath = path.join(home, 'logs_2.sqlite');
+  const statements = [
+    `CREATE TABLE logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      ts_nanos INTEGER NOT NULL,
+      level TEXT NOT NULL,
+      target TEXT NOT NULL,
+      feedback_log_body TEXT,
+      thread_id TEXT,
+      process_uuid TEXT
+    );`,
+    ...rows.map(
+      (row, index) =>
+        `INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid)
+         VALUES (${row.ts}, ${index}, 'INFO', 'codex_otel.log_only', '${sql(row.body)}', '${sql(row.threadId)}', ${row.processUuid ? `'${sql(row.processUuid)}'` : 'NULL'});`
+    ),
+  ];
+
+  execFileSync('sqlite3', [dbPath, statements.join('\n')]);
+  return dbPath;
+}
+
+function appendLogRow(home, row, tsNanos = 0) {
+  const dbPath = path.join(home, 'logs_2.sqlite');
+  execFileSync('sqlite3', [
+    dbPath,
+    `INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid)
+     VALUES (${row.ts}, ${tsNanos}, 'INFO', 'codex_otel.log_only', '${sql(row.body ?? '')}', '${sql(row.threadId)}', ${row.processUuid ? `'${sql(row.processUuid)}'` : 'NULL'});`,
+  ]);
+}
+
+function clearLogRows(home) {
+  const dbPath = path.join(home, 'logs_2.sqlite');
+  execFileSync('sqlite3', [dbPath, 'DELETE FROM logs;']);
+}
+
+function writeStateDb(home, { threads = [], edges = [] } = {}) {
+  const dbPath = path.join(home, 'state_5.sqlite');
+  const statements = [
+    `CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      rollout_path TEXT NOT NULL,
+      thread_source TEXT NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0
+    );`,
+    `CREATE TABLE thread_spawn_edges (
+      parent_thread_id TEXT NOT NULL,
+      child_thread_id TEXT NOT NULL PRIMARY KEY,
+      status TEXT NOT NULL
+    );`,
+    ...threads.map(
+      (thread) =>
+        `INSERT INTO threads (id, rollout_path, thread_source, archived)
+         VALUES ('${sql(thread.id)}', '${sql(thread.rolloutPath ?? '')}', '${sql(thread.threadSource ?? 'user')}', ${thread.archived ? 1 : 0});`
+    ),
+    ...edges.map(
+      (edge) =>
+        `INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
+         VALUES ('${sql(edge.parent)}', '${sql(edge.child)}', '${sql(edge.status ?? 'open')}');`
+    ),
+  ];
+
+  execFileSync('sqlite3', [dbPath, statements.join('\n')]);
+  return dbPath;
+}
+
+function installFakeTmux(panePids, psOutput = '') {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-fake-tmux-'));
+  const scriptPath = path.join(binDir, 'tmux');
+  const cases = Object.entries(panePids)
+    .map(
+      ([pane, pid]) => `
+if [[ "$target" == "${pane}" && "$format" == "#{pane_pid}" ]]; then
+  echo "${pid}"
+  exit 0
+fi`
+    )
+    .join('\n');
+
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env bash
+if [[ "\${1:-}" == "display" ]]; then
+  target=""
+  format=""
+  while [[ "\${1:-}" != "" ]]; do
+    case "$1" in
+      -t)
+        shift
+        target="\${1:-}"
+        ;;
+      '#{pane_pid}')
+        format="$1"
+        ;;
+    esac
+    shift || true
+  done
+${cases}
+fi
+exit 1
+`,
+    'utf8'
+  );
+  fs.chmodSync(scriptPath, 0o755);
+
+  const psPath = path.join(binDir, 'ps');
+  const resolvedPsOutput =
+    psOutput ||
+    Object.values(panePids)
+      .map((pid) => `${pid} 1 fake-process-${pid}`)
+      .join('\n');
+  fs.writeFileSync(
+    psPath,
+    `#!/usr/bin/env bash
+cat <<'PS_OUTPUT'
+${resolvedPsOutput}
+PS_OUTPUT
+`,
+    'utf8'
+  );
+  fs.chmodSync(psPath, 0o755);
+
+  process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ''}`;
+  return () => {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    fs.rmSync(binDir, { recursive: true, force: true });
+  };
+}
+
 function snapshotNonce(date = new Date()) {
   return BigInt(date.getTime()) * 1_000_000n;
 }
@@ -84,6 +224,7 @@ function snapshotNonce(date = new Date()) {
 const originalCodexHome = process.env.CODEX_HOME;
 const originalMainPane = process.env.CODEX_HUD_MAIN_PANE;
 const originalSessionsPath = process.env.CODEX_SESSIONS_PATH;
+const originalPath = process.env.PATH;
 
 try {
   {
@@ -389,6 +530,614 @@ try {
       'pane two should stay on its own thread'
     );
   }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const threadId = '019eb165-2031-79a1-bb82-9f59b0dc4c0a';
+    const targetStartTime = new Date();
+    writeSnapshot(home, threadId, '%70', snapshotNonce(targetStartTime));
+    writeLogsDb(home, [
+      {
+        threadId,
+        ts: Math.floor(targetStartTime.getTime() / 1000),
+        body:
+          `session_loop{thread_id=${threadId}}:` +
+          `turn{model=gpt-5.5 codex.turn.reasoning_effort=medium}:` +
+          `run_sampling_request{cwd=${cwd}}`,
+      },
+    ]);
+
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+    const resolved = finder.check();
+    assert.ok(
+      resolved,
+      'fresh pane snapshot should resolve sqlite-backed Codex threads even when no rollout exists'
+    );
+    assert.equal(resolved.sessionId, threadId);
+    assert.equal(
+      resolved.metadata?.model,
+      'gpt-5.5',
+      'sqlite-backed thread should expose model metadata for HUD rendering'
+    );
+    assert.equal(
+      resolved.metadata?.reasoningEffort,
+      'medium',
+      'sqlite-backed thread should expose reasoning effort metadata for HUD rendering'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+
+    const paneOneThread = '019eb165-2031-79a1-bb82-9f59b0dc4c0a';
+    const paneTwoThread = '019eb166-2d2c-7c42-83ec-7ef750c43e18';
+    const now = new Date();
+    writeSnapshot(home, paneOneThread, '%70', snapshotNonce(now));
+    writeSnapshot(home, paneTwoThread, '%72', snapshotNonce(now));
+    writeLogsDb(home, [
+      {
+        threadId: paneOneThread,
+        ts: Math.floor(now.getTime() / 1000),
+        body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=low}:run_sampling_request{cwd=${cwd}}`,
+      },
+      {
+        threadId: paneTwoThread,
+        ts: Math.floor(now.getTime() / 1000),
+        body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=high}:run_sampling_request{cwd=${cwd}}`,
+      },
+    ]);
+
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+    const finderOne = new SessionFinder(cwd, undefined, now);
+    const resultOne = finderOne.check();
+    assert.ok(resultOne, 'expected sqlite-backed pane one to resolve');
+    assert.equal(
+      resultOne.sessionId,
+      paneOneThread,
+      'sqlite-backed pane one should stay on its own thread'
+    );
+    assert.equal(resultOne.metadata?.reasoningEffort, 'low');
+
+    process.env.CODEX_HUD_MAIN_PANE = '%72';
+    const finderTwo = new SessionFinder(cwd, undefined, now);
+    const resultTwo = finderTwo.check();
+    assert.ok(resultTwo, 'expected sqlite-backed pane two to resolve');
+    assert.equal(
+      resultTwo.sessionId,
+      paneTwoThread,
+      'sqlite-backed pane two should stay on its own thread'
+    );
+    assert.equal(resultTwo.metadata?.reasoningEffort, 'high');
+  }
+
+  {
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const olderThread = '019eb165-2031-79a1-bb82-9f59b0dc4c0a';
+      const latestThread = '019eb166-2d2c-7c42-83ec-7ef750c43e18';
+      const now = new Date();
+      writeLogsDb(home, [
+        {
+          threadId: olderThread,
+          processUuid: 'pid:11111:older',
+          ts: Math.floor(now.getTime() / 1000) - 60,
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=low}:run_sampling_request{cwd=${cwd}}`,
+        },
+        {
+          threadId: latestThread,
+          processUuid: 'pid:11111:latest',
+          ts: Math.floor(now.getTime() / 1000),
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=high}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const resolved = finder.check();
+      assert.ok(
+        resolved,
+        'missing shell snapshot should resolve the latest sqlite thread for the bound pane process'
+      );
+      assert.equal(resolved.sessionId, latestThread);
+      assert.equal(resolved.metadata?.reasoningEffort, 'high');
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const previousThread = '019eb165-2031-79a1-bb82-9f59b0dc4c0a';
+      const currentThread = '019eb166-2d2c-7c42-83ec-7ef750c43e18';
+      const now = new Date();
+      writeSnapshot(home, previousThread, '%70', snapshotNonce(now));
+      const currentRollout = writeRollout(home, {
+        sessionId: currentThread,
+        cwd,
+        modifiedAt: now,
+      });
+      writeLogsDb(home, [
+        {
+          threadId: previousThread,
+          processUuid: 'pid:99999:previous',
+          ts: Math.floor(now.getTime() / 1000) - 60,
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=low}:run_sampling_request{cwd=${cwd}}`,
+        },
+        {
+          threadId: currentThread,
+          processUuid: 'pid:11111:current',
+          ts: Math.floor(now.getTime() / 1000),
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=high}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const resolved = finder.check();
+      assert.ok(resolved, 'expected current pane process to resolve a session');
+      assert.equal(
+        resolved.sessionId,
+        currentThread,
+        'current pane process should override a stale shell snapshot for another thread'
+      );
+      assert.equal(
+        resolved.path,
+        fs.realpathSync(currentRollout),
+        'current pane process should bind to the normal rollout when it exists'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    const cleanupTmux = installFakeTmux({ '%70': '11111', '%72': '22222' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+
+      const paneOneThread = '019eb165-2031-79a1-bb82-9f59b0dc4c0a';
+      const paneTwoThread = '019eb166-2d2c-7c42-83ec-7ef750c43e18';
+      const now = new Date();
+      writeLogsDb(home, [
+        {
+          threadId: paneOneThread,
+          processUuid: 'pid:11111:pane-one',
+          ts: Math.floor(now.getTime() / 1000),
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=low}:run_sampling_request{cwd=${cwd}}`,
+        },
+        {
+          threadId: paneTwoThread,
+          processUuid: 'pid:22222:pane-two',
+          ts: Math.floor(now.getTime() / 1000),
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=high}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+      const finderOne = new SessionFinder(cwd, undefined, now);
+      const resultOne = finderOne.check();
+      assert.ok(resultOne, 'expected pane one process to resolve');
+      assert.equal(
+        resultOne.sessionId,
+        paneOneThread,
+        'pane one process should stay on its own sqlite thread'
+      );
+
+      process.env.CODEX_HUD_MAIN_PANE = '%72';
+      const finderTwo = new SessionFinder(cwd, undefined, now);
+      const resultTwo = finderTwo.check();
+      assert.ok(resultTwo, 'expected pane two process to resolve');
+      assert.equal(
+        resultTwo.sessionId,
+        paneTwoThread,
+        'pane two process should stay on its own sqlite thread'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    const cleanupTmux = installFakeTmux(
+      { '%70': '11110' },
+      [
+        '11110 1 /bin/zsh',
+        '11111 11110 node /path/to/codex',
+        '11112 11111 /path/to/codex-rust',
+      ].join('\n')
+    );
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const threadId = '019eb166-2d2c-7c42-83ec-7ef750c43e18';
+      const now = new Date();
+      writeLogsDb(home, [
+        {
+          threadId,
+          processUuid: 'pid:11112:child-process',
+          ts: Math.floor(now.getTime() / 1000),
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=medium}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const resolved = finder.check();
+      assert.ok(
+        resolved,
+        'pane process fallback should inspect child processes because Codex logs use the Rust child pid'
+      );
+      assert.equal(resolved.sessionId, threadId);
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // Internal helper threads (memories/compaction: no rollout file, no state
+    // row) must never steal the binding from an established session.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const userThread = '019eb200-0000-7000-8000-000000000001';
+      const internalThread = '019eb200-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const userRollout = writeRollout(home, {
+        sessionId: userThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 20 * 1000),
+      });
+      writeStateDb(home, {
+        threads: [{ id: userThread, rolloutPath: userRollout }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: userThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 20,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the user session to bind first');
+      assert.equal(bound.sessionId, userThread);
+
+      appendLogRow(home, {
+        threadId: internalThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: 'memories{}:flush',
+      }, 1);
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the binding to survive internal thread activity');
+      assert.equal(
+        resolved.sessionId,
+        userThread,
+        'an internal log-only thread must not steal the pane binding'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // Subagent threads (thread_spawn_edges children) must never steal the
+    // binding even when they are newer and have their own state rows.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const mainThread = '019eb201-0000-7000-8000-000000000001';
+      const subagentThread = '019eb201-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const mainRollout = writeRollout(home, {
+        sessionId: mainThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 30 * 1000),
+      });
+      const subagentRollout = writeRollout(home, {
+        sessionId: subagentThread,
+        cwd,
+        fileOffsetMinutes: 0,
+        modifiedAt: now,
+      });
+      writeStateDb(home, {
+        threads: [
+          { id: mainThread, rolloutPath: mainRollout },
+          { id: subagentThread, rolloutPath: subagentRollout },
+        ],
+        edges: [{ parent: mainThread, child: subagentThread }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: mainThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 30,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the main session to bind first');
+      assert.equal(bound.sessionId, mainThread);
+
+      appendLogRow(home, {
+        threadId: subagentThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+      }, 1);
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the binding to survive subagent activity');
+      assert.equal(
+        resolved.sessionId,
+        mainThread,
+        'a spawned subagent thread must not steal the pane binding'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // An in-process session switch (/new or /resume): the newly active
+    // established session takes over once it clearly leads the old one.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const firstThread = '019eb202-0000-7000-8000-000000000001';
+      const resumedThread = '019eb202-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const firstRollout = writeRollout(home, {
+        sessionId: firstThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 60 * 1000),
+      });
+      const resumedRollout = writeRollout(home, {
+        sessionId: resumedThread,
+        cwd,
+        fileOffsetMinutes: -120,
+        modifiedAt: now,
+      });
+      writeStateDb(home, {
+        threads: [
+          { id: firstThread, rolloutPath: firstRollout },
+          { id: resumedThread, rolloutPath: resumedRollout },
+        ],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: firstThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 30,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the first session to bind');
+      assert.equal(bound.sessionId, firstThread);
+
+      appendLogRow(home, {
+        threadId: resumedThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+      }, 1);
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the resumed session to resolve');
+      assert.equal(
+        resolved.sessionId,
+        resumedThread,
+        'a clearly leading established session (/resume) should take over the binding'
+      );
+      assert.equal(
+        resolved.path,
+        fs.realpathSync(resumedRollout),
+        'the resumed binding should use the rollout file recorded in the state DB'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // When the candidate probe comes back empty (Codex exited or went quiet),
+    // the HUD must keep the current binding instead of guessing by mtime.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const boundThread = '019eb203-0000-7000-8000-000000000001';
+      const otherThread = '019eb203-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const boundRollout = writeRollout(home, {
+        sessionId: boundThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 10 * 1000),
+      });
+      writeStateDb(home, {
+        threads: [{ id: boundThread, rolloutPath: boundRollout }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: boundThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 10,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the session to bind');
+      assert.equal(bound.sessionId, boundThread);
+
+      // Codex goes quiet and an unrelated session in the same cwd keeps writing.
+      clearLogRows(home);
+      writeRollout(home, {
+        sessionId: otherThread,
+        cwd,
+        fileOffsetMinutes: 1,
+        modifiedAt: new Date(),
+      });
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the binding to survive an empty candidate probe');
+      assert.equal(
+        resolved.sessionId,
+        boundThread,
+        'an empty probe must keep the current binding instead of drifting by mtime'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // Fast path: when the rollout file of a freshly created (/new) session
+    // appears on disk, noteRolloutAppeared() promotes it immediately instead
+    // of waiting out the facts TTL and the next poll.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const oldThread = '019eb204-0000-7000-8000-000000000001';
+      const newThread = '019eb204-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const oldRollout = writeRollout(home, {
+        sessionId: oldThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 30 * 1000),
+      });
+      writeStateDb(home, {
+        threads: [{ id: oldThread, rolloutPath: oldRollout }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: oldThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 30,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the old session to bind first');
+      assert.equal(bound.sessionId, oldThread);
+
+      // /new: the fresh thread is log-only and must not take over yet.
+      appendLogRow(home, {
+        threadId: newThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+      }, 1);
+      const beforeRollout = finder.check(true);
+      assert.equal(
+        beforeRollout.sessionId,
+        oldThread,
+        'a /new session without a rollout file must not take over yet'
+      );
+
+      // First user message lands: rollout file appears, event fires.
+      const newRollout = writeRollout(home, {
+        sessionId: newThread,
+        cwd,
+        modifiedAt: now,
+      });
+      finder.noteRolloutAppeared(newRollout);
+
+      const resolved = finder.getCurrentSession();
+      assert.ok(resolved, 'expected the new session to resolve after its rollout appeared');
+      assert.equal(
+        resolved.sessionId,
+        newThread,
+        'noteRolloutAppeared should promote the /new session immediately'
+      );
+      assert.equal(
+        resolved.path,
+        fs.realpathSync(newRollout),
+        'the promoted binding should use the newly created rollout file'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
 } finally {
   if (originalCodexHome === undefined) {
     delete process.env.CODEX_HOME;
@@ -406,6 +1155,12 @@ try {
     delete process.env.CODEX_SESSIONS_PATH;
   } else {
     process.env.CODEX_SESSIONS_PATH = originalSessionsPath;
+  }
+
+  if (originalPath === undefined) {
+    delete process.env.PATH;
+  } else {
+    process.env.PATH = originalPath;
   }
 }
 

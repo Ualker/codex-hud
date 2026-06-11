@@ -306,7 +306,7 @@ Install Node.js 18+ from: https://nodejs.org/"
 # Build the HUD renderer if needed
 build_hud() {
     local dist_file="$HUD_DIR/dist/index.js"
-    local src_file="$HUD_DIR/src/index.ts"
+    local needs_build="0"
     
     # Check if node_modules exists
     if [[ ! -d "$HUD_DIR/node_modules" ]]; then
@@ -315,7 +315,13 @@ build_hud() {
     fi
     
     # Check if we need to build
-    if [[ ! -f "$dist_file" ]] || [[ "$src_file" -nt "$dist_file" ]]; then
+    if [[ ! -f "$dist_file" ]]; then
+        needs_build="1"
+    elif find "$HUD_DIR/src" -type f \( -name '*.ts' -o -name '*.tsx' \) -newer "$dist_file" -print -quit | grep -q .; then
+        needs_build="1"
+    fi
+
+    if [[ "$needs_build" == "1" ]]; then
         step "Building HUD renderer..."
         (cd "$HUD_DIR" && npm run build) || error "Failed to build HUD renderer"
     fi
@@ -428,7 +434,7 @@ set_fixed_hud_height() {
     fi
 
     if [[ -x "$resize_helper" ]]; then
-        "$resize_helper" "$session_name"
+        "$resize_helper" "$session_name" || true
     else
         tmux resize-pane -t "$hud_pane_id" -y "$height" 2>/dev/null || true
     fi
@@ -436,8 +442,8 @@ set_fixed_hud_height() {
     local hook_cmd
     if [[ -x "$resize_helper" ]]; then
         hook_cmd="run-shell \"$resize_helper #{session_name}\""
-        tmux set-hook -t "$session_name" client-resized "$hook_cmd"
-        tmux set-hook -t "$session_name" after-resize-pane "$hook_cmd"
+        tmux set-hook -t "$session_name" client-resized "$hook_cmd" || true
+        tmux set-hook -t "$session_name" after-resize-pane "$hook_cmd" || true
     fi
 }
 
@@ -467,7 +473,7 @@ cleanup_incomplete_session() {
         return 0
     fi
 
-    if [[ "${SESSION_CREATED:-}" == "true" && "${SESSION_READY:-}" != "true" ]]; then
+    if [[ "${SESSION_CREATED:-}" == "true" && "${SESSION_CODEX_STARTED:-}" != "true" && "${SESSION_READY:-}" != "true" ]]; then
         if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
             tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
         fi
@@ -568,6 +574,7 @@ create_session() {
     
     # Send the codex command to the main pane. Leave the tmux session alive when Codex exits.
     tmux send-keys -t "$SESSION_NAME" "cd ${cwd_escaped} && $codex_cmd" C-m
+    SESSION_CODEX_STARTED="true"
     
     # Wait a moment for the session to be ready
     sleep 0.2
@@ -596,7 +603,7 @@ create_session() {
     fi
 
     # Bind toggle key (Prefix + H) to switch HUD modes for this session
-    tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'tmux send-keys -t #{@codex_hud_pane} C-t' ''"
+    tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'tmux send-keys -t #{@codex_hud_pane} C-t' ''" || true
     
     SESSION_READY="true"
 }
@@ -625,6 +632,19 @@ main() {
         esac
         shift
     done
+
+    # Already inside a codex-hud tmux session (e.g. `codex resume ...` typed in
+    # the codex pane after exit, with the shell alias active): run the real
+    # codex CLI in place instead of nesting another tmux session. The existing
+    # HUD pane rebinds to the resumed/new session automatically.
+    if [[ -n "${TMUX:-}" ]]; then
+        local current_tmux_session
+        current_tmux_session=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+        if [[ "$current_tmux_session" == codex-hud-* ]]; then
+            resolve_codex_cli
+            exec "$CODEX_CLI_PATH" "${codex_args[@]}"
+        fi
+    fi
 
     # Check dependencies
     check_dependencies
