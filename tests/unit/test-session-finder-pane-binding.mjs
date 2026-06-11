@@ -106,6 +106,50 @@ function writeLogsDb(home, rows) {
   return dbPath;
 }
 
+function appendLogRow(home, row, tsNanos = 0) {
+  const dbPath = path.join(home, 'logs_2.sqlite');
+  execFileSync('sqlite3', [
+    dbPath,
+    `INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid)
+     VALUES (${row.ts}, ${tsNanos}, 'INFO', 'codex_otel.log_only', '${sql(row.body ?? '')}', '${sql(row.threadId)}', ${row.processUuid ? `'${sql(row.processUuid)}'` : 'NULL'});`,
+  ]);
+}
+
+function clearLogRows(home) {
+  const dbPath = path.join(home, 'logs_2.sqlite');
+  execFileSync('sqlite3', [dbPath, 'DELETE FROM logs;']);
+}
+
+function writeStateDb(home, { threads = [], edges = [] } = {}) {
+  const dbPath = path.join(home, 'state_5.sqlite');
+  const statements = [
+    `CREATE TABLE threads (
+      id TEXT PRIMARY KEY,
+      rollout_path TEXT NOT NULL,
+      thread_source TEXT NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0
+    );`,
+    `CREATE TABLE thread_spawn_edges (
+      parent_thread_id TEXT NOT NULL,
+      child_thread_id TEXT NOT NULL PRIMARY KEY,
+      status TEXT NOT NULL
+    );`,
+    ...threads.map(
+      (thread) =>
+        `INSERT INTO threads (id, rollout_path, thread_source, archived)
+         VALUES ('${sql(thread.id)}', '${sql(thread.rolloutPath ?? '')}', '${sql(thread.threadSource ?? 'user')}', ${thread.archived ? 1 : 0});`
+    ),
+    ...edges.map(
+      (edge) =>
+        `INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
+         VALUES ('${sql(edge.parent)}', '${sql(edge.child)}', '${sql(edge.status ?? 'open')}');`
+    ),
+  ];
+
+  execFileSync('sqlite3', [dbPath, statements.join('\n')]);
+  return dbPath;
+}
+
 function installFakeTmux(panePids, psOutput = '') {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-fake-tmux-'));
   const scriptPath = path.join(binDir, 'tmux');
@@ -616,6 +660,58 @@ try {
   }
 
   {
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const previousThread = '019eb165-2031-79a1-bb82-9f59b0dc4c0a';
+      const currentThread = '019eb166-2d2c-7c42-83ec-7ef750c43e18';
+      const now = new Date();
+      writeSnapshot(home, previousThread, '%70', snapshotNonce(now));
+      const currentRollout = writeRollout(home, {
+        sessionId: currentThread,
+        cwd,
+        modifiedAt: now,
+      });
+      writeLogsDb(home, [
+        {
+          threadId: previousThread,
+          processUuid: 'pid:99999:previous',
+          ts: Math.floor(now.getTime() / 1000) - 60,
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=low}:run_sampling_request{cwd=${cwd}}`,
+        },
+        {
+          threadId: currentThread,
+          processUuid: 'pid:11111:current',
+          ts: Math.floor(now.getTime() / 1000),
+          body: `turn{model=gpt-5.5 codex.turn.reasoning_effort=high}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const resolved = finder.check();
+      assert.ok(resolved, 'expected current pane process to resolve a session');
+      assert.equal(
+        resolved.sessionId,
+        currentThread,
+        'current pane process should override a stale shell snapshot for another thread'
+      );
+      assert.equal(
+        resolved.path,
+        fs.realpathSync(currentRollout),
+        'current pane process should bind to the normal rollout when it exists'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
     const cleanupTmux = installFakeTmux({ '%70': '11111', '%72': '22222' });
     try {
       const home = makeTempCodexHome();
@@ -701,6 +797,264 @@ try {
         'pane process fallback should inspect child processes because Codex logs use the Rust child pid'
       );
       assert.equal(resolved.sessionId, threadId);
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // Internal helper threads (memories/compaction: no rollout file, no state
+    // row) must never steal the binding from an established session.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const userThread = '019eb200-0000-7000-8000-000000000001';
+      const internalThread = '019eb200-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const userRollout = writeRollout(home, {
+        sessionId: userThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 20 * 1000),
+      });
+      writeStateDb(home, {
+        threads: [{ id: userThread, rolloutPath: userRollout }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: userThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 20,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the user session to bind first');
+      assert.equal(bound.sessionId, userThread);
+
+      appendLogRow(home, {
+        threadId: internalThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: 'memories{}:flush',
+      }, 1);
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the binding to survive internal thread activity');
+      assert.equal(
+        resolved.sessionId,
+        userThread,
+        'an internal log-only thread must not steal the pane binding'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // Subagent threads (thread_spawn_edges children) must never steal the
+    // binding even when they are newer and have their own state rows.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const mainThread = '019eb201-0000-7000-8000-000000000001';
+      const subagentThread = '019eb201-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const mainRollout = writeRollout(home, {
+        sessionId: mainThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 30 * 1000),
+      });
+      const subagentRollout = writeRollout(home, {
+        sessionId: subagentThread,
+        cwd,
+        fileOffsetMinutes: 0,
+        modifiedAt: now,
+      });
+      writeStateDb(home, {
+        threads: [
+          { id: mainThread, rolloutPath: mainRollout },
+          { id: subagentThread, rolloutPath: subagentRollout },
+        ],
+        edges: [{ parent: mainThread, child: subagentThread }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: mainThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 30,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the main session to bind first');
+      assert.equal(bound.sessionId, mainThread);
+
+      appendLogRow(home, {
+        threadId: subagentThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+      }, 1);
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the binding to survive subagent activity');
+      assert.equal(
+        resolved.sessionId,
+        mainThread,
+        'a spawned subagent thread must not steal the pane binding'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // An in-process session switch (/new or /resume): the newly active
+    // established session takes over once it clearly leads the old one.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const firstThread = '019eb202-0000-7000-8000-000000000001';
+      const resumedThread = '019eb202-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const firstRollout = writeRollout(home, {
+        sessionId: firstThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 60 * 1000),
+      });
+      const resumedRollout = writeRollout(home, {
+        sessionId: resumedThread,
+        cwd,
+        fileOffsetMinutes: -120,
+        modifiedAt: now,
+      });
+      writeStateDb(home, {
+        threads: [
+          { id: firstThread, rolloutPath: firstRollout },
+          { id: resumedThread, rolloutPath: resumedRollout },
+        ],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: firstThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 30,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the first session to bind');
+      assert.equal(bound.sessionId, firstThread);
+
+      appendLogRow(home, {
+        threadId: resumedThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+      }, 1);
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the resumed session to resolve');
+      assert.equal(
+        resolved.sessionId,
+        resumedThread,
+        'a clearly leading established session (/resume) should take over the binding'
+      );
+      assert.equal(
+        resolved.path,
+        fs.realpathSync(resumedRollout),
+        'the resumed binding should use the rollout file recorded in the state DB'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
+    // When the candidate probe comes back empty (Codex exited or went quiet),
+    // the HUD must keep the current binding instead of guessing by mtime.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const boundThread = '019eb203-0000-7000-8000-000000000001';
+      const otherThread = '019eb203-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const boundRollout = writeRollout(home, {
+        sessionId: boundThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 10 * 1000),
+      });
+      writeStateDb(home, {
+        threads: [{ id: boundThread, rolloutPath: boundRollout }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: boundThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 10,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the session to bind');
+      assert.equal(bound.sessionId, boundThread);
+
+      // Codex goes quiet and an unrelated session in the same cwd keeps writing.
+      clearLogRows(home);
+      writeRollout(home, {
+        sessionId: otherThread,
+        cwd,
+        fileOffsetMinutes: 1,
+        modifiedAt: new Date(),
+      });
+
+      const resolved = finder.check(true);
+      assert.ok(resolved, 'expected the binding to survive an empty candidate probe');
+      assert.equal(
+        resolved.sessionId,
+        boundThread,
+        'an empty probe must keep the current binding instead of drifting by mtime'
+      );
     } finally {
       cleanupTmux();
     }

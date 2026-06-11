@@ -14,6 +14,24 @@ const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
 const PANE_SNAPSHOT_STALE_TOLERANCE_MS = 30 * 1000;
 const LAUNCH_ROLLOUT_BACKDATE_TOLERANCE_MS = 30 * 1000;
 
+// Spawned probes (tmux/ps/sqlite3) can take multiple seconds on a loaded
+// machine purely from process startup overhead; a tight timeout makes binding
+// fail randomly.
+const PROBE_TIMEOUT_MS = 8000;
+// Full pane->thread resolution is expensive (subprocess spawns); throttle it so
+// the 1s render loop reuses the cached binding.
+const FULL_RESOLVE_INTERVAL_MS = 4000;
+// How far back to look for log rows tying a process to a thread.
+const THREAD_CANDIDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Candidates older than this relative to the newest one are ignored (guards
+// against pid reuse picking up threads of a long-dead process).
+const THREAD_ACTIVE_WINDOW_MS = 60 * 1000;
+// A confirmed thread must out-log the bound thread by this margin before the
+// HUD rebinds (a /new or /resume switch, not interleaved concurrent logging).
+const THREAD_SWITCH_MARGIN_MS = 10 * 1000;
+const MAX_THREAD_CANDIDATES = 8;
+const THREAD_FACTS_NEGATIVE_TTL_MS = 60 * 1000;
+
 export interface SessionFile {
   path: string;
   sessionId: string;
@@ -496,7 +514,18 @@ function buildSessionFile(filePath: string): SessionFile | null {
   }
 }
 
-function findSessionByThreadId(sessionId: string, targetCwd: string | null): SessionFile | null {
+function findSessionByThreadId(
+  sessionId: string,
+  targetCwd: string | null,
+  knownRolloutPath?: string | null
+): SessionFile | null {
+  if (knownRolloutPath && fs.existsSync(knownRolloutPath)) {
+    const knownSession = buildSessionFile(knownRolloutPath);
+    if (knownSession) {
+      return knownSession;
+    }
+  }
+
   const codexHome = getCodexHome();
   const activePath = findRolloutPathBySessionIdInRoot(path.join(codexHome, 'sessions'), sessionId);
   const archivedPath = findRolloutPathBySessionIdInRoot(
@@ -553,20 +582,49 @@ function querySqlite(dbPath: string, sql: string): string | null {
   try {
     return execFileSync('sqlite3', ['-readonly', '-separator', '\x1f', dbPath, sql], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: PROBE_TIMEOUT_MS,
     }).trimEnd();
   } catch {
     return null;
   }
 }
 
+function getStateDatabaseCandidates(): string[] {
+  const codexHome = getCodexHome();
+  let entries: string[];
+
+  try {
+    entries = fs.readdirSync(codexHome);
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((entry) => /^state(?:_\d+)?\.sqlite$/.test(entry))
+    .map((entry) => path.join(codexHome, entry))
+    .filter((entryPath) => {
+      try {
+        return fs.statSync(entryPath).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .sort((left, right) => {
+      try {
+        return fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs;
+      } catch {
+        return right.localeCompare(left);
+      }
+    });
+}
+
 function getPaneProcessId(mainPaneId: string): string | null {
   try {
     const output = execFileSync('tmux', ['display', '-p', '-t', mainPaneId, '#{pane_pid}'], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: PROBE_TIMEOUT_MS,
     }).trim();
     return /^\d+$/.test(output) ? output : null;
   } catch {
@@ -583,8 +641,8 @@ function getDescendantProcessIds(rootPid: string): string[] {
   try {
     output = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: PROBE_TIMEOUT_MS,
     });
   } catch {
     return [rootPid];
@@ -691,54 +749,152 @@ SELECT
   return null;
 }
 
-function buildLatestLogBackedSessionForProcesses(
+interface ThreadCandidate {
+  threadId: string;
+  lastTs: number;
+}
+
+/**
+ * Threads recently logged by the given processes, newest first.
+ * Returns null when every logs database query failed (transient error),
+ * as opposed to [] which means the query ran and found nothing.
+ */
+function findThreadCandidatesForProcesses(
   processIds: string[],
-  targetCwd: string | null
-): SessionFile | null {
+  sinceMs: number
+): ThreadCandidate[] | null {
   const validProcessIds = processIds.filter((processId) => /^\d+$/.test(processId)).slice(0, 32);
   if (validProcessIds.length === 0) {
-    return null;
+    return [];
   }
 
   const processFilter = validProcessIds
     .map((processId) => `process_uuid LIKE '${escapeSqlString(`pid:${processId}:%`)}'`)
     .join(' OR ');
+  const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
   const sql = `
-SELECT thread_id
+SELECT thread_id, max(ts)
 FROM logs
-WHERE (${processFilter})
+WHERE ts >= ${sinceSeconds}
+  AND (${processFilter})
   AND thread_id IS NOT NULL
   AND thread_id != ''
 GROUP BY thread_id
 ORDER BY max(ts) DESC, max(ts_nanos) DESC
-LIMIT 1;
+LIMIT ${MAX_THREAD_CANDIDATES};
 `.trim();
 
+  let sawSuccessfulQuery = false;
   for (const dbPath of getLogDatabaseCandidates()) {
-    const threadId = querySqlite(dbPath, sql)?.trim();
-    if (!threadId || !isThreadId(threadId)) {
+    const output = querySqlite(dbPath, sql);
+    if (output === null) {
       continue;
     }
 
-    const session = buildLogBackedSession(threadId, targetCwd);
-    if (session) {
-      return session;
+    sawSuccessfulQuery = true;
+    const candidates: ThreadCandidate[] = [];
+    for (const line of output.split('\n')) {
+      if (!line) {
+        continue;
+      }
+      const [threadId, lastTsRaw] = line.split('\x1f');
+      const lastTs = Number(lastTsRaw) * 1000;
+      if (threadId && isThreadId(threadId) && Number.isFinite(lastTs)) {
+        candidates.push({ threadId, lastTs });
+      }
+    }
+
+    if (candidates.length > 0) {
+      return candidates;
     }
   }
 
-  return null;
+  return sawSuccessfulQuery ? [] : null;
 }
 
-function buildLogBackedSessionForPane(
-  mainPaneId: string,
-  targetCwd: string | null
+/**
+ * findRolloutBySessionId throws when the sessions directory does not exist
+ * yet (rollout files are created lazily); binding must tolerate that.
+ */
+function findRecentRolloutBySessionId(
+  threadId: string,
+  maxDaysBack: number
 ): SessionFile | null {
-  const processId = getPaneProcessId(mainPaneId);
-  if (!processId) {
+  try {
+    return findRolloutBySessionId(threadId, maxDaysBack);
+  } catch {
     return null;
   }
+}
 
-  return buildLatestLogBackedSessionForProcesses(getDescendantProcessIds(processId), targetCwd);
+// How established a candidate thread is. Internal Codex threads (memories,
+// compaction, ...) never get a rollout file or a `threads` row, so they can
+// never out-rank a real user session.
+const THREAD_RANK_LOG_ONLY = 0;
+const THREAD_RANK_ROLLOUT = 1;
+const THREAD_RANK_CONFIRMED = 2;
+
+interface ThreadFacts {
+  rank: number;
+  isSubagent: boolean;
+  rolloutPath: string | null;
+  fetchedAt: number;
+}
+
+function queryThreadFactsFromState(threadIds: string[]): Map<string, ThreadFacts> | null {
+  const facts = new Map<string, ThreadFacts>();
+  if (threadIds.length === 0) {
+    return facts;
+  }
+
+  const stateDbs = getStateDatabaseCandidates();
+  if (stateDbs.length === 0) {
+    // No state database on this install: nothing is known, but that is not a
+    // transient failure — callers fall back to rollout-file ranking.
+    return facts;
+  }
+
+  const idList = threadIds.map((id) => `'${escapeSqlString(id)}'`).join(', ');
+  const sql = `
+SELECT 'thread', id, rollout_path, thread_source, archived FROM threads WHERE id IN (${idList});
+SELECT 'edge', child_thread_id, '', '', 0 FROM thread_spawn_edges WHERE child_thread_id IN (${idList});
+`.trim();
+
+  for (const dbPath of stateDbs) {
+    const output = querySqlite(dbPath, sql);
+    if (output === null) {
+      continue;
+    }
+
+    const now = Date.now();
+    for (const line of output.split('\n')) {
+      if (!line) {
+        continue;
+      }
+      const [kind, threadId, rolloutPath] = line.split('\x1f');
+      if (!threadId) {
+        continue;
+      }
+      const existing = facts.get(threadId) ?? {
+        rank: THREAD_RANK_CONFIRMED,
+        isSubagent: false,
+        rolloutPath: null,
+        fetchedAt: now,
+      };
+      if (kind === 'edge') {
+        existing.isSubagent = true;
+      } else if (kind === 'thread') {
+        // Normalize so the same file never appears under two path forms
+        // (/var vs /private/var on macOS) and triggers a spurious rebind.
+        existing.rolloutPath = normalizePath(rolloutPath) ?? null;
+      }
+      facts.set(threadId, existing);
+    }
+
+    return facts;
+  }
+
+  return null;
 }
 
 function isLogBackedSession(session: SessionFile | null): boolean {
@@ -749,12 +905,28 @@ function isLogBackedSession(session: SessionFile | null): boolean {
  * Watch for the most recently modified rollout file
  * Returns the path to the file that should be monitored
  */
+interface AnnotatedThread {
+  threadId: string;
+  lastTs: number;
+  rank: number;
+  isSubagent: boolean;
+}
+
+interface PaneThreadBinding {
+  threadId: string | null;
+  keepCurrent: boolean;
+}
+
 export class SessionFinder {
   private currentSession: SessionFile | null = null;
   private checkInterval: NodeJS.Timeout | null = null;
   private targetCwd: string | null = null;
   private currentThreadId: string | null = null;
   private targetStartTime: Date | null = null;
+  private lastFullResolveAt = 0;
+  private boundViaProcess = false;
+  private cachedPanePid: string | null = null;
+  private threadFactsCache = new Map<string, ThreadFacts>();
 
   constructor(
     targetCwd?: string,
@@ -786,7 +958,8 @@ export class SessionFinder {
   /**
    * Check for active or recent sessions
    */
-  check(): SessionFile | null {
+  check(force: boolean = false): SessionFile | null {
+    const now = Date.now();
     const current = this.currentSession;
     const currentExists = current ? fs.existsSync(current.path) || isLogBackedSession(current) : false;
 
@@ -800,20 +973,34 @@ export class SessionFinder {
       }
     }
 
+    // Full resolution spawns subprocesses (tmux/ps/sqlite3); between resolves
+    // just refresh the cached binding.
+    if (!force && now - this.lastFullResolveAt < FULL_RESOLVE_INTERVAL_MS) {
+      return this.currentSession;
+    }
+    this.lastFullResolveAt = now;
+
     const mainPaneId = process.env.CODEX_HUD_MAIN_PANE;
     if (!mainPaneId) {
       this.currentThreadId = null;
       return this.resolveNextSession(this.findFallbackSession(), currentExists);
     }
 
+    const binding = this.resolvePaneThreadBinding(mainPaneId, now);
+    if (binding.threadId) {
+      this.boundViaProcess = true;
+      return this.bindThread(binding.threadId, currentExists);
+    }
+
+    // The pane process is known to be bound but this probe failed or came back
+    // empty (sqlite hiccup, codex exited, idle beyond the log window): keep the
+    // current binding instead of guessing by file mtime.
+    if (binding.keepCurrent && current && currentExists) {
+      return current;
+    }
+
     const paneSnapshot = findSnapshotForPane(mainPaneId);
     if (!paneSnapshot || !this.isFreshPaneSnapshot(paneSnapshot)) {
-      const processSession = buildLogBackedSessionForPane(mainPaneId, this.targetCwd);
-      if (processSession) {
-        this.currentThreadId = processSession.sessionId;
-        return this.resolveNextSession(processSession, currentExists);
-      }
-
       this.currentThreadId = null;
       return this.resolveNextSession(this.findPaneLaunchSession(), currentExists);
     }
@@ -824,13 +1011,6 @@ export class SessionFinder {
       this.currentSession.sessionId === threadId &&
       (fs.existsSync(this.currentSession.path) || isLogBackedSession(this.currentSession))
     ) {
-      try {
-        const stats = fs.statSync(this.currentSession.path);
-        this.currentSession.modifiedAt = stats.mtime;
-        this.currentSession.size = stats.size;
-      } catch {
-        // ignore stat errors
-      }
       this.currentThreadId = threadId;
       return this.currentSession;
     }
@@ -840,16 +1020,206 @@ export class SessionFinder {
     const next = findSessionByThreadId(threadId, this.targetCwd);
 
     if (!next) {
-      const processSession = buildLogBackedSessionForPane(mainPaneId, this.targetCwd);
-      if (processSession) {
-        this.currentThreadId = processSession.sessionId;
-        return this.resolveNextSession(processSession, currentExists);
-      }
-
       return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
     }
 
     return this.resolveNextSession(next, currentExists);
+  }
+
+  /**
+   * Bind to a thread chosen by the pane-process resolution.
+   */
+  private bindThread(threadId: string, currentExists: boolean): SessionFile | null {
+    const current = this.currentSession;
+
+    // Already bound to a real rollout file for this thread: nothing to re-resolve.
+    if (
+      current &&
+      currentExists &&
+      current.sessionId === threadId &&
+      !isLogBackedSession(current)
+    ) {
+      this.currentThreadId = threadId;
+      return current;
+    }
+
+    const facts = this.threadFactsCache.get(threadId);
+    const previousThreadId = this.currentThreadId;
+    this.currentThreadId = threadId;
+
+    let next: SessionFile | null = null;
+    if (current && isLogBackedSession(current) && current.sessionId === threadId) {
+      // Log-backed session: probe for the rollout file appearing (created on
+      // the first user message) without rescanning the whole sessions tree.
+      const rollout =
+        (facts?.rolloutPath && fs.existsSync(facts.rolloutPath)
+          ? buildSessionFile(facts.rolloutPath)
+          : null) ?? findRecentRolloutBySessionId(threadId, 2);
+      next = rollout ?? buildLogBackedSession(threadId, this.targetCwd) ?? current;
+    } else {
+      next = findSessionByThreadId(threadId, this.targetCwd, facts?.rolloutPath ?? null);
+    }
+
+    if (!next) {
+      return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
+    }
+
+    return this.resolveNextSession(next, currentExists);
+  }
+
+  /**
+   * Resolve which thread of the pane's process tree the HUD should follow.
+   */
+  private resolvePaneThreadBinding(mainPaneId: string, now: number): PaneThreadBinding {
+    const panePid = this.getPanePid(mainPaneId);
+    if (!panePid) {
+      return { threadId: null, keepCurrent: this.boundViaProcess };
+    }
+
+    if (getLogDatabaseCandidates().length === 0) {
+      // This Codex install has no logs database; use the legacy paths.
+      return { threadId: null, keepCurrent: false };
+    }
+
+    const sinceMs = Math.max(
+      now - THREAD_CANDIDATE_WINDOW_MS,
+      (this.targetStartTime?.getTime() ?? 0) - 60_000
+    );
+    const candidates = findThreadCandidatesForProcesses(
+      getDescendantProcessIds(panePid),
+      sinceMs
+    );
+
+    if (candidates === null || candidates.length === 0) {
+      return { threadId: null, keepCurrent: this.boundViaProcess };
+    }
+
+    const annotated = this.annotateCandidates(candidates);
+    const chosen = this.chooseThread(annotated);
+    return { threadId: chosen, keepCurrent: this.boundViaProcess };
+  }
+
+  /**
+   * Pane pid is stable for the lifetime of the pane; avoid re-spawning tmux.
+   */
+  private getPanePid(mainPaneId: string): string | null {
+    if (this.cachedPanePid) {
+      try {
+        process.kill(Number(this.cachedPanePid), 0);
+        return this.cachedPanePid;
+      } catch {
+        this.cachedPanePid = null;
+      }
+    }
+
+    const panePid = getPaneProcessId(mainPaneId);
+    if (panePid) {
+      this.cachedPanePid = panePid;
+    }
+    return panePid;
+  }
+
+  /**
+   * Attach rank/subagent facts to candidates, refreshing the cache as needed.
+   */
+  private annotateCandidates(candidates: ThreadCandidate[]): AnnotatedThread[] {
+    const now = Date.now();
+    const needsFetch: string[] = [];
+
+    for (const candidate of candidates) {
+      const cached = this.threadFactsCache.get(candidate.threadId);
+      if (!cached) {
+        needsFetch.push(candidate.threadId);
+        continue;
+      }
+      const isFinal = cached.rank >= THREAD_RANK_ROLLOUT || cached.isSubagent;
+      if (!isFinal && now - cached.fetchedAt > THREAD_FACTS_NEGATIVE_TTL_MS) {
+        needsFetch.push(candidate.threadId);
+      }
+    }
+
+    if (needsFetch.length > 0) {
+      const fetched = queryThreadFactsFromState(needsFetch);
+      if (fetched !== null) {
+        for (const threadId of needsFetch) {
+          const stateFacts = fetched.get(threadId);
+          if (stateFacts) {
+            this.threadFactsCache.set(threadId, stateFacts);
+            continue;
+          }
+
+          // Not in the state DB (yet): an existing rollout file still marks a
+          // real session on installs without a state DB or before its row lands.
+          const rollout = findRecentRolloutBySessionId(threadId, 2);
+          this.threadFactsCache.set(threadId, {
+            rank: rollout ? THREAD_RANK_ROLLOUT : THREAD_RANK_LOG_ONLY,
+            isSubagent: false,
+            rolloutPath: rollout?.path ?? null,
+            fetchedAt: now,
+          });
+        }
+      }
+      // On transient state-DB failure keep whatever facts we had.
+    }
+
+    return candidates.map((candidate) => {
+      const facts = this.threadFactsCache.get(candidate.threadId);
+      return {
+        threadId: candidate.threadId,
+        lastTs: candidate.lastTs,
+        rank: facts?.rank ?? THREAD_RANK_LOG_ONLY,
+        isSubagent: facts?.isSubagent ?? false,
+      };
+    });
+  }
+
+  /**
+   * Sticky thread selection: prefer established sessions, never let internal
+   * helper threads steal the binding, and only switch on a sustained lead
+   * (a real /new or /resume, not interleaved concurrent logging).
+   */
+  private chooseThread(threads: AnnotatedThread[]): string | null {
+    const usable = threads.filter((thread) => !thread.isSubagent);
+    if (usable.length === 0) {
+      return null;
+    }
+
+    const newestTs = Math.max(...usable.map((thread) => thread.lastTs));
+    const active = usable.filter(
+      (thread) => newestTs - thread.lastTs <= THREAD_ACTIVE_WINDOW_MS
+    );
+    const best = [...active].sort(
+      (left, right) => right.rank - left.rank || right.lastTs - left.lastTs
+    )[0];
+    if (!best) {
+      return null;
+    }
+
+    const boundId = this.boundViaProcess ? this.currentThreadId : null;
+    if (!boundId) {
+      return best.threadId;
+    }
+
+    const bound = usable.find((thread) => thread.threadId === boundId);
+    if (!bound) {
+      // Bound thread went quiet beyond the window; only follow real sessions.
+      return best.rank >= THREAD_RANK_ROLLOUT ? best.threadId : null;
+    }
+
+    if (best.threadId === bound.threadId) {
+      return bound.threadId;
+    }
+    if (bound.rank === THREAD_RANK_LOG_ONLY && best.rank > THREAD_RANK_LOG_ONLY) {
+      return best.threadId;
+    }
+    if (
+      best.rank >= THREAD_RANK_ROLLOUT &&
+      best.lastTs - bound.lastTs >= THREAD_SWITCH_MARGIN_MS
+    ) {
+      return best.threadId;
+    }
+
+    return bound.threadId;
   }
 
   /**
