@@ -30,7 +30,10 @@ const THREAD_ACTIVE_WINDOW_MS = 60 * 1000;
 // HUD rebinds (a /new or /resume switch, not interleaved concurrent logging).
 const THREAD_SWITCH_MARGIN_MS = 10 * 1000;
 const MAX_THREAD_CANDIDATES = 8;
-const THREAD_FACTS_NEGATIVE_TTL_MS = 60 * 1000;
+// How long a "nothing known yet" verdict for a thread is trusted before
+// re-querying. Kept short so a /new session is promoted quickly once its
+// rollout file / state row lands; noteRolloutAppeared() bypasses it entirely.
+const THREAD_FACTS_NEGATIVE_TTL_MS = 5 * 1000;
 
 export interface SessionFile {
   path: string;
@@ -1027,6 +1030,29 @@ export class SessionFinder {
   }
 
   /**
+   * Fast path for a rollout file appearing on disk (file-watcher event).
+   * A thread we currently rank as log-only just became an established
+   * session (typically the first user message of a /new session); re-rank
+   * it immediately instead of waiting out the facts TTL and poll interval.
+   */
+  noteRolloutAppeared(rolloutPath: string): void {
+    const parsed = parseRolloutFilename(path.basename(rolloutPath));
+    if (!parsed) {
+      return;
+    }
+
+    const facts = this.threadFactsCache.get(parsed.sessionId);
+    if (!facts || facts.rank >= THREAD_RANK_ROLLOUT || facts.isSubagent) {
+      // Unknown threads (other panes/instances) stay on the throttled path;
+      // established or excluded threads have nothing to upgrade.
+      return;
+    }
+
+    this.threadFactsCache.delete(parsed.sessionId);
+    this.check(true);
+  }
+
+  /**
    * Bind to a thread chosen by the pane-process resolution.
    */
   private bindThread(threadId: string, currentExists: boolean): SessionFile | null {
@@ -1188,35 +1214,40 @@ export class SessionFinder {
     const active = usable.filter(
       (thread) => newestTs - thread.lastTs <= THREAD_ACTIVE_WINDOW_MS
     );
-    const best = [...active].sort(
-      (left, right) => right.rank - left.rank || right.lastTs - left.lastTs
+    // Established sessions (rollout file or state row) by recent activity.
+    // Activity decides between established sessions — a /new session holds
+    // only a rollout file at first and must still be able to take over.
+    const establishedByActivity = active
+      .filter((thread) => thread.rank >= THREAD_RANK_ROLLOUT)
+      .sort((left, right) => right.lastTs - left.lastTs || right.rank - left.rank);
+    const newestActive = [...active].sort(
+      (left, right) => right.lastTs - left.lastTs
     )[0];
-    if (!best) {
-      return null;
-    }
 
     const boundId = this.boundViaProcess ? this.currentThreadId : null;
     if (!boundId) {
-      return best.threadId;
+      // Initial binding: prefer an established session over log-only noise.
+      return (establishedByActivity[0] ?? newestActive)?.threadId ?? null;
     }
 
     const bound = usable.find((thread) => thread.threadId === boundId);
+    const challenger = establishedByActivity.find(
+      (thread) => thread.threadId !== boundId
+    );
+
     if (!bound) {
       // Bound thread went quiet beyond the window; only follow real sessions.
-      return best.rank >= THREAD_RANK_ROLLOUT ? best.threadId : null;
+      return challenger?.threadId ?? null;
     }
 
-    if (best.threadId === bound.threadId) {
-      return bound.threadId;
+    if (bound.rank === THREAD_RANK_LOG_ONLY) {
+      // Tentative binding: upgrade to any established session, otherwise
+      // follow the newest log-only thread.
+      return (challenger ?? newestActive)?.threadId ?? bound.threadId;
     }
-    if (bound.rank === THREAD_RANK_LOG_ONLY && best.rank > THREAD_RANK_LOG_ONLY) {
-      return best.threadId;
-    }
-    if (
-      best.rank >= THREAD_RANK_ROLLOUT &&
-      best.lastTs - bound.lastTs >= THREAD_SWITCH_MARGIN_MS
-    ) {
-      return best.threadId;
+
+    if (challenger && challenger.lastTs - bound.lastTs >= THREAD_SWITCH_MARGIN_MS) {
+      return challenger.threadId;
     }
 
     return bound.threadId;

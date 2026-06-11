@@ -1059,6 +1059,85 @@ try {
       cleanupTmux();
     }
   }
+
+  {
+    // Fast path: when the rollout file of a freshly created (/new) session
+    // appears on disk, noteRolloutAppeared() promotes it immediately instead
+    // of waiting out the facts TTL and the next poll.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const oldThread = '019eb204-0000-7000-8000-000000000001';
+      const newThread = '019eb204-0000-7000-8000-000000000002';
+      const now = new Date();
+      const nowTs = Math.floor(now.getTime() / 1000);
+
+      const oldRollout = writeRollout(home, {
+        sessionId: oldThread,
+        cwd,
+        modifiedAt: new Date(now.getTime() - 30 * 1000),
+      });
+      writeStateDb(home, {
+        threads: [{ id: oldThread, rolloutPath: oldRollout }],
+      });
+      writeLogsDb(home, [
+        {
+          threadId: oldThread,
+          processUuid: 'pid:11111:proc',
+          ts: nowTs - 30,
+          body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+        },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, now);
+      const bound = finder.check();
+      assert.ok(bound, 'expected the old session to bind first');
+      assert.equal(bound.sessionId, oldThread);
+
+      // /new: the fresh thread is log-only and must not take over yet.
+      appendLogRow(home, {
+        threadId: newThread,
+        processUuid: 'pid:11111:proc',
+        ts: nowTs,
+        body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
+      }, 1);
+      const beforeRollout = finder.check(true);
+      assert.equal(
+        beforeRollout.sessionId,
+        oldThread,
+        'a /new session without a rollout file must not take over yet'
+      );
+
+      // First user message lands: rollout file appears, event fires.
+      const newRollout = writeRollout(home, {
+        sessionId: newThread,
+        cwd,
+        modifiedAt: now,
+      });
+      finder.noteRolloutAppeared(newRollout);
+
+      const resolved = finder.getCurrentSession();
+      assert.ok(resolved, 'expected the new session to resolve after its rollout appeared');
+      assert.equal(
+        resolved.sessionId,
+        newThread,
+        'noteRolloutAppeared should promote the /new session immediately'
+      );
+      assert.equal(
+        resolved.path,
+        fs.realpathSync(newRollout),
+        'the promoted binding should use the newly created rollout file'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
 } finally {
   if (originalCodexHome === undefined) {
     delete process.env.CODEX_HOME;

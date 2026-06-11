@@ -313,7 +313,10 @@ async function main(): Promise<void> {
     configNeedsRefresh = true;
   });
 
-  hudFileWatcher.onRolloutChange(async () => {
+  hudFileWatcher.onRolloutChange(async (rolloutPath) => {
+    // A new rollout file may establish a freshly created (/new) session;
+    // let the finder re-rank it immediately instead of waiting out the poll.
+    sessionFinder.noteRolloutAppeared(rolloutPath);
     const session = sessionFinder.check();
     if (session) {
       await parseRolloutSafely();
