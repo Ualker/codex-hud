@@ -6,8 +6,31 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
+import { createRequire } from 'module';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 import type { SessionInfo } from '../types.js';
+
+/**
+ * Built-in sqlite (Node >= 22.5). Preferred over spawning the sqlite3 CLI:
+ * the CLI is missing in minimal containers and process spawns can stall for
+ * seconds on loaded machines. Falls back to the CLI on older Node versions.
+ */
+const nodeSqlite: { DatabaseSync: new (path: string, options: { readOnly: boolean }) => {
+  prepare(sql: string): { all(): Record<string, unknown>[] };
+  close(): void;
+} } | null = (() => {
+  const originalEmitWarning = process.emitWarning;
+  // Importing node:sqlite raises an ExperimentalWarning on stderr, which
+  // would leak into the HUD pane.
+  process.emitWarning = (() => {}) as typeof process.emitWarning;
+  try {
+    return createRequire(import.meta.url)('node:sqlite');
+  } catch {
+    return null;
+  } finally {
+    process.emitWarning = originalEmitWarning;
+  }
+})();
 
 const DEFAULT_LOOKBACK_DAYS = 30;
 const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
@@ -581,13 +604,45 @@ function getLogDatabaseCandidates(): string[] {
     });
 }
 
-function querySqlite(dbPath: string, sql: string): string | null {
+/**
+ * Run read-only SQL statements and return rows in sqlite3-CLI text form:
+ * one row per line, columns joined with \x1f, NULL as empty string.
+ * Returns null when the query could not be executed (treated as transient).
+ */
+function querySqlite(dbPath: string, statements: string[]): string | null {
+  if (nodeSqlite) {
+    try {
+      const db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const lines: string[] = [];
+        for (const statement of statements) {
+          for (const row of db.prepare(statement).all()) {
+            lines.push(
+              Object.values(row)
+                .map((value) => (value === null || value === undefined ? '' : String(value)))
+                .join('\x1f')
+            );
+          }
+        }
+        return lines.join('\n');
+      } finally {
+        db.close();
+      }
+    } catch {
+      return null;
+    }
+  }
+
   try {
-    return execFileSync('sqlite3', ['-readonly', '-separator', '\x1f', dbPath, sql], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: PROBE_TIMEOUT_MS,
-    }).trimEnd();
+    return execFileSync(
+      'sqlite3',
+      ['-readonly', '-separator', '\x1f', dbPath, statements.join(';\n') + ';'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: PROBE_TIMEOUT_MS,
+      }
+    ).trimEnd();
   } catch {
     return null;
   }
@@ -700,19 +755,19 @@ function buildLogBackedSession(
   const escapedThreadId = escapeSqlString(threadId);
   const sql = `
 SELECT
-  COALESCE((SELECT min(ts) FROM logs WHERE thread_id = '${escapedThreadId}'), 0),
-  COALESCE((SELECT max(ts) FROM logs WHERE thread_id = '${escapedThreadId}'), 0),
+  COALESCE((SELECT min(ts) FROM logs WHERE thread_id = '${escapedThreadId}'), 0) AS first_ts,
+  COALESCE((SELECT max(ts) FROM logs WHERE thread_id = '${escapedThreadId}'), 0) AS last_ts,
   COALESCE((
     SELECT replace(replace(feedback_log_body, char(10), ' '), char(13), ' ')
     FROM logs
     WHERE thread_id = '${escapedThreadId}' AND feedback_log_body IS NOT NULL
     ORDER BY ts DESC, ts_nanos DESC, id DESC
     LIMIT 1
-  ), '');
+  ), '') AS body
 `.trim();
 
   for (const dbPath of getLogDatabaseCandidates()) {
-    const output = querySqlite(dbPath, sql);
+    const output = querySqlite(dbPath, [sql]);
     if (!output) {
       continue;
     }
@@ -776,7 +831,7 @@ function findThreadCandidatesForProcesses(
     .join(' OR ');
   const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
   const sql = `
-SELECT thread_id, max(ts)
+SELECT thread_id, max(ts) AS last_ts
 FROM logs
 WHERE ts >= ${sinceSeconds}
   AND (${processFilter})
@@ -784,12 +839,12 @@ WHERE ts >= ${sinceSeconds}
   AND thread_id != ''
 GROUP BY thread_id
 ORDER BY max(ts) DESC, max(ts_nanos) DESC
-LIMIT ${MAX_THREAD_CANDIDATES};
+LIMIT ${MAX_THREAD_CANDIDATES}
 `.trim();
 
   let sawSuccessfulQuery = false;
   for (const dbPath of getLogDatabaseCandidates()) {
-    const output = querySqlite(dbPath, sql);
+    const output = querySqlite(dbPath, [sql]);
     if (output === null) {
       continue;
     }
@@ -858,13 +913,14 @@ function queryThreadFactsFromState(threadIds: string[]): Map<string, ThreadFacts
   }
 
   const idList = threadIds.map((id) => `'${escapeSqlString(id)}'`).join(', ');
-  const sql = `
-SELECT 'thread', id, rollout_path, thread_source, archived FROM threads WHERE id IN (${idList});
-SELECT 'edge', child_thread_id, '', '', 0 FROM thread_spawn_edges WHERE child_thread_id IN (${idList});
-`.trim();
+  const statements = [
+    `SELECT 'thread' AS kind, id, rollout_path, thread_source, archived FROM threads WHERE id IN (${idList})`,
+    `SELECT 'edge' AS kind, child_thread_id AS id, '' AS rollout_path, '' AS thread_source, 0 AS archived
+     FROM thread_spawn_edges WHERE child_thread_id IN (${idList})`,
+  ];
 
   for (const dbPath of stateDbs) {
-    const output = querySqlite(dbPath, sql);
+    const output = querySqlite(dbPath, statements);
     if (output === null) {
       continue;
     }
