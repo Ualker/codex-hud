@@ -49,7 +49,7 @@ function renderContextBreakdown(context: ContextUsage): string {
 export function renderIdentityLine(
   data: HudData,
   layout: LayoutConfig,
-  options: { maxWidth?: number } = {}
+  options: { maxWidth?: number; showContext?: boolean } = {}
 ): string {
   const parts: string[] = [];
   
@@ -60,8 +60,10 @@ export function renderIdentityLine(
   const identityName = showReasoningEffort ? `${modelName} ${reasoningEffort}` : modelName;
   let contextDisplay = '';
 
-  // Context usage bar (if available)
-  if (data.contextUsage) {
+  // Expanded mode suppresses this because its token line already renders the
+  // same context information with a used/total breakdown. Compact mode keeps it.
+  const showContext = options.showContext !== false;
+  if (showContext && data.contextUsage) {
     const ctx = data.contextUsage;
     const bar = coloredBar(ctx.percent, layout.barWidth);
     const percentStr = coloredPercent(ctx.percent);
@@ -73,7 +75,7 @@ export function renderIdentityLine(
       contextDisplay += colors.dim(renderContextBreakdown(ctx));
     }
     
-  } else if (data.tokenUsage?.total_token_usage) {
+  } else if (showContext && data.tokenUsage?.total_token_usage) {
     // Fallback to old token usage format
     const usage = data.tokenUsage.total_token_usage;
     const total = usage.total_tokens ?? 0;
