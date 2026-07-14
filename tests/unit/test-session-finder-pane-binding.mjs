@@ -61,7 +61,13 @@ function writeRollout(home, { sessionId, cwd, fileOffsetMinutes = 0, modifiedAt,
   return filePath;
 }
 
-function writeSnapshot(home, threadId, paneId, nonce) {
+function writeSnapshot(
+  home,
+  threadId,
+  paneId,
+  nonce,
+  assignment = `export TMUX_PANE='${paneId}'`
+) {
   const dir = path.join(home, 'shell_snapshots');
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${threadId}.${nonce}.sh`);
@@ -69,7 +75,7 @@ function writeSnapshot(home, threadId, paneId, nonce) {
     filePath,
     [
       '# Snapshot file',
-      `export TMUX_PANE='${paneId}'`,
+      assignment,
       "export PATH='/usr/bin'",
       '',
     ].join('\n'),
@@ -528,6 +534,66 @@ try {
       resultTwo.path,
       fs.realpathSync(paneTwoRollout),
       'pane two should stay on its own thread'
+    );
+  }
+
+  // Exported TMUX_PANE syntax varies across shells. All supported forms must
+  // bind to the exact pane rollout without accepting non-exported/decoy names.
+  for (const assignment of [
+    'declare -x TMUX_PANE="%70"',
+    'declare -rx TMUX_PANE="%70"',
+    "declare -ax TMUX_PANE='%70'",
+    'typeset -x TMUX_PANE=%70',
+    'typeset -gx TMUX_PANE="%70"',
+    'TMUX_PANE=%70',
+  ]) {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const threadId = '019d7291-a135-7fe1-b46f-8f3eca4fa451';
+    const rolloutPath = writeRollout(home, {
+      sessionId: threadId,
+      cwd,
+      modifiedAt: new Date(),
+    });
+    writeSnapshot(home, threadId, '%70', 1775743876858615370n, assignment);
+
+    const resolved = new SessionFinder(cwd).check();
+    assert.ok(resolved, `expected snapshot form to resolve: ${assignment}`);
+    assert.equal(
+      resolved.path,
+      fs.realpathSync(rolloutPath),
+      `snapshot form should bind to its rollout: ${assignment}`
+    );
+  }
+
+  for (const assignment of [
+    "export OLD_TMUX_PANE='%70'",
+    'declare -r TMUX_PANE="%70"',
+  ]) {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const threadId = '019d7291-a135-7fe1-b46f-8f3eca4fa451';
+    const targetStartTime = new Date();
+    writeRollout(home, {
+      sessionId: threadId,
+      cwd,
+      fileOffsetMinutes: -120,
+      modifiedAt: new Date(),
+    });
+    writeSnapshot(home, threadId, '%70', snapshotNonce(targetStartTime), assignment);
+
+    assert.equal(
+      new SessionFinder(cwd, undefined, targetStartTime).check(),
+      null,
+      `non-exported or decoy snapshot must not bind: ${assignment}`
     );
   }
 

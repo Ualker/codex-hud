@@ -401,8 +401,11 @@ function parseSnapshotFilename(filename: string): { threadId: string; nonce: big
 function readSnapshotPane(filePath: string): string | null {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
+    // Shell snapshots export TMUX_PANE in several forms depending on the shell:
+    // bare/export assignments plus declare/typeset flag sets containing `x`.
+    // Non-exported locals and same-suffix decoys must not bind the HUD.
     const match = content.match(
-      /(?:^|\n)(?:export\s+)?TMUX_PANE=(?:'([^']*)'|"([^"]*)"|([^\n]+))/
+      /(?:^|\n)(?:(?:export|(?:declare|typeset)\s+-[a-zA-Z]*x[a-zA-Z]*)\s+)?TMUX_PANE=(?:'([^']*)'|"([^"]*)"|([^\n]+))/
     );
     const pane = match?.[1] ?? match?.[2] ?? match?.[3];
     return pane ? pane.trim() : null;
@@ -540,6 +543,29 @@ function buildSessionFile(filePath: string): SessionFile | null {
   }
 }
 
+/**
+ * Resolve an exact rollout by Codex thread id across active and archived
+ * sessions. This intentionally does not use the local sqlite/log fallback:
+ * subagent lifecycle tracking needs a concrete JSONL file to tail.
+ */
+export function findRolloutByThreadId(threadId: string): SessionFile | null {
+  const codexHome = getCodexHome();
+  const activePath = findRolloutPathBySessionIdInRoot(
+    path.join(codexHome, 'sessions'),
+    threadId
+  );
+  if (activePath) {
+    return buildSessionFile(activePath);
+  }
+
+  const archivedPath = findRolloutPathBySessionIdInRoot(
+    path.join(codexHome, ARCHIVED_SESSIONS_SUBDIR),
+    threadId
+  );
+
+  return archivedPath ? buildSessionFile(archivedPath) : null;
+}
+
 function findSessionByThreadId(
   sessionId: string,
   targetCwd: string | null,
@@ -552,14 +578,7 @@ function findSessionByThreadId(
     }
   }
 
-  const codexHome = getCodexHome();
-  const activePath = findRolloutPathBySessionIdInRoot(path.join(codexHome, 'sessions'), sessionId);
-  const archivedPath = findRolloutPathBySessionIdInRoot(
-    path.join(codexHome, ARCHIVED_SESSIONS_SUBDIR),
-    sessionId
-  );
-
-  const rolloutSession = buildSessionFile(activePath ?? archivedPath ?? '');
+  const rolloutSession = findRolloutByThreadId(sessionId);
   if (rolloutSession) {
     return rolloutSession;
   }

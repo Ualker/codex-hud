@@ -10,9 +10,17 @@
  * Row 5 (optional): ◐ Edit: file.ts | ✓ Read ×3
  */
 
-import type { HudData, RenderOptions, LayoutConfig } from '../types.js';
+import type { AgentActivity, HudData, RenderOptions, LayoutConfig } from '../types.js';
 import { DEFAULT_LAYOUT } from '../types.js';
-import { colors, theme, icons, coloredBar, coloredPercent, visualLength } from './colors.js';
+import {
+  colors,
+  theme,
+  icons,
+  coloredBar,
+  coloredPercent,
+  truncateAnsi,
+  visualLength,
+} from './colors.js';
 import {
   renderIdentityLine,
   renderProjectLine,
@@ -22,6 +30,19 @@ import {
   renderSessionDetailLine,
   collectActivityLines,
 } from './lines/index.js';
+
+export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
+  if (!agentActivity) {
+    return null;
+  }
+  if (agentActivity.rootTrackingError) {
+    return theme.error('Agents: tracking error');
+  }
+  if (agentActivity.visibleAgentCount > 0) {
+    return theme.agentType(`Agents: ${agentActivity.visibleAgentCount}`);
+  }
+  return null;
+}
 
 /**
  * Render the compact layout (single line)
@@ -35,6 +56,11 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
   
   // Project + git
   parts.push(renderProjectLine(data));
+
+  const agentSummary = renderCompactAgentSummary(data.agentActivity);
+  if (agentSummary) {
+    parts.push(agentSummary);
+  }
   
   // Quick stats (just MCP count)
   const mcpCount = data.project.mcpCount;
@@ -52,6 +78,60 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
   let row = parts.join(separator);
   if (visualLength(row) <= width) {
     return [row];
+  }
+
+  if (agentSummary) {
+    const identity = parts[0] ?? '';
+    const project = parts[1] ?? '';
+
+    const withoutMcp = [identity, project, agentSummary];
+    if (usageLine) {
+      withoutMcp.push(usageLine);
+    }
+    row = withoutMcp.join(separator);
+    if (visualLength(row) <= width) {
+      return [row];
+    }
+
+    const withoutDuration = [identity, project, agentSummary];
+    row = withoutDuration.join(separator);
+    if (visualLength(row) <= width) {
+      return [row];
+    }
+
+    const reservedWidth = visualLength(identity)
+      + visualLength(agentSummary)
+      + (2 * visualLength(separator));
+    const availableForProject = width - reservedWidth;
+    if (availableForProject > 0) {
+      const shortenedProject = renderProjectLine(data, {
+        includeFileStats: false,
+        maxWidth: availableForProject,
+      });
+      row = [identity, shortenedProject, agentSummary].join(separator);
+      if (visualLength(row) <= width) {
+        return [row];
+      }
+    }
+
+    row = [identity, agentSummary].join(separator);
+    if (visualLength(row) <= width) {
+      return [row];
+    }
+
+    const availableForIdentity = width - visualLength(agentSummary) - visualLength(separator);
+    if (availableForIdentity > 0) {
+      const shortenedIdentity = renderIdentityLine(data, layout, { maxWidth: availableForIdentity });
+      row = [shortenedIdentity, agentSummary].join(separator);
+      if (visualLength(row) <= width) {
+        return [row];
+      }
+    }
+
+    if (visualLength(agentSummary) <= width) {
+      return [agentSummary];
+    }
+    return [truncateAnsi(agentSummary, width)];
   }
 
   const trimmedParts = parts.slice(0, 2);
@@ -79,7 +159,7 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   
   // Row 1: Identity | Project | Duration
   const row1Parts: string[] = [];
-  const identityLine = renderIdentityLine(data, layout, { maxWidth: width });
+  const identityLine = renderIdentityLine(data, layout, { maxWidth: width, showContext: false });
   row1Parts.push(identityLine);
   row1Parts.push(renderProjectLine(data));
   
@@ -119,12 +199,15 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   }
   
   // Row 5+: Activity lines (tools, todos) - but exclude token and session lines since we rendered them above
-  const activityLines = collectActivityLines(data);
-  // Filter out token and session lines since we already rendered them
+  const activityLines = collectActivityLines(data, width);
+  // Filter out token/context and session lines since we already rendered them.
   const filteredActivityLines = activityLines.filter(line => {
-    // Skip if it starts with token/ctx indicators or Dir:/Session: 
-    // (we already rendered these explicitly above)
-    return !line.includes('Tokens:') && !line.includes('Dir: ') && !line.includes('Session: ');
+    return (
+      !line.includes('Tokens:') &&
+      !line.includes('Ctx:') &&
+      !line.includes('Dir: ') &&
+      !line.includes('Session: ')
+    );
   });
   lines.push(...filteredActivityLines);
   

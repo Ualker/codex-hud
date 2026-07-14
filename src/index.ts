@@ -8,11 +8,17 @@ import * as fs from 'fs';
 import { collectGitStatus } from './collectors/git.js';
 import { collectProjectInfo } from './collectors/project.js';
 import { SessionFinder, findActiveRollouts } from './collectors/session-finder.js';
+import {
+  AgentActivityCollector,
+  AGENT_INACTIVITY_TIMEOUT_ENV,
+  isSubagentSessionSource,
+  parseAgentInactivityTimeoutMs,
+} from './collectors/agent-activity.js';
 import { RolloutParser, parseRolloutFile } from './collectors/rollout.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { HudFileWatcher } from './collectors/file-watcher.js';
 import { renderToStdout, cleanupRenderer } from './render/index.js';
-import { BASELINE_TOKENS } from './types.js';
+import { calculateContextUsage } from './context-usage.js';
 import type {
   HudData,
   TokenUsage,
@@ -67,27 +73,6 @@ function getNonCachedInputTokens(usage: TokenUsage | undefined): number {
   return Math.max(0, input - cached);
 }
 
-function baselineAdjustedUsedTokens(tokensInContext: number, contextWindow: number): number {
-  if (contextWindow <= 0) {
-    return 0;
-  }
-
-  const baseline = Math.min(BASELINE_TOKENS, contextWindow);
-  const used = Math.max(0, tokensInContext) + baseline;
-  return Math.max(0, Math.min(contextWindow, used));
-}
-
-function percentOfContextWindowRemaining(tokensInContext: number, contextWindow: number): number {
-  if (contextWindow <= 0) {
-    return 0;
-  }
-
-  const used = baselineAdjustedUsedTokens(tokensInContext, contextWindow);
-  const remaining = Math.max(0, contextWindow - used);
-  const percent = (remaining / contextWindow) * 100;
-  return Math.round(Math.max(0, Math.min(100, percent)));
-}
-
 function buildContextUsage(
   tokenUsage: TokenUsageInfo | undefined,
   compactCount: number | undefined,
@@ -102,14 +87,12 @@ function buildContextUsage(
 
   if (contextWindow > 0 && lastUsage) {
     const tokensInContext = lastUsage.total_tokens ?? 0;
-    const usedWithBaseline = baselineAdjustedUsedTokens(tokensInContext, contextWindow);
-    const percentRemaining = percentOfContextWindowRemaining(tokensInContext, contextWindow);
-    const percentUsed = 100 - percentRemaining;
+    const { used, total, percent } = calculateContextUsage(tokensInContext, contextWindow);
 
     return {
-      used: usedWithBaseline,
-      total: contextWindow,
-      percent: percentUsed,
+      used,
+      total,
+      percent,
       inputTokens: getNonCachedInputTokens(lastUsage),
       outputTokens: lastUsage.output_tokens ?? 0,
       cachedTokens: lastUsage.cached_input_tokens ?? 0,
@@ -122,11 +105,15 @@ function buildContextUsage(
 }
 
 // Phase 2: Session and rollout tracking
+let agentActivityCollector: AgentActivityCollector;
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
+  const rolloutSession = session && fs.existsSync(session.path) ? session : null;
+  agentActivityCollector.setRootSession(rolloutSession);
+
   // When session changes, update rollout path
-  if (session && fs.existsSync(session.path)) {
-    rolloutParser.setRolloutPath(session.path);
-    hudFileWatcher.setRolloutPath(session.path);
+  if (rolloutSession) {
+    rolloutParser.setRolloutPath(rolloutSession.path);
+    hudFileWatcher.setRolloutPath(rolloutSession.path);
     return;
   }
 
@@ -165,6 +152,10 @@ async function collectOverviewData(): Promise<SessionOverview> {
 
   for (const sessionFile of activeSessions) {
     const { result } = await parseRolloutFile(sessionFile.path, 0, 3);
+
+    if (isSubagentSessionSource(result.session?.source)) {
+      continue;
+    }
 
     const hasRecentTool =
       result.lastToolActivityTime &&
@@ -222,6 +213,9 @@ async function collectData(): Promise<HudData> {
     rolloutData = await parseRolloutSafely();
     configNeedsRefresh = false;
   }
+  const agentActivity = hasRolloutFile
+    ? await agentActivityCollector.collect(Date.now())
+    : undefined;
 
   // Build context usage from token usage if available
   // Matches codex "context window left" calculation based on last_token_usage.
@@ -235,6 +229,7 @@ async function collectData(): Promise<HudData> {
     ...syncData,
     session: rolloutData?.session ?? session?.metadata ?? undefined,
     toolActivity: rolloutData?.toolActivity ?? undefined,
+    agentActivity,
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
     contextUsage,
@@ -298,6 +293,11 @@ function setupKeyListener(): void {
  * Main entry point
  */
 async function main(): Promise<void> {
+  const inactivityTimeoutMs = parseAgentInactivityTimeoutMs(
+    process.env[AGENT_INACTIVITY_TIMEOUT_ENV]
+  );
+  agentActivityCollector = new AgentActivityCollector({ inactivityTimeoutMs });
+
   // Set up signal handlers
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
