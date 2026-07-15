@@ -85,6 +85,110 @@ function extractToolTarget(toolName: string, argsStr?: string): string | undefin
 }
 
 /**
+ * Replace JavaScript strings and comments with spaces while preserving offsets.
+ * Custom tool inputs are executable source, so HUD must inspect them without evaluating them.
+ */
+function maskJavaScriptLiterals(source: string): string {
+  const masked = source.split('');
+  let quote: "'" | '"' | '`' | null = null;
+
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (quote) {
+      masked[index] = char === '\n' ? '\n' : ' ';
+      if (char === '\\') {
+        if (index + 1 < source.length) {
+          index++;
+          masked[index] = source[index] === '\n' ? '\n' : ' ';
+        }
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      masked[index] = ' ';
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      masked[index] = ' ';
+      masked[index + 1] = ' ';
+      index += 2;
+      while (index < source.length && source[index] !== '\n') {
+        masked[index] = ' ';
+        index++;
+      }
+      index--;
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      masked[index] = ' ';
+      masked[index + 1] = ' ';
+      index += 2;
+      while (index < source.length) {
+        if (source[index] === '*' && source[index + 1] === '/') {
+          masked[index] = ' ';
+          masked[index + 1] = ' ';
+          index++;
+          break;
+        }
+        masked[index] = source[index] === '\n' ? '\n' : ' ';
+        index++;
+      }
+    }
+  }
+
+  return masked.join('');
+}
+
+/**
+ * Codex custom tool calls currently wrap concrete tools in an `exec` source cell.
+ * Use a concrete name only when one unambiguous invocation is visible; otherwise
+ * keep the truthful top-level name instead of guessing or double-counting.
+ */
+export function normalizeCustomToolName(
+  toolName: string,
+  input?: string
+): string {
+  if (toolName.toLowerCase() !== 'exec' || !input) {
+    return toolName;
+  }
+
+  const source = maskJavaScriptLiterals(input);
+  const invocationPattern = /\btools\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
+  const matches = [...source.matchAll(invocationPattern)];
+  return matches.length === 1 ? matches[0][1] : toolName;
+}
+
+function isToolCallPayload(payload: ResponseItemPayload): boolean {
+  return payload.type === 'function_call' || payload.type === 'custom_tool_call';
+}
+
+function isToolCallOutputPayload(payload: ResponseItemPayload): boolean {
+  return payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output';
+}
+
+function didToolOutputFail(output: ResponseItemPayload['output']): boolean {
+  if (output && typeof output === 'object' && !Array.isArray(output)) {
+    return output.success === false;
+  }
+
+  const outputTexts = typeof output === 'string'
+    ? [output]
+    : Array.isArray(output)
+      ? output.flatMap((item) => typeof item.text === 'string' ? [item.text] : [])
+      : [];
+
+  return outputTexts.some((text) => /^Script (?:failed\b|error:)/i.test(text.trimStart()));
+}
+
+/**
  * Parse a single rollout file incrementally
  * Supports reading from a specific byte offset for incremental updates
  */
@@ -230,34 +334,39 @@ export async function parseRolloutFile(
         } else if (entry.type === 'response_item') {
           const payload = entry.payload as ResponseItemPayload;
 
-          if (payload.type === 'function_call' && payload.name) {
+          if (isToolCallPayload(payload) && payload.name) {
             // New tool call started
             lastToolActivityTime = timestamp;
+            const toolName = payload.type === 'custom_tool_call'
+              ? normalizeCustomToolName(payload.name, payload.input)
+              : payload.name;
+            const toolInput = payload.type === 'custom_tool_call'
+              ? payload.input
+              : payload.arguments;
             const toolCall: ToolCall = {
               id: payload.call_id ?? payload.id ?? `call_${Date.now()}`,
-              name: payload.name,
+              name: toolName,
               timestamp,
               status: 'running',
-              target: extractToolTarget(payload.name, payload.arguments),
+              target: extractToolTarget(toolName, toolInput),
             };
 
             runningCalls.set(toolCall.id, toolCall);
             toolActivity.totalCalls++;
-            toolActivity.callsByType[payload.name] =
-              (toolActivity.callsByType[payload.name] ?? 0) + 1;
+            toolActivity.callsByType[toolName] =
+              (toolActivity.callsByType[toolName] ?? 0) + 1;
 
             // Add to recent calls (will update status when completed)
             toolActivity.recentCalls.push(toolCall);
             if (toolActivity.recentCalls.length > maxRecentCalls) {
               toolActivity.recentCalls.shift();
             }
-          } else if (payload.type === 'function_call_output' && payload.call_id) {
+          } else if (isToolCallOutputPayload(payload) && payload.call_id) {
             // Tool call completed
             lastToolActivityTime = timestamp;
             const runningCall = runningCalls.get(payload.call_id);
             if (runningCall) {
-              runningCall.status =
-                payload.output?.success === false ? 'error' : 'completed';
+              runningCall.status = didToolOutputFail(payload.output) ? 'error' : 'completed';
               runningCall.duration = timestamp.getTime() - runningCall.timestamp.getTime();
               runningCalls.delete(payload.call_id);
 
