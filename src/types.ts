@@ -190,14 +190,21 @@ export interface SessionMetaPayload {
 }
 
 export interface ResponseItemPayload {
-  type: 'message' | 'function_call' | 'function_call_output';
+  type:
+    | 'message'
+    | 'function_call'
+    | 'function_call_output'
+    | 'custom_tool_call'
+    | 'custom_tool_call_output';
   role?: 'user' | 'assistant' | 'developer';
   content?: ContentBlock[];
   id?: string;
   call_id?: string;
   name?: string;
   arguments?: string;
-  output?: FunctionOutput;
+  input?: string;
+  status?: string;
+  output?: FunctionOutput | ContentBlock[] | string | null;
 }
 
 export interface ContentBlock {

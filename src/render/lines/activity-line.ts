@@ -132,8 +132,12 @@ function truncateTarget(target: string, maxLen: number = 20): string {
 function groupToolCalls(calls: ToolCall[]): Array<{ name: string; count: number; status: 'completed' | 'error' }> {
   const groups: Array<{ name: string; count: number; status: 'completed' | 'error' }> = [];
   
-  // Only look at completed/error calls for grouping
-  const finishedCalls = calls.filter(c => c.status === 'completed' || c.status === 'error');
+  // Completed wait calls are low-signal orchestration noise; running waits remain visible.
+  const finishedCalls = calls.filter(
+    c =>
+      (c.status === 'completed' || c.status === 'error') &&
+      !(c.status === 'completed' && c.name.toLowerCase() === 'wait')
+  );
   
   for (const call of finishedCalls) {
     const last = groups[groups.length - 1];
@@ -186,7 +190,7 @@ export function renderToolsLine(toolActivity: ToolActivity | undefined): string 
   }
   
   // Show total if more calls exist
-  if (toolActivity.totalCalls > toolActivity.recentCalls.length) {
+  if (parts.length > 0 && toolActivity.totalCalls > toolActivity.recentCalls.length) {
     parts.push(colors.dim(`(${toolActivity.totalCalls} total)`));
   }
   
