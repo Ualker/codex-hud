@@ -8,7 +8,7 @@ FAKE_BIN_DIR="$(mktemp -d)"
 TMUX_DIR="$(mktemp -d)"
 
 cleanup() {
-  TMUX_TMPDIR="$TMUX_DIR" tmux kill-server >/dev/null 2>&1 || true
+  env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux kill-server >/dev/null 2>&1 || true
   rm -rf "$FAKE_BIN_DIR" "$TMUX_DIR"
 }
 trap cleanup EXIT
@@ -48,11 +48,11 @@ FAKE
 
 chmod +x "$FAKE_BIN_DIR/codex" "$FAKE_BIN_DIR/node" "$FAKE_BIN_DIR/npm" "$FAKE_BIN_DIR/tput"
 
-TMUX_TMPDIR="$TMUX_DIR" tmux -f /dev/null new-session -d -s bootstrap "sleep 30"
-TMUX_TMPDIR="$TMUX_DIR" tmux -f /dev/null set-option -g base-index 1
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux -f /dev/null new-session -d -s bootstrap "sleep 30"
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux -f /dev/null set-option -g base-index 1
 
 set +e
-output=$(TMUX_TMPDIR="$TMUX_DIR" PATH="$FAKE_BIN_DIR:$PATH" CODEX_HUD_HEIGHT=5 CODEX_HUD_HEIGHT_AUTO=0 "$ROOT_DIR/bin/codex-hud" 2>&1)
+output=$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" PATH="$FAKE_BIN_DIR:$PATH" CODEX_HUD_HEIGHT=5 CODEX_HUD_HEIGHT_AUTO=0 "$ROOT_DIR/bin/codex-hud" 2>&1)
 status=$?
 set -e
 

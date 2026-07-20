@@ -47,11 +47,6 @@ echo "  Codex HUD End-to-End Test Suite"
 echo "========================================"
 echo ""
 
-# Clean up any existing sessions
-info "Cleaning up existing tmux sessions..."
-tmux kill-server 2>/dev/null || true
-sleep 0.5
-
 # Test 1: Wrapper script exists and is executable
 info "Test 1: Wrapper script"
 run_test "Wrapper exists" "[[ -f '$WRAPPER' ]]"

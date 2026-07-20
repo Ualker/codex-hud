@@ -25,6 +25,7 @@ HUD_HEIGHT="${CODEX_HUD_HEIGHT:-}"
 HUD_POSITION="${CODEX_HUD_POSITION:-bottom}"
 ALIAS_MARKER="# codex-hud alias"
 CODEX_CLI_PATH=""
+CMUX_TMUX_ENV_ARGS=()
 FORCE_ATTACH="0"
 FORCE_NEW_SESSION="0"
 
@@ -152,6 +153,12 @@ SESSION_PREFIX="codex-hud-${SESSION_HASH}"
 SESSION_NAME="${SESSION_PREFIX}-$(date +%Y%m%d%H%M%S)-$$"
 
 resolve_codex_cli() {
+    local cmux_shim="${CMUX_CODEX_WRAPPER_SHIM:-}"
+    if [[ -n "$cmux_shim" && -x "$cmux_shim" && "$cmux_shim" != "$SCRIPT_DIR/codex-hud" ]]; then
+        CODEX_CLI_PATH="$cmux_shim"
+        return 0
+    fi
+
     local path
     path=$(command -v codex 2>/dev/null || true)
     if [[ -z "$path" ]]; then
@@ -163,6 +170,39 @@ Install Codex CLI from: https://github.com/openai/codex"
         error "codex resolves to codex-hud wrapper. Fix your alias to point to the real codex CLI."
     fi
     CODEX_CLI_PATH="$path"
+}
+
+# Bind cmux's per-surface context to this tmux session. tmux servers otherwise
+# reuse their own (possibly stale) global environment for each new session.
+build_cmux_tmux_environment_args() {
+    local name
+    CMUX_TMUX_ENV_ARGS=()
+
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        case "$name" in
+            CMUX_CODEX_PID|CMUX_CODEX_HOOK_CMUX_BIN|CMUX_AGENT_LAUNCH_*)
+                continue
+                ;;
+        esac
+        CMUX_TMUX_ENV_ARGS+=("-e" "${name}=${!name}")
+    done < <(env | sed -n 's/^\(CMUX_[A-Za-z0-9_]*\)=.*/\1/p' | LC_ALL=C sort -u)
+}
+
+tmux_supports_new_session_environment() {
+    tmux list-commands 2>/dev/null | grep -Eq '^new-session .*\[-e environment\]'
+}
+
+apply_cmux_tmux_environment_to_session() {
+    local index
+    local entry
+    local name
+
+    for ((index = 1; index < ${#CMUX_TMUX_ENV_ARGS[@]}; index += 2)); do
+        entry="${CMUX_TMUX_ENV_ARGS[$index]}"
+        name="${entry%%=*}"
+        tmux set-environment -t "$SESSION_NAME" "$name" "${entry#*=}"
+    done
 }
 
 # Get zsh rc file location (respects ZDOTDIR when set)
@@ -540,8 +580,19 @@ create_session() {
         codex_cmd="$codex_cmd $(printf "%q" "$arg")"
     done
     
-    # Create new detached session
-    tmux new-session -d -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
+    # Create new detached session. tmux 3.2+ can seed the session environment
+    # atomically; older releases get the same scoped values before the shell is
+    # respawned and before Codex or the HUD starts.
+    build_cmux_tmux_environment_args
+    local cmux_env_needs_respawn="0"
+    if [[ "${#CMUX_TMUX_ENV_ARGS[@]}" -gt 0 ]] && tmux_supports_new_session_environment; then
+        tmux new-session -d "${CMUX_TMUX_ENV_ARGS[@]}" -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
+    else
+        tmux new-session -d -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
+        if [[ "${#CMUX_TMUX_ENV_ARGS[@]}" -gt 0 ]]; then
+            cmux_env_needs_respawn="1"
+        fi
+    fi
     SESSION_CREATED="true"
     # Keep wheel scrolling available in Codex pane by default.
     local mouse_setting
@@ -570,6 +621,10 @@ create_session() {
     main_pane_id=$(get_primary_pane_id)
     if [[ -z "$main_pane_id" ]]; then
         error "Failed to detect tmux pane for session: $SESSION_NAME"
+    fi
+    if [[ "$cmux_env_needs_respawn" == "1" ]]; then
+        apply_cmux_tmux_environment_to_session
+        tmux respawn-pane -k -t "$main_pane_id"
     fi
     
     # Codex probes the terminal during startup. Prefer starting it only after a

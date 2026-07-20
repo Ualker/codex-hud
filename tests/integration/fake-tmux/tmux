@@ -27,6 +27,13 @@ extract_target() {
 }
 
 case "$cmd" in
+  list-commands)
+    if [[ "${TMUX_SUPPORTS_NEW_SESSION_ENV:-1}" == "1" ]]; then
+      echo "new-session (new) [-AdDEPX] [-c start-directory] [-e environment] [-F format] [-f flags] [-n window-name] [-s session-name] [-t target-session] [-x width] [-y height] [shell-command]"
+    else
+      echo "new-session (new) [-AdDEPX] [-c start-directory] [-F format] [-n window-name] [-s session-name] [-t target-session] [-x width] [-y height] [shell-command]"
+    fi
+    ;;
   show-option)
     opt="${@: -1}"
     case "$opt" in
