@@ -8,6 +8,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { createRequire } from 'module';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
+import { extractCodexRuntimeHookState } from './runtime-hooks.js';
 import type { SessionInfo } from '../types.js';
 
 /**
@@ -709,9 +710,14 @@ function getPaneProcessId(mainPaneId: string): string | null {
   }
 }
 
-function getDescendantProcessIds(rootPid: string): string[] {
+interface ProcessTreeSnapshot {
+  processIds: string[];
+  commands: string[];
+}
+
+function getProcessTreeSnapshot(rootPid: string): ProcessTreeSnapshot | null {
   if (!/^\d+$/.test(rootPid)) {
-    return [];
+    return { processIds: [], commands: [] };
   }
 
   let output: string;
@@ -722,18 +728,20 @@ function getDescendantProcessIds(rootPid: string): string[] {
       timeout: PROBE_TIMEOUT_MS,
     });
   } catch {
-    return [rootPid];
+    return null;
   }
 
   const childrenByParent = new Map<string, string[]>();
+  const commandsByPid = new Map<string, string>();
   for (const line of output.split('\n')) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+/);
+    const match = line.match(/^\s*(\d+)\s+(\d+)(?:\s+(.*))?$/);
     if (!match) {
       continue;
     }
 
     const pid = match[1];
     const parentPid = match[2];
+    commandsByPid.set(pid, match[3] ?? '');
     const children = childrenByParent.get(parentPid) ?? [];
     children.push(pid);
     childrenByParent.set(parentPid, children);
@@ -754,7 +762,12 @@ function getDescendantProcessIds(rootPid: string): string[] {
     queue.push(...(childrenByParent.get(pid) ?? []));
   }
 
-  return result;
+  return {
+    processIds: result,
+    commands: result
+      .map((pid) => commandsByPid.get(pid))
+      .filter((command): command is string => Boolean(command)),
+  };
 }
 
 function extractLogField(body: string, field: string): string | undefined {
@@ -1004,6 +1017,8 @@ export class SessionFinder {
   private lastFullResolveAt = 0;
   private boundViaProcess = false;
   private cachedPanePid: string | null = null;
+  private runtimeHookOverrides: string[] = [];
+  private runtimeHooksEnabled: boolean | null = null;
   private threadFactsCache = new Map<string, ThreadFacts>();
 
   constructor(
@@ -1061,6 +1076,8 @@ export class SessionFinder {
     const mainPaneId = process.env.CODEX_HUD_MAIN_PANE;
     if (!mainPaneId) {
       this.currentThreadId = null;
+      this.runtimeHookOverrides = [];
+      this.runtimeHooksEnabled = null;
       return this.resolveNextSession(this.findFallbackSession(), currentExists);
     }
 
@@ -1128,6 +1145,18 @@ export class SessionFinder {
   }
 
   /**
+   * Runtime hook overrides observed in the current Codex pane process tree.
+   * Values are consumed only for in-memory counting and are never rendered.
+   */
+  getRuntimeHookOverrides(): string[] {
+    return [...this.runtimeHookOverrides];
+  }
+
+  getRuntimeHooksEnabled(): boolean | null {
+    return this.runtimeHooksEnabled;
+  }
+
+  /**
    * Bind to a thread chosen by the pane-process resolution.
    */
   private bindThread(threadId: string, currentExists: boolean): SessionFile | null {
@@ -1174,7 +1203,16 @@ export class SessionFinder {
   private resolvePaneThreadBinding(mainPaneId: string, now: number): PaneThreadBinding {
     const panePid = this.getPanePid(mainPaneId);
     if (!panePid) {
+      this.runtimeHookOverrides = [];
+      this.runtimeHooksEnabled = null;
       return { threadId: null, keepCurrent: this.boundViaProcess };
+    }
+
+    const processTree = getProcessTreeSnapshot(panePid);
+    if (processTree) {
+      const hookState = extractCodexRuntimeHookState(processTree.commands);
+      this.runtimeHookOverrides = hookState.overrides;
+      this.runtimeHooksEnabled = hookState.enabled;
     }
 
     if (getLogDatabaseCandidates().length === 0) {
@@ -1187,7 +1225,7 @@ export class SessionFinder {
       (this.targetStartTime?.getTime() ?? 0) - 60_000
     );
     const candidates = findThreadCandidatesForProcesses(
-      getDescendantProcessIds(panePid),
+      processTree?.processIds ?? [panePid],
       sinceMs
     );
 

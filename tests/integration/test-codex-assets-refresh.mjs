@@ -53,18 +53,29 @@ try {
   const disabled = collectCodexAssetCounts(cwd, env, undefined, refresh);
   assert.deepEqual(disabled, { skillsCount: 1, hooksCount: 1 });
 
+  const runtimeHookOverrides = [
+    'hooks.event=[{command="second-hook",enabled=true}]',
+    `hooks.Stop=[{hooks=[{type="command",command='''runtime-stop'''}]}]`,
+  ];
+  const runtimeAdded = collectCodexAssetCounts(cwd, env, undefined, {
+    runtimeHookOverrides,
+  });
+  assert.deepEqual(runtimeAdded, { skillsCount: 1, hooksCount: 2 });
+
   const previousCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHome;
   try {
-    const projectInfo = collectProjectInfo(cwd, {});
+    const projectInfo = collectProjectInfo(cwd, {}, { runtimeHookOverrides });
     assert.equal(projectInfo.skillsCount, 1);
-    assert.equal(projectInfo.hooksCount, 1);
+    assert.equal(projectInfo.hooksCount, 2);
   } finally {
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
   }
 
-  console.log('test-codex-assets-refresh: PASS (initial=1/1 added=2/2 disabled=1/1)');
+  console.log(
+    'test-codex-assets-refresh: PASS (initial=1/1 added=2/2 disabled=1/1 runtime=1/2)'
+  );
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
