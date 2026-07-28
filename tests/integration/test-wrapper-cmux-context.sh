@@ -83,7 +83,7 @@ export CMUX_AGENT_LAUNCH_KIND="stale-launch-kind"
 "$ROOT_DIR/bin/codex-hud" --new-session >"$TEST_TMP_DIR/wrapper.log" 2>&1
 
 new_session_line=$(grep '^new-session ' "$TMUX_LOG_FILE")
-send_keys_line=$(grep '^send-keys ' "$TMUX_LOG_FILE")
+launch_line=$(grep '^respawn-pane .*@codex_hud_client_attached' "$TMUX_LOG_FILE")
 
 for expected in \
   "CMUX_WORKSPACE_ID=workspace-current" \
@@ -106,13 +106,19 @@ for excluded in CMUX_CODEX_PID CMUX_CODEX_HOOK_CMUX_BIN CMUX_AGENT_LAUNCH_KIND; 
   fi
 done
 
-if [[ "$send_keys_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* ]]; then
+if grep -q '^send-keys .*@codex_hud_client_attached' "$TMUX_LOG_FILE"; then
+  echo "expected Codex launch not to be injected with send-keys" >&2
+  cat "$TMUX_LOG_FILE" >&2
+  exit 1
+fi
+
+if [[ "$launch_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* ]]; then
   echo "expected Codex launch to use CMUX_CODEX_WRAPPER_SHIM" >&2
   cat "$TMUX_LOG_FILE" >&2
   exit 1
 fi
 
-if [[ "$send_keys_line" == *"capability-current"* ]]; then
+if [[ "$launch_line" == *"capability-current"* ]]; then
   echo "expected socket capability to stay out of the pane command" >&2
   cat "$TMUX_LOG_FILE" >&2
   exit 1
@@ -125,7 +131,7 @@ export TMUX_SUPPORTS_NEW_SESSION_ENV="0"
 "$ROOT_DIR/bin/codex-hud" --new-session >"$TEST_TMP_DIR/wrapper-legacy-tmux.log" 2>&1
 
 new_session_line=$(grep '^new-session ' "$TMUX_LOG_FILE")
-send_keys_line=$(grep '^send-keys ' "$TMUX_LOG_FILE")
+launch_line=$(grep '^respawn-pane .*@codex_hud_client_attached' "$TMUX_LOG_FILE")
 
 if [[ "$new_session_line" == *"-e CMUX_"* ]]; then
   echo "expected legacy tmux fallback not to use new-session -e" >&2
@@ -157,15 +163,21 @@ done
 
 set_env_line_number=$(grep -n '^set-environment ' "$TMUX_LOG_FILE" | tail -n1 | cut -d: -f1)
 respawn_line_number=$(grep -n '^respawn-pane -k -t %1$' "$TMUX_LOG_FILE" | cut -d: -f1)
-send_keys_line_number=$(grep -n '^send-keys ' "$TMUX_LOG_FILE" | cut -d: -f1)
-if (( set_env_line_number >= respawn_line_number || respawn_line_number >= send_keys_line_number )); then
+launch_line_number=$(grep -n '^respawn-pane .*@codex_hud_client_attached' "$TMUX_LOG_FILE" | cut -d: -f1)
+if (( set_env_line_number >= respawn_line_number || respawn_line_number >= launch_line_number )); then
   echo "expected legacy tmux environment, respawn, and Codex launch in that order" >&2
   cat "$TMUX_LOG_FILE" >&2
   exit 1
 fi
 
-if [[ "$send_keys_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* || \
-      "$send_keys_line" == *"capability-current"* ]]; then
+if grep -q '^send-keys .*@codex_hud_client_attached' "$TMUX_LOG_FILE"; then
+  echo "expected legacy Codex launch not to be injected with send-keys" >&2
+  cat "$TMUX_LOG_FILE" >&2
+  exit 1
+fi
+
+if [[ "$launch_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* || \
+      "$launch_line" == *"capability-current"* ]]; then
   echo "expected legacy tmux launch to use the cmux shim without exposing capability" >&2
   cat "$TMUX_LOG_FILE" >&2
   exit 1
