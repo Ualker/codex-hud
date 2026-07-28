@@ -81,7 +81,7 @@ After the first install, these are available in your shell:
 3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
 Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
-◐ Edit: file.ts | ✓ Read ×3
+◐ exec_command: npm test @my-project 1.4s | ✗ exec_command: rg … 48ms exit 1
 ◐ codex_cli_explore 2m14s ↳2
 ```
 
@@ -91,7 +91,9 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | **Environment** | Config/MCP/skill/hook counts, instruction files, runtime approval/sandbox, Fast mode |
 | **Tokens** | Total tokens with input/cache/output breakdown, context fill, compact count |
 | **Session** | Working directory, session ID, CLI version |
-| **Activity** | Running tool calls, recent tool history, and active subagents |
+| **Activity** | Sanitized running-tool details, duration/exit or yielded-session results, recent tool history, and active subagents |
+
+Tool activity stays on one physical line by default. Commands and patch targets are sanitized and bounded before rendering; raw stdout/stderr and raw tool arguments are never retained or displayed.
 
 ### Subagent activity
 

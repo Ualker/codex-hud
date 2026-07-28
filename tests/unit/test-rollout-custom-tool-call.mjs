@@ -158,6 +158,19 @@ try {
     ]
   );
   assert.equal(mixed.runningCalls.size, 0);
+  assert.equal(
+    mixed.result.toolActivity.recentCalls.find((call) => call.id === 'call_wait')?.summary,
+    'cell fixture'
+  );
+  assert.equal(
+    mixed.result.toolActivity.recentCalls.find((call) => call.id === 'call_multi_exec')?.summary,
+    'exec_command + apply_patch',
+    'multi-tool orchestration should remain one exec call with a static tool summary'
+  );
+  assert.deepEqual(
+    mixed.result.toolActivity.recentCalls.find((call) => call.id === 'call_custom_exec')?.result,
+    { kind: 'completed', wallTimeMs: 100 }
+  );
 
   const scriptErrorPath = writeRolloutFile(root, {
     sessionId: '019a4666-d466-7dd6-8466-444444444466',

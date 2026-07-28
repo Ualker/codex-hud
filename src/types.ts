@@ -309,6 +309,15 @@ export interface RateLimitSnapshot {
 
 export type ToolStatus = 'running' | 'completed' | 'error';
 
+export type ToolResultKind = 'completed' | 'exited' | 'yielded' | 'unknown';
+
+export interface ToolResult {
+  kind: ToolResultKind;
+  exitCode?: number;
+  sessionId?: string;
+  wallTimeMs?: number;
+}
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -317,6 +326,13 @@ export interface ToolCall {
   status: ToolStatus;
   duration?: number;
   target?: string;
+  /**
+   * Sanitized, bounded display text derived from allow-listed arguments.
+   * Raw commands, tool arguments, and stdout are intentionally not retained.
+   */
+  summary?: string;
+  workdir?: string;
+  result?: ToolResult;
 }
 
 export interface ToolActivity {
