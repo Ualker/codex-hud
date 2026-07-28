@@ -106,31 +106,139 @@ export function renderAgentLines(
   return agentActivity.rows.map((row) => renderAgentActivityRow(row, width, nowMs));
 }
 
-/**
- * Truncate a target string for display
- */
-function truncateTarget(target: string, maxLen: number = 20): string {
-  if (target.length <= maxLen) {
-    return target;
+type ToolGroupStatus = 'completed' | 'error' | 'yielded';
+
+interface ToolCallGroup {
+  name: string;
+  count: number;
+  status: ToolGroupStatus;
+}
+
+function formatToolDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${Math.max(0, Math.round(durationMs))}ms`;
   }
-  // For file paths, show the end
-  if (target.includes('/')) {
-    const parts = target.split('/');
-    const filename = parts[parts.length - 1];
-    if (filename.length <= maxLen) {
-      return '…/' + filename;
+
+  const seconds = durationMs / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  }
+
+  const wholeSeconds = Math.floor(seconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const remainingSeconds = wholeSeconds % 60;
+  return `${minutes}m${remainingSeconds.toString().padStart(2, '0')}s`;
+}
+
+function formatToolWorkdir(workdir: string): string {
+  const normalized = workdir.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normalized) {
+    return '/';
+  }
+  return normalized.slice(normalized.lastIndexOf('/') + 1) || normalized;
+}
+
+function presentationStatus(call: ToolCall): ToolGroupStatus {
+  if (call.status === 'error') {
+    return 'error';
+  }
+  if (call.result?.kind === 'yielded') {
+    return 'yielded';
+  }
+  return 'completed';
+}
+
+function toolCallHasDetail(call: ToolCall): boolean {
+  return Boolean(
+    call.summary ??
+    call.target ??
+    call.workdir ??
+    call.result ??
+    call.duration
+  );
+}
+
+function renderToolCallDetail(
+  call: ToolCall,
+  maxWidth: number,
+  nowMs: number
+): string {
+  const status = call.status === 'running' ? 'running' : presentationStatus(call);
+  const icon = status === 'running'
+    ? getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length)
+    : status === 'error'
+      ? icons.cross
+      : status === 'yielded'
+        ? icons.refresh
+        : icons.check;
+  const colorFn = status === 'running' || status === 'yielded'
+    ? theme.toolRunning
+    : status === 'error'
+      ? theme.error
+      : theme.success;
+
+  const prefix = `${icon} ${call.name}`;
+  const detail = call.summary ?? call.target;
+  const workdir = call.workdir ? `@${formatToolWorkdir(call.workdir)}` : undefined;
+  const durationMs = call.status === 'running'
+    ? Math.max(0, nowMs - call.timestamp.getTime())
+    : call.result?.wallTimeMs ?? call.duration;
+  const duration =
+    durationMs !== undefined && Number.isFinite(durationMs)
+      ? formatToolDuration(durationMs)
+      : undefined;
+  const result = call.result?.kind === 'exited' && call.result.exitCode !== undefined
+    ? `exit ${call.result.exitCode}`
+    : call.result?.kind === 'yielded' && call.result.sessionId
+      ? `session ${call.result.sessionId}`
+      : undefined;
+
+  let suffixParts = [workdir, duration, result].filter(
+    (part): part is string => Boolean(part)
+  );
+  const buildPlain = (summary: string | undefined): string => {
+    const summaryPart = summary ? `: ${summary}` : '';
+    const suffix = suffixParts.length > 0 ? ` ${suffixParts.join(' ')}` : '';
+    return `${prefix}${summaryPart}${suffix}`;
+  };
+
+  if (!Number.isFinite(maxWidth)) {
+    return colorFn(buildPlain(detail));
+  }
+
+  let plain = buildPlain(detail);
+  if (visualLength(plain) <= maxWidth) {
+    return colorFn(plain);
+  }
+
+  // Working directory is useful context but lower priority than status,
+  // duration, and exit/session information.
+  if (workdir) {
+    suffixParts = suffixParts.filter((part) => part !== workdir);
+    plain = buildPlain(detail);
+    if (visualLength(plain) <= maxWidth) {
+      return colorFn(plain);
     }
-    return '…' + filename.slice(-(maxLen - 1));
   }
-  return target.slice(0, maxLen - 1) + '…';
+
+  if (detail) {
+    const fixedWidth = visualLength(buildPlain(undefined));
+    const availableForDetail = Math.max(0, maxWidth - fixedWidth - 2);
+    const shortened = availableForDetail >= 4
+      ? truncate(detail, availableForDetail)
+      : undefined;
+    plain = buildPlain(shortened);
+  }
+
+  return truncateAnsi(colorFn(plain), maxWidth);
 }
 
 /**
  * Group consecutive calls by tool name and count them
  * Returns array of { name, count, status }
  */
-function groupToolCalls(calls: ToolCall[]): Array<{ name: string; count: number; status: 'completed' | 'error' }> {
-  const groups: Array<{ name: string; count: number; status: 'completed' | 'error' }> = [];
+function groupToolCalls(calls: ToolCall[]): ToolCallGroup[] {
+  const groups: ToolCallGroup[] = [];
   
   // Completed wait calls are low-signal orchestration noise; running waits remain visible.
   const finishedCalls = calls.filter(
@@ -141,7 +249,7 @@ function groupToolCalls(calls: ToolCall[]): Array<{ name: string; count: number;
   
   for (const call of finishedCalls) {
     const last = groups[groups.length - 1];
-    const status = call.status === 'error' ? 'error' : 'completed';
+    const status = presentationStatus(call);
     
     if (last && last.name === call.name && last.status === status) {
       last.count++;
@@ -153,11 +261,77 @@ function groupToolCalls(calls: ToolCall[]): Array<{ name: string; count: number;
   return groups;
 }
 
+function renderToolGroup(group: ToolCallGroup): string {
+  const icon = group.status === 'error'
+    ? icons.cross
+    : group.status === 'yielded'
+      ? icons.refresh
+      : icons.check;
+  const colorFn = group.status === 'error'
+    ? theme.error
+    : group.status === 'yielded'
+      ? theme.toolRunning
+      : theme.success;
+  const count = group.count > 1 ? ` ${icons.multiply}${group.count}` : '';
+  return colorFn(`${icon} ${group.name}${count}`);
+}
+
+function joinToolParts(
+  parts: string[],
+  totalPart: string | null,
+  width: number
+): string | null {
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const separator = ` ${colors.dim(icons.pipe)} `;
+  if (!Number.isFinite(width)) {
+    return [...parts, ...(totalPart ? [totalPart] : [])].join(separator);
+  }
+
+  const selected: string[] = [];
+  const separatorWidth = visualLength(separator);
+  const totalWidth = totalPart ? visualLength(totalPart) : 0;
+  const reservedForTotal = totalPart ? separatorWidth + totalWidth : 0;
+  let usedWidth = 0;
+
+  for (const part of parts) {
+    const prefixWidth = selected.length > 0 ? separatorWidth : 0;
+    const available = width - usedWidth - prefixWidth - reservedForTotal;
+    if (available < 8) {
+      break;
+    }
+
+    const fitted = visualLength(part) <= available
+      ? part
+      : truncateAnsi(part, available);
+    selected.push(fitted);
+    usedWidth += prefixWidth + visualLength(fitted);
+    if (visualLength(part) > available) {
+      break;
+    }
+  }
+
+  if (selected.length === 0) {
+    const available = Math.max(1, width - reservedForTotal);
+    selected.push(truncateAnsi(parts[0], available));
+  }
+  if (totalPart) {
+    selected.push(totalPart);
+  }
+  return truncateAnsi(selected.join(separator), width);
+}
+
 /**
  * Render the tools activity line
- * Format: ◐ Edit: file.ts | ✓ Read ×3 | ✓ Bash ×2
+ * Format: ◐ exec_command: npm test @repo 1.4s | ✗ exec_command: rg … exit 1
  */
-export function renderToolsLine(toolActivity: ToolActivity | undefined): string | null {
+export function renderToolsLine(
+  toolActivity: ToolActivity | undefined,
+  width: number = Number.POSITIVE_INFINITY,
+  nowMs: number = Date.now()
+): string | null {
   if (!toolActivity || toolActivity.recentCalls.length === 0) {
     return null;
   }
@@ -166,39 +340,75 @@ export function renderToolsLine(toolActivity: ToolActivity | undefined): string 
   
   // Currently running tool (if any)
   const running = toolActivity.recentCalls.filter(c => c.status === 'running');
-  if (running.length > 0) {
-    const current = running[running.length - 1];
-    const spinner = getSpinnerFrame();
-    const targetStr = current.target ? `: ${truncateTarget(current.target)}` : '';
-    parts.push(theme.toolRunning(`${spinner} ${current.name}${targetStr}`));
+  const current = running.length > 0 ? running[running.length - 1] : undefined;
+  const finishedCalls = toolActivity.recentCalls.filter(
+    (call) =>
+      call.status !== 'running' &&
+      !(call.status === 'completed' && call.name.toLowerCase() === 'wait') &&
+      call.name.toLowerCase() !== 'update_plan'
+  );
+  const reversedFinished = [...finishedCalls].reverse();
+  const detailedFinished =
+    reversedFinished.find(
+      (call) => call.status === 'error' && toolCallHasDetail(call)
+    ) ??
+    reversedFinished.find((call) => toolCallHasDetail(call));
+  const showDetailedFinished = Boolean(
+    detailedFinished &&
+    (!current || !Number.isFinite(width) || width >= 100)
+  );
+  const totalPart =
+    toolActivity.totalCalls > toolActivity.recentCalls.length
+      ? colors.dim(`(${toolActivity.totalCalls} total)`)
+      : null;
+
+  if (current && showDetailedFinished && detailedFinished) {
+    const separatorWidth = 3;
+    const totalReserve = totalPart
+      ? visualLength(totalPart) + separatorWidth
+      : 0;
+    const detailArea = Number.isFinite(width)
+      ? Math.max(40, width - totalReserve - separatorWidth)
+      : Number.POSITIVE_INFINITY;
+    const currentWidth = Number.isFinite(detailArea)
+      ? Math.max(20, Math.floor(detailArea * 0.54))
+      : Number.POSITIVE_INFINITY;
+    const finishedWidth = Number.isFinite(detailArea)
+      ? Math.max(20, detailArea - currentWidth)
+      : Number.POSITIVE_INFINITY;
+    parts.push(renderToolCallDetail(current, currentWidth, nowMs));
+    parts.push(renderToolCallDetail(detailedFinished, finishedWidth, nowMs));
+  } else {
+    if (current) {
+      const totalReserve = totalPart ? visualLength(totalPart) + 3 : 0;
+      const detailWidth = Number.isFinite(width)
+        ? Math.max(20, Math.min(84, width - totalReserve))
+        : Number.POSITIVE_INFINITY;
+      parts.push(renderToolCallDetail(current, detailWidth, nowMs));
+    }
+    if (showDetailedFinished && detailedFinished) {
+      const totalReserve = totalPart ? visualLength(totalPart) + 3 : 0;
+      const detailWidth = Number.isFinite(width)
+        ? Math.max(20, Math.min(84, width - totalReserve))
+        : Number.POSITIVE_INFINITY;
+      parts.push(renderToolCallDetail(detailedFinished, detailWidth, nowMs));
+    }
   }
-  
-  // Group completed calls
-  const groups = groupToolCalls(toolActivity.recentCalls);
-  
+
+  // Group the remaining completed calls so a detailed result does not also
+  // appear in its aggregate count.
+  const remainingCalls = showDetailedFinished && detailedFinished
+    ? toolActivity.recentCalls.filter((call) => call.id !== detailedFinished.id)
+    : toolActivity.recentCalls;
+  const groups = groupToolCalls(remainingCalls);
+
   // Render grouped calls (limit to last 5 groups)
   const recentGroups = groups.slice(-5);
   for (const group of recentGroups) {
-    const icon = group.status === 'error' ? icons.cross : icons.check;
-    const colorFn = group.status === 'error' ? theme.error : theme.success;
-    
-    if (group.count > 1) {
-      parts.push(colorFn(`${icon} ${group.name} ${icons.multiply}${group.count}`));
-    } else {
-      parts.push(colorFn(`${icon} ${group.name}`));
-    }
+    parts.push(renderToolGroup(group));
   }
   
-  // Show total if more calls exist
-  if (parts.length > 0 && toolActivity.totalCalls > toolActivity.recentCalls.length) {
-    parts.push(colors.dim(`(${toolActivity.totalCalls} total)`));
-  }
-  
-  if (parts.length === 0) {
-    return null;
-  }
-  
-  return parts.join(` ${colors.dim(icons.pipe)} `);
+  return joinToolParts(parts, parts.length > 0 ? totalPart : null, width);
 }
 
 /**
@@ -408,7 +618,10 @@ export function collectActivityLines(data: HudData, width?: number): string[] {
   }
 
   // Tools line
-  const toolsLine = renderToolsLine(data.toolActivity);
+  const toolsLine = renderToolsLine(
+    data.toolActivity,
+    width ?? Number.POSITIVE_INFINITY
+  );
   if (toolsLine) {
     lines.push(toolsLine);
   }

@@ -85,7 +85,7 @@ codex
 3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
 Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
-◐ Edit: file.ts | ✓ Read ×3
+◐ exec_command: npm test @my-project 1.4s | ✗ exec_command: rg … 48ms exit 1
 ◐ codex_cli_explore 2m14s ↳2
 ```
 
@@ -95,7 +95,9 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | **환경** | 설정/MCP/skill/hook 수, 명령 파일, 런타임 승인/샌드박스, Fast 모드 |
 | **Tokens** | 총 token (입력/cache/출력 내역), context 채움률, compact 횟수 |
 | **Session** | 작업 디렉토리, Session ID, CLI 버전 |
-| **활동** | 실행 중인 도구 호출, 최근 도구 이력, 활성 subagent |
+| **활동** | 정제된 실행 중 도구 세부 정보, 소요 시간/종료 코드 또는 백그라운드 session 결과, 최근 도구 이력, 활성 subagent |
+
+도구 activity는 기본적으로 한 줄만 사용합니다. 명령과 patch 대상은 표시 전에 정제되고 길이가 제한되며, 원시 stdout/stderr와 원시 도구 인수는 저장하거나 표시하지 않습니다.
 
 ### Subagent activity
 

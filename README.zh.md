@@ -85,7 +85,7 @@ codex
 3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
 Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
-◐ Edit: file.ts | ✓ Read ×3
+◐ exec_command: npm test @my-project 1.4s | ✗ exec_command: rg … 48ms exit 1
 ◐ codex_cli_explore 2m14s ↳2
 ```
 
@@ -95,7 +95,9 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | **环境** | 配置/MCP/skill/hook 数量、指令文件、运行时审批/沙箱策略、Fast 模式 |
 | **Tokens** | 总 token（输入/cache/输出拆分）、context 填充率、compact 次数 |
 | **Session** | 工作目录、Session ID、CLI 版本 |
-| **活动** | 正在执行的工具调用、最近工具调用历史和活跃 subagent |
+| **活动** | 脱敏后的运行工具详情、耗时/退出码或后台 session 结果、最近工具调用历史和活跃 subagent |
+
+工具活动默认仍只占一行。命令和 patch 目标会先进行脱敏和限长；原始 stdout/stderr 与原始工具参数不会被保留或显示。
 
 ### Subagent 活动
 

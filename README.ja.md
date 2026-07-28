@@ -85,7 +85,7 @@ codex
 3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
 Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
-◐ Edit: file.ts | ✓ Read ×3
+◐ exec_command: npm test @my-project 1.4s | ✗ exec_command: rg … 48ms exit 1
 ◐ codex_cli_explore 2m14s ↳2
 ```
 
@@ -95,7 +95,9 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | **環境** | 設定/MCP/skill/hook 数、命令ファイル、実行時の承認/サンドボックス、Fast モード |
 | **Tokens** | 合計 token（入力/cache/出力の内訳）、context 充填率、compact 回数 |
 | **Session** | 作業ディレクトリ、Session ID、CLI バージョン |
-| **アクティビティ** | 実行中のツール呼び出し、最近のツール履歴、アクティブな subagent |
+| **アクティビティ** | サニタイズ済みの実行中ツール詳細、所要時間/終了コードまたはバックグラウンド session の結果、最近のツール履歴、アクティブな subagent |
+
+ツール activity はデフォルトで物理 1 行に収まります。コマンドと patch 対象は表示前にサニタイズおよび長さ制限され、raw stdout/stderr と raw ツール引数は保持も表示もしません。
 
 ### Subagent activity
 
