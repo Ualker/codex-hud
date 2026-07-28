@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as TOML from '@iarna/toml';
 import type { CodexConfig } from '../types.js';
 
 export interface CodexAssetCounts {
@@ -14,6 +15,8 @@ export interface CodexAssetCounts {
 
 export interface CodexAssetCollectionOptions {
   forceRefresh?: boolean;
+  runtimeHookOverrides?: readonly string[];
+  runtimeHooksEnabled?: boolean | null;
 }
 
 const ASSET_CACHE_TTL_MS = 5000;
@@ -207,7 +210,41 @@ function collectHookEntries(
   }
 }
 
-function collectHookCount(files: string[]): number {
+function addParsedHookEntries(
+  parsed: unknown,
+  seenEntries: Set<string>
+): number {
+  const entries: Array<{ eventName: string; entry: Record<string, unknown> }> = [];
+  collectHookEntries(parsed, '', entries);
+
+  let added = 0;
+  for (const { eventName, entry } of entries) {
+    if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') continue;
+    if (entry.enabled === false) continue;
+    const key = hookIdentity(eventName, entry);
+    if (seenEntries.has(key)) continue;
+    seenEntries.add(key);
+    added++;
+  }
+  return added;
+}
+
+function runtimeHookFallback(override: string): {
+  eventName: string;
+  entry: Record<string, unknown>;
+} | null {
+  const match = /^hooks\.([A-Za-z][A-Za-z0-9_-]*)\s*=/.exec(override);
+  if (!match) return null;
+  return {
+    eventName: match[1],
+    entry: { handler: `runtime-config:${override}` },
+  };
+}
+
+function collectHookCount(
+  files: string[],
+  runtimeHookOverrides: readonly string[] = []
+): number {
   const seenFiles = new Set<string>();
   const seenEntries = new Set<string>();
   let count = 0;
@@ -226,17 +263,26 @@ function collectHookCount(files: string[]): number {
       continue;
     }
 
-    const entries: Array<{ eventName: string; entry: Record<string, unknown> }> = [];
-    collectHookEntries(parsed, '', entries);
-    for (const { eventName, entry } of entries) {
-      if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') continue;
-      if (entry.enabled === false) continue;
-      const key = hookIdentity(eventName, entry);
-      if (seenEntries.has(key)) continue;
-      seenEntries.add(key);
-      count++;
+    count += addParsedHookEntries(parsed, seenEntries);
+  }
+
+  for (const override of new Set(runtimeHookOverrides)) {
+    try {
+      count += addParsedHookEntries(TOML.parse(override), seenEntries);
+    } catch {
+      // A platform-specific `ps` representation can make the TOML fragment
+      // incomplete. Keep the event visible without exposing or executing it.
+      const fallback = runtimeHookFallback(override);
+      if (fallback) {
+        const key = hookIdentity(fallback.eventName, fallback.entry);
+        if (!seenEntries.has(key)) {
+          seenEntries.add(key);
+          count++;
+        }
+      }
     }
   }
+
   return count;
 }
 
@@ -255,6 +301,9 @@ export function collectCodexAssetCounts(
   config?: CodexConfig,
   options: CodexAssetCollectionOptions = {}
 ): CodexAssetCounts {
+  const runtimeHookOverrides = [...new Set(options.runtimeHookOverrides ?? [])].sort();
+  const runtimeHooksEnabled = options.runtimeHooksEnabled ?? null;
+  const hooksEnabled = runtimeHooksEnabled ?? (config?.hooks !== false);
   const cacheKey = JSON.stringify({
     cwd: path.resolve(cwd),
     codexHome: env.CODEX_HOME || path.join(os.homedir(), '.codex'),
@@ -262,7 +311,9 @@ export function collectCodexAssetCounts(
     adminSkills: env.CODEX_ADMIN_SKILLS_DIR || null,
     systemHooks: env.CODEX_SYSTEM_HOOKS_FILE || null,
     adminHooks: env.CODEX_ADMIN_HOOKS_FILE || null,
-    hooksEnabled: config?.hooks !== false,
+    hooksEnabled,
+    runtimeHooksEnabled,
+    runtimeHookOverrides,
   });
   const now = Date.now();
   const cached = assetCache.get(cacheKey);
@@ -296,7 +347,10 @@ export function collectCodexAssetCounts(
 
   const counts = {
     skillsCount: collectSkillCount(skillsRoots),
-    hooksCount: config?.hooks === false ? 0 : collectHookCount(hooksFiles),
+    hooksCount: collectHookCount(
+      hooksEnabled ? hooksFiles : [],
+      hooksEnabled ? runtimeHookOverrides : []
+    ),
   };
   assetCache.set(cacheKey, { checkedAt: now, counts });
   return counts;

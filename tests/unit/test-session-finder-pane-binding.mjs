@@ -869,6 +869,45 @@ try {
   }
 
   {
+    const sessionStartHook =
+      `hooks.SessionStart=[{hooks=[{type="command",command='''/hooks/session-start'''}]}]`;
+    const stopHook =
+      `hooks.Stop=[{hooks=[{type="command",command='''/hooks/stop'''}]}]`;
+    const hookFlags = `--enable hooks -c ${sessionStartHook} -c ${stopHook}`;
+    const cleanupTmux = installFakeTmux(
+      { '%70': '11110' },
+      [
+        '11110 1 /bin/zsh',
+        `11111 11110 node /path/to/codex ${hookFlags}`,
+        `11112 11111 /path/to/codex ${hookFlags}`,
+      ].join('\n')
+    );
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+      const finder = new SessionFinder(cwd, undefined, new Date());
+      finder.check();
+      assert.deepEqual(
+        finder.getRuntimeHookOverrides(),
+        [sessionStartHook, stopHook].sort(),
+        'pane process discovery should expose one deduplicated runtime hook set'
+      );
+      assert.equal(
+        finder.getRuntimeHooksEnabled(),
+        true,
+        'pane process discovery should preserve the explicit runtime enable state'
+      );
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
     // Internal helper threads (memories/compaction: no rollout file, no state
     // row) must never steal the binding from an established session.
     const cleanupTmux = installFakeTmux({ '%70': '11111' });

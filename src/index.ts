@@ -132,14 +132,20 @@ const parseRolloutSafely = createParseQueue(() => rolloutParser.parse());
 /**
  * Collect all HUD data (synchronous parts)
  */
-function collectSyncData(): Omit<HudData, 'toolActivity' | 'planProgress' | 'tokenUsage' | 'session' | 'contextUsage'> {
+function collectSyncData(
+  runtimeHookOverrides: readonly string[] = [],
+  runtimeHooksEnabled: boolean | null = null
+): Omit<HudData, 'toolActivity' | 'planProgress' | 'tokenUsage' | 'session' | 'contextUsage'> {
   const cwd = HUD_CWD;
   const config = readCodexConfig();
 
   return {
     config,
     git: collectGitStatus(cwd),
-    project: collectProjectInfo(cwd, config),
+    project: collectProjectInfo(cwd, config, {
+      runtimeHookOverrides,
+      runtimeHooksEnabled,
+    }),
     sessionStart: SESSION_START,
   };
 }
@@ -190,7 +196,14 @@ async function collectOverviewData(): Promise<SessionOverview> {
  * Collect all HUD data including async rollout parsing
  */
 async function collectData(): Promise<HudData> {
-  const syncData = collectSyncData();
+  // Refresh the pane process snapshot before collecting environment counts so
+  // dynamically injected `-c hooks.<event>=...` entries appear in this render.
+  // Overview mode keeps its existing interval-driven session discovery.
+  const session = displayMode === 'overview' ? null : sessionFinder.check();
+  const syncData = collectSyncData(
+    sessionFinder.getRuntimeHookOverrides(),
+    sessionFinder.getRuntimeHooksEnabled()
+  );
 
   if (displayMode === 'overview') {
     const overview = await collectOverviewData();
@@ -202,9 +215,6 @@ async function collectData(): Promise<HudData> {
     cachedHudData = hudData;
     return hudData;
   }
-
-  // Check for active session
-  const session = sessionFinder.check();
 
   // If we have a session, parse the rollout
   const hasRolloutFile = session ? fs.existsSync(session.path) : false;

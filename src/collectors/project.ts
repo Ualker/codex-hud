@@ -9,6 +9,11 @@ import type { ProjectInfo, CodexConfig } from '../types.js';
 import { getMcpServerCount } from './codex-config.js';
 import { collectCodexAssetCounts } from './codex-assets.js';
 
+export interface ProjectCollectionOptions {
+  runtimeHookOverrides?: readonly string[];
+  runtimeHooksEnabled?: boolean | null;
+}
+
 const AGENTS_MD_FILENAMES = [
   'AGENTS.md',
   'agents.md',
@@ -171,7 +176,11 @@ export function detectWorkMode(): 'development' | 'production' | 'unknown' {
  * Collect all project information
  * Phase 3: Extended with additional file counts and Codex-specific module status
  */
-export function collectProjectInfo(cwd?: string, config?: CodexConfig): ProjectInfo {
+export function collectProjectInfo(
+  cwd?: string,
+  config?: CodexConfig,
+  options: ProjectCollectionOptions = {}
+): ProjectInfo {
   const workDir = cwd || process.cwd();
   
   // Count config files in .codex directory
@@ -182,7 +191,10 @@ export function collectProjectInfo(cwd?: string, config?: CodexConfig): ProjectI
   
   // Count extensions (MCP servers count as extensions)
   const mcpCount = config ? getMcpServerCount(config) : 0;
-  const assetCounts = collectCodexAssetCounts(workDir, process.env, config);
+  const assetCounts = collectCodexAssetCounts(workDir, process.env, config, {
+    runtimeHookOverrides: options.runtimeHookOverrides,
+    runtimeHooksEnabled: options.runtimeHooksEnabled,
+  });
   
   return {
     cwd: workDir,
