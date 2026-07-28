@@ -577,6 +577,16 @@ create_session() {
     for arg in "${codex_args[@]}"; do
         codex_cmd="$codex_cmd $(printf "%q" "$arg")"
     done
+
+    # respawn-pane starts Codex without typing its full launch command into the
+    # user's terminal. Resolve and quote the shell that should take over after
+    # Codex exits so the tmux session remains interactive and reconnectable.
+    local resume_shell="${SHELL:-/bin/sh}"
+    if [[ ! -f "$resume_shell" || ! -x "$resume_shell" ]]; then
+        resume_shell="/bin/sh"
+    fi
+    local resume_shell_escaped
+    resume_shell_escaped=$(printf "%q" "$resume_shell")
     
     # Create new detached session
     tmux new-session -d -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
@@ -622,9 +632,13 @@ create_session() {
         warn "Unable to install tmux client-attach gate; starting Codex without it."
     fi
 
-    # Leave the tmux session and shell alive when Codex exits. Do not append a
-    # kill-session command: detach/terminal-close sessions must remain reusable.
-    tmux send-keys -t "$SESSION_NAME" "${attach_gate_cmd}cd ${cwd_escaped} && $codex_cmd" C-m
+    # Start Codex as the pane process instead of injecting the launch command
+    # into an interactive shell with send-keys, which would echo it before the
+    # TUI appears. A non-zero Codex exit must still resume the user's shell; do
+    # not append kill-session because detach/terminal-close sessions are reusable.
+    local codex_launch_cmd
+    codex_launch_cmd="${attach_gate_cmd}cd ${cwd_escaped} && $codex_cmd || :; exec $resume_shell_escaped"
+    tmux respawn-pane -k -t "$main_pane_id" "$codex_launch_cmd"
     SESSION_CODEX_STARTED="true"
     
     # Wait a moment for the session to be ready
