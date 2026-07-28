@@ -68,6 +68,58 @@ assert.equal(
   'stateful parser should keep session reasoning effort'
 );
 
+fs.appendFileSync(rolloutPath, `${JSON.stringify({
+  timestamp: '2026-04-09T14:18:06.000Z',
+  type: 'event_msg',
+  payload: {
+    type: 'thread_settings_applied',
+    thread_settings: {
+      model: 'gpt-5.5',
+      reasoning_effort: 'medium',
+    },
+  },
+})}\n`, 'utf8');
+const updatedSettings = await parser.parse();
+
+assert.equal(
+  updatedSettings?.session?.model,
+  'gpt-5.5',
+  'thread_settings_applied should update the active model immediately'
+);
+assert.equal(
+  updatedSettings?.session?.reasoningEffort,
+  'medium',
+  'thread_settings_applied should update the active reasoning effort immediately'
+);
+
+fs.appendFileSync(rolloutPath, `${JSON.stringify({
+  timestamp: '2026-04-09T14:18:07.000Z',
+  type: 'event_msg',
+  payload: {
+    type: 'thread_settings_applied',
+    thread_settings: {
+      collaboration_mode: {
+        settings: {
+          model: 'gpt-5.6',
+          reasoning_effort: 'high',
+        },
+      },
+    },
+  },
+})}\n`, 'utf8');
+const updatedNestedSettings = await parser.parse();
+
+assert.equal(
+  updatedNestedSettings?.session?.model,
+  'gpt-5.6',
+  'nested thread settings should update the active model'
+);
+assert.equal(
+  updatedNestedSettings?.session?.reasoningEffort,
+  'high',
+  'nested thread settings should update the active reasoning effort'
+);
+
 const rolloutWithRunningCall = writeRollout([
   {
     timestamp: '2026-04-09T14:17:53.997Z',

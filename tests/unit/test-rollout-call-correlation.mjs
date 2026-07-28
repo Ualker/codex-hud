@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
-import { parseRolloutFile } from '../../dist/collectors/rollout.js';
+import { parseRolloutFile, RolloutParser } from '../../dist/collectors/rollout.js';
 import {
   canonicalSessionMeta,
   cleanupAgentTestRoot,
@@ -111,7 +112,159 @@ try {
     'completed'
   );
 
-  console.log('test-rollout-call-correlation: PASS (3/3 cases)');
+  const correlatedMcpPath = writeRolloutFile(root, {
+    sessionId: '019a4444-d444-7dd4-8444-444444444444',
+    timestampLabel: '2026-07-12T00-03-00',
+    records: [
+      canonicalSessionMeta({ id: '019a4444-d444-7dd4-8444-444444444444' }),
+      {
+        timestamp: '2026-07-12T00:03:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: 'call_correlated_mcp',
+          name: 'get_symbols_overview',
+          arguments: '{"relative_path":"src/index.ts"}',
+        },
+      },
+      {
+        timestamp: '2026-07-12T00:03:02.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'mcp_tool_call_end',
+          call_id: 'call_correlated_mcp',
+          invocation: {
+            server: 'serena',
+            tool: 'get_symbols_overview',
+            arguments: { relative_path: 'src/index.ts' },
+          },
+          duration: { secs: 0, nanos: 750000000 },
+          result: { Ok: {} },
+        },
+      },
+      {
+        timestamp: '2026-07-12T00:03:03.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: 'call_correlated_mcp',
+          output: { success: true },
+        },
+      },
+    ],
+  });
+
+  const correlatedMcp = await parseRolloutFile(correlatedMcpPath);
+  assert.equal(
+    correlatedMcp.result.toolActivity.totalCalls,
+    1,
+    'generic and MCP records for the same call_id should count once'
+  );
+  assert.deepEqual(
+    correlatedMcp.result.toolActivity.callsByType,
+    { 'serena/get_symbols_overview': 1 }
+  );
+  assert.deepEqual(
+    correlatedMcp.result.toolActivity.recentCalls.map(
+      ({ id, name, status, duration }) => ({ id, name, status, duration })
+    ),
+    [{
+      id: 'call_correlated_mcp',
+      name: 'serena/get_symbols_overview',
+      status: 'completed',
+      duration: 750,
+    }]
+  );
+  assert.equal(correlatedMcp.runningCalls.size, 0);
+
+  const incrementalMcpPath = writeRolloutFile(root, {
+    sessionId: '019a5555-e555-7ee5-8555-555555555555',
+    timestampLabel: '2026-07-12T00-04-00',
+    records: [
+      canonicalSessionMeta({ id: '019a5555-e555-7ee5-8555-555555555555' }),
+      {
+        timestamp: '2026-07-12T00:04:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: 'call_incremental_mcp',
+          name: 'get_current_config',
+          arguments: '{}',
+        },
+      },
+    ],
+  });
+
+  const incrementalMcpParser = new RolloutParser(1);
+  incrementalMcpParser.setRolloutPath(incrementalMcpPath);
+  const genericMcp = await incrementalMcpParser.parse();
+  assert.deepEqual(genericMcp?.toolActivity.callsByType, {
+    get_current_config: 1,
+  });
+
+  fs.appendFileSync(incrementalMcpPath, [
+    {
+      timestamp: '2026-07-12T00:04:02.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'mcp_tool_call_end',
+        call_id: 'call_incremental_mcp',
+        invocation: {
+          server: 'serena',
+          tool: 'get_current_config',
+          arguments: {},
+        },
+        duration: { secs: 1, nanos: 0 },
+        result: { Ok: {} },
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:04:03.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call_incremental_mcp',
+        output: { success: true },
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:04:04.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        call_id: 'call_after_mcp',
+        name: 'read',
+        arguments: '{"file_path":"README.md"}',
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:04:05.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call_after_mcp',
+        output: { success: true },
+      },
+    },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+
+  const incrementalMcp = await incrementalMcpParser.parse();
+  assert.equal(incrementalMcp?.toolActivity.totalCalls, 2);
+  assert.deepEqual(
+    incrementalMcp?.toolActivity.callsByType,
+    {
+      'serena/get_current_config': 1,
+      read: 1,
+    },
+    'incremental MCP enrichment should migrate cached counters after recentCalls trimming'
+  );
+  assert.equal(
+    incrementalMcp?.toolActivity.recentCalls[0].id,
+    'call_after_mcp',
+    'the counter migration must not depend on the MCP call remaining visible'
+  );
+
+  console.log('test-rollout-call-correlation: PASS (5/5 cases)');
 } finally {
   cleanupAgentTestRoot(root);
 }

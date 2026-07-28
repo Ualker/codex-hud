@@ -53,6 +53,8 @@ export function computeNextOffset(
 
 const MAX_TOOL_SUMMARY_LENGTH = 240;
 const MAX_WORKDIR_LENGTH = 512;
+const MAX_TOOL_NAME_COMPONENT_LENGTH = 80;
+const MAX_TOOL_CALL_ID_LENGTH = 512;
 const EXECUTION_TOOL_NAMES = new Set([
   'bash',
   'exec_command',
@@ -157,6 +159,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function getMcpToolName(payload: EventMsgPayload): string | undefined {
+  const rawServer = stringValue(payload.invocation?.server);
+  const rawTool = stringValue(payload.invocation?.tool);
+  if (!rawServer || !rawTool) {
+    return undefined;
+  }
+
+  const server = sanitizeDisplayText(rawServer, MAX_TOOL_NAME_COMPONENT_LENGTH);
+  const tool = sanitizeDisplayText(rawTool, MAX_TOOL_NAME_COMPONENT_LENGTH);
+  return server && tool ? `${server}/${tool}` : undefined;
+}
+
+function getMcpCallId(payload: EventMsgPayload): string | undefined {
+  const callId = stringValue(payload.call_id);
+  return callId && callId.length <= MAX_TOOL_CALL_ID_LENGTH
+    ? callId
+    : undefined;
+}
+
+function getMcpToolStatus(payload: EventMsgPayload): 'completed' | 'error' {
+  const result = payload.result;
+  if (!isRecord(result)) {
+    return 'completed';
+  }
+
+  return (
+    Object.hasOwn(result, 'Err') ||
+    Object.hasOwn(result, 'error') ||
+    result.isError === true
+  )
+    ? 'error'
+    : 'completed';
+}
+
+function getMcpDurationMs(payload: EventMsgPayload): number | undefined {
+  const seconds = payload.duration?.secs;
+  const nanos = payload.duration?.nanos;
+  if (seconds === undefined && nanos === undefined) {
+    return undefined;
+  }
+  if (
+    (seconds !== undefined &&
+      (!Number.isSafeInteger(seconds) || seconds < 0)) ||
+    (nanos !== undefined &&
+      (!Number.isInteger(nanos) || nanos < 0 || nanos >= 1_000_000_000))
+  ) {
+    return undefined;
+  }
+
+  const durationMs = (seconds ?? 0) * 1000 + (nanos ?? 0) / 1_000_000;
+  return Number.isFinite(durationMs) ? durationMs : undefined;
 }
 
 function summarizePatch(patch: string): string | undefined {
@@ -910,11 +965,117 @@ export async function parseRolloutFile(
               tokenUsage.model_context_window = payload.model_context_window;
             }
           } else if (payload.type === 'thread_settings_applied') {
-            const serviceTier = payload.thread_settings?.service_tier;
+            const threadSettings = payload.thread_settings;
+            const settingsModel =
+              stringValue(threadSettings?.model) ??
+              stringValue(threadSettings?.collaboration_mode?.settings?.model);
+            const settingsEffort =
+              stringValue(threadSettings?.reasoning_effort) ??
+              stringValue(
+                threadSettings?.collaboration_mode?.settings?.reasoning_effort
+              );
+
+            if (settingsModel) {
+              sessionModel = settingsModel;
+              if (session) {
+                session.model = settingsModel;
+              }
+            }
+
+            if (settingsEffort) {
+              sessionReasoningEffort = settingsEffort;
+              if (session) {
+                session.reasoningEffort = settingsEffort;
+              }
+            }
+
+            const serviceTier = threadSettings?.service_tier;
             if (serviceTier !== undefined) {
               sessionServiceTier = serviceTier;
               if (session) {
                 session.serviceTier = serviceTier;
+              }
+            }
+          } else if (
+            payload.type === 'mcp_tool_call_begin' ||
+            payload.type === 'mcp_tool_call_end'
+          ) {
+            const mcpName = getMcpToolName(payload);
+            const callId = getMcpCallId(payload);
+            if (mcpName && callId) {
+              lastToolActivityTime = timestamp;
+              const existingCall = runningCalls.get(callId);
+
+              if (payload.type === 'mcp_tool_call_begin') {
+                if (!existingCall) {
+                  const toolCall: ToolCall = {
+                    id: callId,
+                    name: mcpName,
+                    timestamp,
+                    status: 'running',
+                  };
+
+                  runningCalls.set(callId, toolCall);
+                  toolActivity.totalCalls++;
+                  toolActivity.callsByType[mcpName] =
+                    (toolActivity.callsByType[mcpName] ?? 0) + 1;
+                  toolActivity.recentCalls.push(toolCall);
+                  if (toolActivity.recentCalls.length > maxRecentCalls) {
+                    toolActivity.recentCalls.shift();
+                  }
+                }
+              } else {
+                const status = getMcpToolStatus(payload);
+                const duration = getMcpDurationMs(payload);
+
+                if (existingCall) {
+                  const previousName = existingCall.name;
+                  existingCall.name = mcpName;
+                  if (previousName !== mcpName) {
+                    const previousCount =
+                      toolActivity.callsByType[previousName] ?? 0;
+                    if (previousCount <= 1) {
+                      delete toolActivity.callsByType[previousName];
+                    } else {
+                      toolActivity.callsByType[previousName] =
+                        previousCount - 1;
+                    }
+                    toolActivity.callsByType[mcpName] =
+                      (toolActivity.callsByType[mcpName] ?? 0) + 1;
+                  }
+
+                  existingCall.status = status;
+                  existingCall.duration = duration;
+                  runningCalls.delete(callId);
+
+                  const idx = toolActivity.recentCalls.findIndex(
+                    (call) => call.id === callId
+                  );
+                  if (idx >= 0) {
+                    toolActivity.recentCalls[idx] = existingCall;
+                  } else {
+                    toolActivity.recentCalls.push(existingCall);
+                    if (toolActivity.recentCalls.length > maxRecentCalls) {
+                      toolActivity.recentCalls.shift();
+                    }
+                  }
+                } else {
+                  const toolCall: ToolCall = {
+                    id: callId,
+                    name: mcpName,
+                    timestamp,
+                    status,
+                    duration,
+                  };
+
+                  toolActivity.totalCalls++;
+                  toolActivity.callsByType[mcpName] =
+                    (toolActivity.callsByType[mcpName] ?? 0) + 1;
+                  toolActivity.recentCalls.push(toolCall);
+                  if (toolActivity.recentCalls.length > maxRecentCalls) {
+                    toolActivity.recentCalls.shift();
+                  }
+                }
               }
             }
           }
@@ -978,6 +1139,12 @@ export class RolloutParser {
       return null;
     }
 
+    const previousRunningCalls = new Map(
+      Array.from(this.runningCalls.entries()).map(([id, call]) => [
+        id,
+        { call, name: call.name },
+      ])
+    );
     const { result, newOffset, runningCalls, wasTruncated } = await parseRolloutFile(
       this.rolloutPath,
       this.lastOffset,
@@ -985,6 +1152,40 @@ export class RolloutParser {
       this.runningCalls,
       this.cachedResult?.session ?? null
     );
+
+    // Some rollouts first emit a generic function_call and later enrich that
+    // same call_id with mcp_tool_call_end. The running ToolCall object is
+    // renamed in place, so migrate the already-cached type counter as well.
+    // Keep the object reference here instead of relying on recentCalls: a long
+    // incremental chunk may have already trimmed the completed call from view.
+    if (this.cachedResult && !wasTruncated) {
+      for (const { call, name: previousName } of previousRunningCalls.values()) {
+        if (call.name === previousName) {
+          continue;
+        }
+
+        const previousCount =
+          this.cachedResult.toolActivity.callsByType[previousName] ?? 0;
+        if (previousCount <= 1) {
+          delete this.cachedResult.toolActivity.callsByType[previousName];
+        } else {
+          this.cachedResult.toolActivity.callsByType[previousName] =
+            previousCount - 1;
+        }
+        this.cachedResult.toolActivity.callsByType[call.name] =
+          (this.cachedResult.toolActivity.callsByType[call.name] ?? 0) + 1;
+
+        // The end event incremented the new name in this incremental result
+        // while renaming the cached call. Remove that local increment before
+        // merging the accumulated counters below.
+        const currentCount = result.toolActivity.callsByType[call.name] ?? 0;
+        if (currentCount <= 1) {
+          delete result.toolActivity.callsByType[call.name];
+        } else {
+          result.toolActivity.callsByType[call.name] = currentCount - 1;
+        }
+      }
+    }
 
     this.lastOffset = newOffset;
     this.runningCalls = runningCalls;
