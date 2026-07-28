@@ -71,15 +71,15 @@ After the first install, these are available in your shell:
 | Command | Description |
 |---------|-------------|
 | `codex-hud-sync` | Rebuild and refresh aliases for the current checkout |
-| `codex-hud-upgrade` | Pull latest changes, then rebuild |
+| `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
 | `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
 
 ## What's on the HUD?
 
 ```
 [gpt-5.4 xhigh] █████░░░░ 45% │ my-project git:(main ●) │ 12m
-mode: dev | 3 extensions | 2 AGENTS.md | Approval: on-req | Sandbox: ws-write
-Tokens: 50.2K (in: 35.0K, cache: 5.0K, out: 15.2K) | Ctx: ████░░░░ 45% (50.2K/128K) ↻2
+3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
+Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 ◐ Edit: file.ts | ✓ Read ×3
 ◐ codex_cli_explore 2m14s ↳2
@@ -88,7 +88,7 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | Line | Shows |
 |------|-------|
 | **Header** | Model + effort, context bar, project, git branch, session timer |
-| **Environment** | Config count, work mode, MCP servers, instruction files, approval/sandbox |
+| **Environment** | Config/MCP/skill/hook counts, instruction files, runtime approval/sandbox, Fast mode |
 | **Tokens** | Total tokens with input/cache/output breakdown, context fill, compact count |
 | **Session** | Working directory, session ID, CLI version |
 | **Activity** | Running tool calls, recent tool history, and active subagents |
@@ -107,6 +107,7 @@ Compact mode shows `Agents: N`, where `N` counts all visible tracked agent nodes
 codex                        # Launch with HUD
 codex --model gpt-5          # Pass any Codex CLI args
 codex "help me debug this"   # With prompt
+cx                           # Short alias for codex
 codex-resume                 # Resume last session
 ```
 
@@ -133,7 +134,7 @@ codex-hud --self-check       # Run diagnostics
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD pane position (`top` / `bottom`) |
-| `CODEX_HUD_HEIGHT` | 1/6 terminal | HUD height in lines |
+| `CODEX_HUD_HEIGHT` | `5` | HUD height in lines |
 | `CODEX_HUD_MOUSE` | `1` | Enable mouse/trackpad scrolling |
 
 <details>
@@ -146,6 +147,7 @@ codex-hud --self-check       # Run diagnostics
 | `CODEX_HUD_HEIGHT_MAX` | `12` | Max height in auto mode |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | Auto-attach even when Codex CLI args are provided |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | tmux alternate-screen for codex pane |
+| `CODEX_HUD_BIND_TOGGLE` | `0` | Install the server-wide `Prefix+H` HUD toggle |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | Running-agent presentation timeout; positive safe integer milliseconds only |
 | `CODEX_HUD_CWD` | (unset) | Override working directory |

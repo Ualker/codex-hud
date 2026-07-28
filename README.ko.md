@@ -75,15 +75,15 @@ codex
 | 명령어 | 설명 |
 |--------|------|
 | `codex-hud-sync` | 현재 체크아웃을 다시 빌드하고 별칭 갱신 |
-| `codex-hud-upgrade` | 최신 변경 사항을 풀한 후 다시 빌드 |
+| `codex-hud-upgrade` | 현재 추적 브랜치를 격리 빌드한 뒤 성공하면 fast-forward하고 별칭 갱신 |
 | `codex-hud-uninstall` | 별칭을 제거하고 HUD 세션 중지 |
 
 ## HUD에 무엇이 표시되나요?
 
 ```
 [gpt-5.4 xhigh] █████░░░░ 45% │ my-project git:(main ●) │ 12m
-mode: dev | 3 extensions | 2 AGENTS.md | Approval: on-req | Sandbox: ws-write
-Tokens: 50.2K (in: 35.0K, cache: 5.0K, out: 15.2K) | Ctx: ████░░░░ 45% (50.2K/128K) ↻2
+3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
+Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 ◐ Edit: file.ts | ✓ Read ×3
 ◐ codex_cli_explore 2m14s ↳2
@@ -92,7 +92,7 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | 행 | 내용 |
 |----|------|
 | **헤더** | 모델 + effort, context 바, 프로젝트명, git 브랜치, 세션 타이머 |
-| **환경** | 설정 수, 작업 모드, MCP 서버, 명령 파일, 승인/샌드박스 |
+| **환경** | 설정/MCP/skill/hook 수, 명령 파일, 런타임 승인/샌드박스, Fast 모드 |
 | **Tokens** | 총 token (입력/cache/출력 내역), context 채움률, compact 횟수 |
 | **Session** | 작업 디렉토리, Session ID, CLI 버전 |
 | **활동** | 실행 중인 도구 호출, 최근 도구 이력, 활성 subagent |
@@ -111,6 +111,7 @@ compact 모드는 `Agents: N`을 표시합니다. `N`은 확장 모드의 직접
 codex                        # HUD와 함께 실행
 codex --model gpt-5          # Codex CLI 인수 전달
 codex "help me debug this"   # 프롬프트 포함
+cx                           # codex의 짧은 별칭
 codex-resume                 # 이전 세션 재개
 ```
 
@@ -134,7 +135,7 @@ codex-hud --self-check       # 환경 진단 실행
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD 패인 위치 (`top` / `bottom`) |
-| `CODEX_HUD_HEIGHT` | 터미널의 1/6 | HUD 높이 (행 수) |
+| `CODEX_HUD_HEIGHT` | `5` | HUD 높이 (행 수) |
 | `CODEX_HUD_MOUSE` | `1` | 마우스/트랙패드 스크롤 활성화 |
 
 <details>
@@ -147,6 +148,7 @@ codex-hud --self-check       # 환경 진단 실행
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 자동 모드 최대 높이 |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | 같은 디렉토리의 최신 세션에 자동 연결 |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex 패인의 tmux alternate-screen |
+| `CODEX_HUD_BIND_TOGGLE` | `0` | tmux server 전체에 `Prefix+H` HUD 전환 키 설치 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 첫 렌더링 시 스크롤백 초기화 |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | running agent 표시 timeout; 양의 safe integer 밀리초 값만 허용 |
 | `CODEX_HUD_CWD` | (미설정) | 작업 디렉토리 재정의 |

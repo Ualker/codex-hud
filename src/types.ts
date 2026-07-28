@@ -21,9 +21,20 @@ export interface CodexConfig {
   model?: string;
   model_reasoning_effort?: string;
   model_provider?: string;
+  service_tier?: string;
+  hooks?: boolean;
   approval_policy?: string;
   sandbox_mode?: string;
   mcp_servers?: Record<string, McpServerConfig>;
+}
+
+export interface PermissionState {
+  approvalPolicy?: string;
+  sandboxMode?: string;
+}
+
+export interface FastModeState {
+  serviceTier?: string | null;
 }
 
 export interface McpServerConfig {
@@ -66,6 +77,8 @@ export interface ProjectInfo {
   // Codex-specific module status
   configsCount: number;         // Active configuration files
   extensionsCount: number;      // Loaded extensions/plugins
+  skillsCount: number;          // Effective enabled skills
+  hooksCount: number;           // Effective enabled hooks
   workMode: 'development' | 'production' | 'unknown';  // Current work mode
 }
 
@@ -219,7 +232,14 @@ export interface FunctionOutput {
 }
 
 export interface EventMsgPayload {
-  type: 'plan_update' | 'token_count' | 'rate_limit' | 'context_compacted' | 'turn_started' | 'other';
+  type:
+    | 'plan_update'
+    | 'token_count'
+    | 'rate_limit'
+    | 'context_compacted'
+    | 'turn_started'
+    | 'thread_settings_applied'
+    | 'other';
   explanation?: string;
   plan?: PlanStep[];
   info?: TokenUsageInfo;
@@ -229,9 +249,17 @@ export interface EventMsgPayload {
   summary?: string;
   // For turn_started events
   model_context_window?: number;
+  // For thread_settings_applied events
+  thread_settings?: {
+    service_tier?: string | null;
+  };
 }
 
 export interface TurnContextPayload {
+  approval_policy?: string;
+  sandbox_policy?: {
+    type?: string;
+  };
   model?: string;
   reasoning_effort?: string;
   collaboration_mode?: {
@@ -356,6 +384,9 @@ export interface SessionInfo {
   cliVersion: string;
   model?: string;
   reasoningEffort?: string;
+  approvalPolicy?: string;
+  sandboxMode?: string;
+  serviceTier?: string | null;
   modelProvider?: string;
   source?: SessionSource;
   forkedFromId?: string;

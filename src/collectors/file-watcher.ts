@@ -7,7 +7,15 @@ import { watch, type FSWatcher } from 'chokidar';
 import * as path from 'path';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 
-export type FileChangeCallback = (path: string, event: 'add' | 'change' | 'unlink') => void;
+function reportWatcherError(scope: string, error: unknown): void {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(`[codex-hud] ${scope}: ${message}`);
+}
+
+export type FileChangeCallback = (
+  path: string,
+  event: 'add' | 'change' | 'unlink'
+) => void | Promise<void>;
 
 /**
  * File watcher with cleanup support
@@ -37,6 +45,9 @@ export class FileWatcher {
       },
     });
 
+    this.watcher.on('error', (error) => {
+      reportWatcherError('File watcher error', error);
+    });
     this.watcher.on('add', (filePath) => this.notifyCallbacks(filePath, 'add'));
     this.watcher.on('change', (filePath) => this.notifyCallbacks(filePath, 'change'));
     this.watcher.on('unlink', (filePath) => this.notifyCallbacks(filePath, 'unlink'));
@@ -80,9 +91,11 @@ export class FileWatcher {
   private notifyCallbacks(filePath: string, event: 'add' | 'change' | 'unlink'): void {
     for (const callback of this.callbacks) {
       try {
-        callback(filePath, event);
-      } catch {
-        // Ignore callback errors
+        void Promise.resolve(callback(filePath, event)).catch((error) => {
+          reportWatcherError('File watcher callback failed', error);
+        });
+      } catch (error) {
+        reportWatcherError('File watcher callback failed', error);
       }
     }
   }
@@ -129,8 +142,8 @@ export class HudFileWatcher {
   private rolloutWatcher: FileWatcher | null = null;
   private currentRolloutPath: string | null = null;
 
-  private onConfigChangeCallbacks: (() => void)[] = [];
-  private onRolloutChangeCallbacks: ((path: string) => void)[] = [];
+  private onConfigChangeCallbacks: (() => void | Promise<void>)[] = [];
+  private onRolloutChangeCallbacks: ((path: string) => void | Promise<void>)[] = [];
 
   constructor() {
     this.configWatcher = createConfigWatcher();
@@ -167,7 +180,9 @@ export class HudFileWatcher {
 
     // Stop existing rollout watcher
     if (this.rolloutWatcher) {
-      this.rolloutWatcher.stop();
+      void this.rolloutWatcher.stop().catch((error) => {
+        reportWatcherError('HUD rollout watcher stop failed', error);
+      });
       this.rolloutWatcher = null;
     }
 
@@ -188,14 +203,14 @@ export class HudFileWatcher {
   /**
    * Register callback for config changes
    */
-  onConfigChange(callback: () => void): void {
+  onConfigChange(callback: () => void | Promise<void>): void {
     this.onConfigChangeCallbacks.push(callback);
   }
 
   /**
    * Register callback for rollout file changes
    */
-  onRolloutChange(callback: (path: string) => void): void {
+  onRolloutChange(callback: (path: string) => void | Promise<void>): void {
     this.onRolloutChangeCallbacks.push(callback);
   }
 
@@ -220,9 +235,11 @@ export class HudFileWatcher {
   private notifyConfigChange(): void {
     for (const callback of this.onConfigChangeCallbacks) {
       try {
-        callback();
-      } catch {
-        // Ignore callback errors
+        void Promise.resolve(callback()).catch((error) => {
+          reportWatcherError('HUD config watcher callback failed', error);
+        });
+      } catch (error) {
+        reportWatcherError('HUD config watcher callback failed', error);
       }
     }
   }
@@ -230,9 +247,11 @@ export class HudFileWatcher {
   private notifyRolloutChange(path: string): void {
     for (const callback of this.onRolloutChangeCallbacks) {
       try {
-        callback(path);
-      } catch {
-        // Ignore callback errors
+        void Promise.resolve(callback(path)).catch((error) => {
+          reportWatcherError('HUD rollout watcher callback failed', error);
+        });
+      } catch (error) {
+        reportWatcherError('HUD rollout watcher callback failed', error);
       }
     }
   }

@@ -196,7 +196,8 @@ export async function parseRolloutFile(
   rolloutPath: string,
   fromOffset: number = 0,
   maxRecentCalls: number = 10,
-  runningCalls: Map<string, ToolCall> = new Map()
+  runningCalls: Map<string, ToolCall> = new Map(),
+  existingSession: SessionInfo | null = null
 ): Promise<RolloutParseOutput> {
   const toolActivity: ToolActivity = {
     recentCalls: [],
@@ -205,9 +206,12 @@ export async function parseRolloutFile(
     lastUpdateTime: new Date(),
   };
 
-  let session: SessionInfo | null = null;
-  let sessionModel: string | undefined;
-  let sessionReasoningEffort: string | undefined;
+  let session: SessionInfo | null = existingSession ? { ...existingSession } : null;
+  let sessionModel: string | undefined = existingSession?.model;
+  let sessionReasoningEffort: string | undefined = existingSession?.reasoningEffort;
+  let sessionApprovalPolicy: string | undefined = existingSession?.approvalPolicy;
+  let sessionSandboxMode: string | undefined = existingSession?.sandboxMode;
+  let sessionServiceTier: string | null | undefined = existingSession?.serviceTier;
   let planProgress: PlanProgress | null = null;
   let tokenUsage: TokenUsageInfo | null = null;
   let compactCount = 0;
@@ -244,6 +248,12 @@ export async function parseRolloutFile(
   const startOffset = wasTruncated ? 0 : fromOffset;
   if (wasTruncated) {
     runningCalls.clear();
+    session = null;
+    sessionModel = undefined;
+    sessionReasoningEffort = undefined;
+    sessionApprovalPolicy = undefined;
+    sessionSandboxMode = undefined;
+    sessionServiceTier = undefined;
   }
 
   return new Promise((resolve) => {
@@ -300,6 +310,9 @@ export async function parseRolloutFile(
             cliVersion: meta.cli_version,
             model: sessionModel,
             reasoningEffort: sessionReasoningEffort,
+            approvalPolicy: sessionApprovalPolicy,
+            sandboxMode: sessionSandboxMode,
+            serviceTier: sessionServiceTier,
             modelProvider: meta.model_provider,
             source: meta.source,
             forkedFromId: meta.forked_from_id,
@@ -317,6 +330,21 @@ export async function parseRolloutFile(
           const contextModel = payload.model ?? payload.collaboration_mode?.settings?.model;
           const reasoningEffort =
             payload.reasoning_effort ?? payload.collaboration_mode?.settings?.reasoning_effort;
+
+          if (payload.approval_policy !== undefined) {
+            sessionApprovalPolicy = payload.approval_policy;
+            if (session) {
+              session.approvalPolicy = payload.approval_policy;
+            }
+          }
+
+          const sandboxMode = payload.sandbox_policy?.type;
+          if (sandboxMode !== undefined) {
+            sessionSandboxMode = sandboxMode;
+            if (session) {
+              session.sandboxMode = sandboxMode;
+            }
+          }
 
           if (contextModel) {
             sessionModel = contextModel;
@@ -413,6 +441,14 @@ export async function parseRolloutFile(
             } else {
               tokenUsage.model_context_window = payload.model_context_window;
             }
+          } else if (payload.type === 'thread_settings_applied') {
+            const serviceTier = payload.thread_settings?.service_tier;
+            if (serviceTier !== undefined) {
+              sessionServiceTier = serviceTier;
+              if (session) {
+                session.serviceTier = serviceTier;
+              }
+            }
           }
         }
 
@@ -478,7 +514,8 @@ export class RolloutParser {
       this.rolloutPath,
       this.lastOffset,
       this.maxRecentCalls,
-      this.runningCalls
+      this.runningCalls,
+      this.cachedResult?.session ?? null
     );
 
     this.lastOffset = newOffset;
@@ -490,8 +527,13 @@ export class RolloutParser {
 
     // Merge with cached result for session info and accumulated stats
     if (this.cachedResult) {
-      // Keep session from first parse
-      result.session = this.cachedResult.session ?? result.session;
+      // Keep the stable session identity while retaining fields updated by
+      // incremental turn_context and thread_settings_applied records.
+      if (this.cachedResult.session && result.session) {
+        result.session = { ...this.cachedResult.session, ...result.session };
+      } else {
+        result.session = this.cachedResult.session ?? result.session;
+      }
 
       // Merge tool activity
       result.toolActivity.totalCalls += this.cachedResult.toolActivity.totalCalls;

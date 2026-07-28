@@ -5,7 +5,7 @@
 #
 # Environment variables:
 #   CODEX_HUD_POSITION - HUD pane position: bottom (default), top
-#   CODEX_HUD_HEIGHT   - HUD pane height in lines (default: 1/6 of terminal height, min 5)
+#   CODEX_HUD_HEIGHT   - HUD pane height in lines (default: 5)
 #   CODEX_HUD_HEIGHT_AUTO - Auto-adjust HUD height based on pane width (default: 0)
 #   CODEX_HUD_HEIGHT_MIN - Minimum HUD height when auto-adjusting (default: CODEX_HUD_HEIGHT)
 #   CODEX_HUD_HEIGHT_MAX - Maximum HUD height when auto-adjusting (default: 12)
@@ -13,6 +13,7 @@
 #   CODEX_HUD_NO_ATTACH - Deprecated: if set to true, do not attach to existing session
 #   CODEX_HUD_ALTERNATE_SCREEN - Use alternate screen in codex pane (default: 0)
 #   CODEX_HUD_MOUSE - Enable tmux mouse mode for this session (default: 1)
+#   CODEX_HUD_BIND_TOGGLE - Install the server-wide Prefix+H toggle (default: 0)
 #   CODEX_HUD_CLEAR_SCROLLBACK - If set to 1, clears tmux scrollback on first render
 #
 
@@ -146,9 +147,29 @@ hash_cwd() {
     fi
 }
 
-# Generate session name based on PWD hash (unique per invocation)
+# Generate a shell-safe project component for readable session names.
+session_project_slug() {
+    local project_name
+    project_name=$(basename "$1")
+    if [[ "$project_name" == "/" || -z "$project_name" ]]; then
+        project_name="root"
+    fi
+
+    project_name=$(printf "%s" "$project_name" \
+        | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//')
+    if [[ -z "$project_name" ]]; then
+        project_name="project"
+    fi
+    printf "%.32s" "$project_name"
+}
+
+# Keep the legacy hash-only prefix discoverable so sessions created before this
+# update remain attachable and killable.
+PROJECT_SLUG="$(session_project_slug "$PWD")"
 SESSION_HASH="$(hash_cwd "$PWD")"
-SESSION_PREFIX="codex-hud-${SESSION_HASH}"
+LEGACY_SESSION_PREFIX="codex-hud-${SESSION_HASH}"
+SESSION_PREFIX="codex-hud-${PROJECT_SLUG}-${SESSION_HASH}"
 SESSION_NAME="${SESSION_PREFIX}-$(date +%Y%m%d%H%M%S)-$$"
 
 resolve_codex_cli() {
@@ -377,7 +398,21 @@ get_main_pane_id_for_session() {
 
 # Find the most recent existing session for this directory
 find_existing_session() {
-    tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^${SESSION_PREFIX}-" | sort | tail -n1
+    local sessions
+    local current
+    local legacy
+
+    sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null || true)
+    current=$(printf "%s\n" "$sessions" | grep "^${SESSION_PREFIX}-" | sort | tail -n1)
+    if [[ -n "$current" ]]; then
+        echo "$current"
+        return 0
+    fi
+
+    legacy=$(printf "%s\n" "$sessions" | grep "^${LEGACY_SESSION_PREFIX}-" | sort | tail -n1)
+    if [[ -n "$legacy" ]]; then
+        echo "$legacy"
+    fi
 }
 
 set_fixed_hud_height() {
@@ -506,7 +541,7 @@ resolve_hud_height() {
         return 0
     fi
     
-    local desired=$((term_height / 6))
+    local desired=5
     if [[ "$desired" -lt "$min_height" ]]; then
         desired="$min_height"
     fi
@@ -525,7 +560,9 @@ create_session() {
     shift
     local codex_args=("$@")
     local cwd_escaped
+    local bind_toggle
     cwd_escaped=$(printf "%q" "$cwd")
+    bind_toggle=$(parse_boolean_setting "CODEX_HUD_BIND_TOGGLE" "${CODEX_HUD_BIND_TOGGLE:-}" "0") || return 1
     
     # Calculate terminal dimensions
     local term_height
@@ -535,7 +572,8 @@ create_session() {
     resolve_hud_height "$term_height"
     
     # Build the codex command string
-    local codex_cmd="$CODEX_CLI_PATH"
+    local codex_cmd
+    codex_cmd=$(printf "%q" "$CODEX_CLI_PATH")
     for arg in "${codex_args[@]}"; do
         codex_cmd="$codex_cmd $(printf "%q" "$arg")"
     done
@@ -615,8 +653,11 @@ create_session() {
         set_fixed_hud_height "$SESSION_NAME" "$hud_pane_id" "$HUD_HEIGHT" "$main_pane_id"
     fi
 
-    # Bind toggle key (Prefix + H) to switch HUD modes for this session
-    tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'tmux send-keys -t #{@codex_hud_pane} C-t' ''" || true
+    # tmux key tables are server-wide. Preserve unrelated sessions unless the
+    # user explicitly opts into the legacy Prefix+H binding.
+    if [[ "$bind_toggle" == "1" ]]; then
+        tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'tmux send-keys -t #{@codex_hud_pane} C-t' ''" || true
+    fi
     
     SESSION_READY="true"
 }
@@ -729,7 +770,7 @@ Options:
 
 Environment Variables:
   CODEX_HUD_POSITION  HUD pane position: bottom (default), top
-  CODEX_HUD_HEIGHT    HUD pane height in lines (default: 1/6 of terminal height, min 5)
+  CODEX_HUD_HEIGHT    HUD pane height in lines (default: 5)
   CODEX_HUD_HEIGHT_AUTO Auto-adjust HUD height based on pane width (default: 0)
   CODEX_HUD_HEIGHT_MIN Minimum HUD height when auto-adjusting (default: CODEX_HUD_HEIGHT)
   CODEX_HUD_HEIGHT_MAX Maximum HUD height when auto-adjusting (default: 12)
@@ -737,6 +778,7 @@ Environment Variables:
   CODEX_HUD_NO_ATTACH Deprecated: force new session (overrides auto attach)
   CODEX_HUD_ALTERNATE_SCREEN Use alternate screen in codex pane (default: 0)
   CODEX_HUD_MOUSE Enable tmux mouse mode for this session (default: 1)
+  CODEX_HUD_BIND_TOGGLE Install the server-wide Prefix+H toggle (default: 0)
   CODEX_HUD_CLEAR_SCROLLBACK Clear terminal scrollback on first render (default: 0)
 
 Requirements:
@@ -831,9 +873,10 @@ self_check() {
 # Kill existing session
 kill_session() {
     local sessions
-    sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep "^${SESSION_PREFIX}" || true)
+    sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null \
+        | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" || true)
     if [[ -z "$sessions" ]]; then
-        warn "No session found: $SESSION_PREFIX"
+        warn "No session found: $SESSION_PREFIX or $LEGACY_SESSION_PREFIX"
         return
     fi
     while IFS= read -r session_name; do
@@ -841,7 +884,7 @@ kill_session() {
             tmux kill-session -t "$session_name"
         fi
     done <<< "$sessions"
-    info "Session(s) '$SESSION_PREFIX' killed."
+    info "Session(s) for '$SESSION_PREFIX' killed."
 }
 
 # List all codex-hud sessions
