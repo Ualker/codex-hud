@@ -25,6 +25,15 @@ BACKUP_FILE="$HOME/.codex-hud-backup-aliases"
 MARKER="# codex-hud alias"
 SOURCE_MARKER="# codex-hud: load bashrc"
 MODE="install"
+UPGRADE_TRANSACTION_ROOT=""
+UPGRADE_WORKTREE=""
+UPGRADE_BACKUP_ROOT=""
+UPGRADE_ORIGINAL_HEAD=""
+UPGRADE_ARTIFACTS_ACTIVATED="0"
+UPGRADE_NEW_NODE_MODULES="0"
+UPGRADE_NEW_DIST="0"
+UPGRADE_HAD_NODE_MODULES="0"
+UPGRADE_HAD_DIST="0"
 
 # Print functions
 error() { echo -e "${RED}Error:${NC} $1" >&2; exit 1; }
@@ -45,7 +54,7 @@ Codex HUD installer / sync / upgrade utility
 Usage:
   ./install.sh              Install or refresh codex-hud in the current checkout
   ./install.sh --sync       Rebuild and refresh aliases for the current checkout
-  ./install.sh --upgrade    Pull latest git changes, then sync
+  ./install.sh --upgrade    Pre-build the tracking branch update, then fast-forward and sync
   ./install.sh --help       Show this help message
 
 Quick command wrappers:
@@ -53,6 +62,9 @@ Quick command wrappers:
   ./bin/codex-hud-sync
   ./bin/codex-hud-upgrade
   ./bin/codex-hud-uninstall
+
+Launch aliases:
+  codex, cx, codex-hud, codex-resume
 EOF
 }
 
@@ -236,6 +248,7 @@ backup_existing_aliases() {
     local alias_names=(
         "codex-hud"
         "codex"
+        "cx"
         "codex-resume"
         "codex-hud-install"
         "codex-hud-sync"
@@ -258,7 +271,7 @@ backup_existing_aliases() {
         
         local temp_file
         temp_file=$(mktemp)
-        grep -Ev "^alias (codex-hud|codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)[= ]" "$rc_file" > "$temp_file" || true
+        grep -Ev "^alias (codex-hud|codex|cx|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)[= ]" "$rc_file" > "$temp_file" || true
         mv "$temp_file" "$rc_file"
     fi
 }
@@ -270,6 +283,7 @@ write_aliases() {
     if [[ "$shell_name" == "fish" ]]; then
         echo "alias codex-hud '$WRAPPER_PATH'  $MARKER" >> "$rc_file"
         echo "alias codex '$WRAPPER_PATH'  $MARKER" >> "$rc_file"
+        echo "alias cx '$WRAPPER_PATH'  $MARKER" >> "$rc_file"
         echo "alias codex-resume '$WRAPPER_PATH resume'  $MARKER" >> "$rc_file"
         echo "alias codex-hud-install '$INSTALL_CMD_PATH'  $MARKER" >> "$rc_file"
         echo "alias codex-hud-sync '$SYNC_CMD_PATH'  $MARKER" >> "$rc_file"
@@ -280,6 +294,7 @@ write_aliases() {
 
     echo "alias codex-hud='$WRAPPER_PATH'  $MARKER" >> "$rc_file"
     echo "alias codex='$WRAPPER_PATH'  $MARKER" >> "$rc_file"
+    echo "alias cx='$WRAPPER_PATH'  $MARKER" >> "$rc_file"
     echo "alias codex-resume='$WRAPPER_PATH resume'  $MARKER" >> "$rc_file"
     echo "alias codex-hud-install='$INSTALL_CMD_PATH'  $MARKER" >> "$rc_file"
     echo "alias codex-hud-sync='$SYNC_CMD_PATH'  $MARKER" >> "$rc_file"
@@ -300,11 +315,12 @@ strip_managed_aliases() {
         -v upgrade_cmd="$UPGRADE_CMD_PATH" \
         -v uninstall_cmd="$UNINSTALL_CMD_PATH" '
         function managed_alias(line) {
-            return line ~ /^alias (codex-hud|codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
+            return line ~ /^alias (codex-hud|codex|cx|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
         }
         function current_managed_alias(line) {
             return line == "alias codex-hud=\047" wrapper "\047" ||
                 line == "alias codex=\047" wrapper "\047" ||
+                line == "alias cx=\047" wrapper "\047" ||
                 line == "alias codex-resume=\047" wrapper " resume\047" ||
                 line == "alias codex-hud-install=\047" install_cmd "\047" ||
                 line == "alias codex-hud-sync=\047" sync_cmd "\047" ||
@@ -312,6 +328,7 @@ strip_managed_aliases() {
                 line == "alias codex-hud-uninstall=\047" uninstall_cmd "\047" ||
                 line == "alias codex-hud \047" wrapper "\047" ||
                 line == "alias codex \047" wrapper "\047" ||
+                line == "alias cx \047" wrapper "\047" ||
                 line == "alias codex-resume \047" wrapper " resume\047" ||
                 line == "alias codex-hud-install \047" install_cmd "\047" ||
                 line == "alias codex-hud-sync \047" sync_cmd "\047" ||
@@ -385,31 +402,176 @@ ensure_bashrc_sourced() {
     echo "fi" >> "$bash_profile"
 }
 
-# Build the project
-build_project() {
+# Build the project at an explicit checkout path.
+build_project_at() {
+    local project_dir="$1"
     step "Installing Node.js dependencies..."
-    (cd "$SCRIPT_DIR" && npm install) || error "Failed to install dependencies"
+    (cd "$project_dir" && npm install) || return 1
     
     step "Building TypeScript project..."
-    (cd "$SCRIPT_DIR" && npm run build) || error "Failed to build project"
+    (cd "$project_dir" && npm run build) || return 2
     
     info "Build complete"
 }
 
-upgrade_checkout() {
+build_project() {
+    local status=0
+    build_project_at "$SCRIPT_DIR" || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1) error "Failed to install dependencies" ;;
+        2) error "Failed to build project" ;;
+        *) error "Unexpected build failure" ;;
+    esac
+}
+
+rollback_upgrade_artifacts() {
+    if [[ "$UPGRADE_ARTIFACTS_ACTIVATED" == "1" ]]; then
+        return 0
+    fi
+    if [[ "$UPGRADE_NEW_NODE_MODULES" == "1" && -e "$SCRIPT_DIR/node_modules" ]]; then
+        rm -rf "$SCRIPT_DIR/node_modules"
+    fi
+    if [[ "$UPGRADE_HAD_NODE_MODULES" == "1" && -e "$UPGRADE_BACKUP_ROOT/node_modules" ]]; then
+        mv "$UPGRADE_BACKUP_ROOT/node_modules" "$SCRIPT_DIR/node_modules"
+    fi
+    if [[ "$UPGRADE_NEW_DIST" == "1" && -e "$SCRIPT_DIR/dist" ]]; then
+        rm -rf "$SCRIPT_DIR/dist"
+    fi
+    if [[ "$UPGRADE_HAD_DIST" == "1" && -e "$UPGRADE_BACKUP_ROOT/dist" ]]; then
+        mv "$UPGRADE_BACKUP_ROOT/dist" "$SCRIPT_DIR/dist"
+    fi
+    UPGRADE_NEW_NODE_MODULES="0"
+    UPGRADE_NEW_DIST="0"
+}
+
+cleanup_upgrade_transaction() {
+    if [[ -z "$UPGRADE_TRANSACTION_ROOT" ]]; then
+        return 0
+    fi
+    rollback_upgrade_artifacts || true
+    if [[ -n "$UPGRADE_WORKTREE" ]]; then
+        git -C "$SCRIPT_DIR" worktree remove --force "$UPGRADE_WORKTREE" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$UPGRADE_TRANSACTION_ROOT"
+    UPGRADE_TRANSACTION_ROOT=""
+    UPGRADE_WORKTREE=""
+    UPGRADE_BACKUP_ROOT=""
+}
+
+stage_upgrade_artifacts() {
+    if [[ ! -d "$UPGRADE_WORKTREE/node_modules" || ! -d "$UPGRADE_WORKTREE/dist" ]]; then
+        return 1
+    fi
+
+    mkdir -p "$UPGRADE_BACKUP_ROOT"
+    if [[ -e "$SCRIPT_DIR/node_modules" ]]; then
+        mv "$SCRIPT_DIR/node_modules" "$UPGRADE_BACKUP_ROOT/node_modules" || return 1
+        UPGRADE_HAD_NODE_MODULES="1"
+    fi
+    if ! mv "$UPGRADE_WORKTREE/node_modules" "$SCRIPT_DIR/node_modules"; then
+        rollback_upgrade_artifacts
+        return 1
+    fi
+    UPGRADE_NEW_NODE_MODULES="1"
+
+    if [[ -e "$SCRIPT_DIR/dist" ]]; then
+        if ! mv "$SCRIPT_DIR/dist" "$UPGRADE_BACKUP_ROOT/dist"; then
+            rollback_upgrade_artifacts
+            return 1
+        fi
+        UPGRADE_HAD_DIST="1"
+    fi
+    if ! mv "$UPGRADE_WORKTREE/dist" "$SCRIPT_DIR/dist"; then
+        rollback_upgrade_artifacts
+        return 1
+    fi
+    UPGRADE_NEW_DIST="1"
+}
+
+upgrade_checkout_transactionally() {
     command_exists git || error "git is required for codex-hud upgrade."
 
     (cd "$SCRIPT_DIR" && git rev-parse --is-inside-work-tree >/dev/null 2>&1) || error "Upgrade requires a git checkout: $SCRIPT_DIR"
 
     local worktree_status
-    worktree_status=$(cd "$SCRIPT_DIR" && git status --short)
+    worktree_status=$(cd "$SCRIPT_DIR" && git status --short --untracked-files=no)
     if [[ -n "$worktree_status" ]]; then
-        error "Upgrade requires a clean git worktree in $SCRIPT_DIR. Commit or stash local changes first."
+        error "Upgrade requires a clean tracked worktree in $SCRIPT_DIR. Commit or stash tracked changes first."
     fi
 
-    step "Pulling latest codex-hud changes..."
-    (cd "$SCRIPT_DIR" && git pull --ff-only) || error "Failed to pull latest codex-hud changes"
+    local branch
+    branch=$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD) \
+        || error "Upgrade requires a normal branch; detached HEAD is not supported."
+    local upstream
+    upstream=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}') \
+        || error "Upgrade requires an upstream tracking branch."
+    if [[ "$upstream" != */* ]]; then
+        error "Unable to resolve the tracking remote and branch from: $upstream"
+    fi
+    local tracking_remote="${upstream%%/*}"
+    local tracking_branch="${upstream#*/}"
+
+    UPGRADE_ORIGINAL_HEAD=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+    step "Fetching the latest $upstream target..."
+    git -C "$SCRIPT_DIR" fetch --tags "$tracking_remote" "$tracking_branch" \
+        || error "Failed to fetch $upstream"
+    local target_commit
+    target_commit=$(git -C "$SCRIPT_DIR" rev-parse FETCH_HEAD) \
+        || error "Unable to resolve the fetched $upstream target"
+    git -C "$SCRIPT_DIR" merge-base --is-ancestor "$UPGRADE_ORIGINAL_HEAD" "$target_commit" \
+        || error "The fetched target is not a fast-forward of the active checkout."
+
+    local checkout_parent
+    checkout_parent=$(dirname "$SCRIPT_DIR")
+    UPGRADE_TRANSACTION_ROOT=$(mktemp -d "$checkout_parent/.codex-hud-update-XXXXXX") \
+        || error "Unable to create the upgrade staging directory."
+    UPGRADE_WORKTREE="$UPGRADE_TRANSACTION_ROOT/candidate"
+    UPGRADE_BACKUP_ROOT="$UPGRADE_TRANSACTION_ROOT/backup"
+    trap cleanup_upgrade_transaction EXIT
+
+    step "Creating an isolated upgrade worktree..."
+    git -C "$SCRIPT_DIR" worktree add --detach "$UPGRADE_WORKTREE" "$target_commit" >/dev/null \
+        || error "Failed to create the isolated upgrade worktree."
+
+    local build_status=0
+    build_project_at "$UPGRADE_WORKTREE" || build_status=$?
+    case "$build_status" in
+        0) ;;
+        1) error "Failed to install dependencies in the isolated upgrade worktree; active checkout was not changed." ;;
+        2) error "Failed to build the isolated upgrade worktree; active checkout was not changed." ;;
+        *) error "Unexpected isolated build failure; active checkout was not changed." ;;
+    esac
+    if [[ -n "$(git -C "$UPGRADE_WORKTREE" status --short --untracked-files=no)" ]]; then
+        error "The isolated build modified tracked files; upgrade aborted before changing the active checkout."
+    fi
+
+    if [[ "$(git -C "$SCRIPT_DIR" rev-parse HEAD)" != "$UPGRADE_ORIGINAL_HEAD" ]]; then
+        error "Active checkout HEAD changed during staging; upgrade aborted."
+    fi
+    if [[ -n "$(git -C "$SCRIPT_DIR" status --short --untracked-files=no)" ]]; then
+        error "Tracked files in the active checkout changed during staging; upgrade aborted."
+    fi
+    if [[ "$(git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD)" != "$branch" ]]; then
+        error "Active checkout branch changed during staging; upgrade aborted."
+    fi
+    if [[ "$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" != "$upstream" ]]; then
+        error "Active checkout upstream changed during staging; upgrade aborted."
+    fi
+
+    step "Fast-forwarding the verified source..."
+    if ! git -C "$SCRIPT_DIR" merge --ff-only "$target_commit"; then
+        error "Failed to fast-forward the active checkout; active checkout was not changed."
+    fi
+
+    step "Activating the verified build..."
+    if ! stage_upgrade_artifacts; then
+        error "Repository was updated, but verified runtime artifacts could not be activated and were restored. Run codex-hud-sync after resolving the filesystem error."
+    fi
+    UPGRADE_ARTIFACTS_ACTIVATED="1"
     info "Repository updated"
+    cleanup_upgrade_transaction
+    trap - EXIT
 }
 
 # Make wrapper executable
@@ -440,15 +602,14 @@ main() {
             ;;
     esac
 
-    if [[ "$MODE" == "upgrade" ]]; then
-        upgrade_checkout
-    fi
-    
     # Check dependencies
     check_dependencies
-    
-    # Build project
-    build_project
+
+    if [[ "$MODE" == "upgrade" ]]; then
+        upgrade_checkout_transactionally
+    else
+        build_project
+    fi
     
     # Setup wrapper
     setup_wrapper
@@ -498,7 +659,7 @@ main() {
     echo "  2. Run: ${CYAN}source $bash_rc${NC} (bash)"
     echo "     or: ${CYAN}source $zsh_rc${NC} (zsh)"
     echo ""
-    echo "Then type ${GREEN}codex${NC} or ${GREEN}codex-hud${NC} to start Codex with the HUD!"
+    echo "Then type ${GREEN}codex${NC}, ${GREEN}cx${NC}, or ${GREEN}codex-hud${NC} to start Codex with the HUD!"
     echo "Or use ${GREEN}codex-resume${NC} to resume with the HUD wrapper."
     echo "Management commands: ${GREEN}codex-hud-sync${NC}, ${GREEN}codex-hud-upgrade${NC}, ${GREEN}codex-hud-uninstall${NC}"
     echo ""

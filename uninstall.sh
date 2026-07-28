@@ -106,11 +106,12 @@ strip_managed_aliases() {
         -v upgrade_cmd="$UPGRADE_CMD_PATH" \
         -v uninstall_cmd="$UNINSTALL_CMD_PATH" '
         function managed_alias(line) {
-            return line ~ /^alias (codex-hud|codex|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
+            return line ~ /^alias (codex-hud|codex|cx|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
         }
         function current_managed_alias(line) {
             return line == "alias codex-hud=\047" wrapper "\047" ||
                 line == "alias codex=\047" wrapper "\047" ||
+                line == "alias cx=\047" wrapper "\047" ||
                 line == "alias codex-resume=\047" wrapper " resume\047" ||
                 line == "alias codex-hud-install=\047" install_cmd "\047" ||
                 line == "alias codex-hud-sync=\047" sync_cmd "\047" ||
@@ -118,6 +119,7 @@ strip_managed_aliases() {
                 line == "alias codex-hud-uninstall=\047" uninstall_cmd "\047" ||
                 line == "alias codex-hud \047" wrapper "\047" ||
                 line == "alias codex \047" wrapper "\047" ||
+                line == "alias cx \047" wrapper "\047" ||
                 line == "alias codex-resume \047" wrapper " resume\047" ||
                 line == "alias codex-hud-install \047" install_cmd "\047" ||
                 line == "alias codex-hud-sync \047" sync_cmd "\047" ||

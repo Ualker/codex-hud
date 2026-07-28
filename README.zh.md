@@ -75,15 +75,15 @@ codex
 | 命令 | 说明 |
 |------|------|
 | `codex-hud-sync` | 重新构建并刷新当前 checkout 的别名 |
-| `codex-hud-upgrade` | 拉取最新代码后重新构建 |
+| `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
 | `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
 
 ## HUD 显示了什么？
 
 ```
 [gpt-5.4 xhigh] █████░░░░ 45% │ my-project git:(main ●) │ 12m
-mode: dev | 3 extensions | 2 AGENTS.md | Approval: on-req | Sandbox: ws-write
-Tokens: 50.2K (in: 35.0K, cache: 5.0K, out: 15.2K) | Ctx: ████░░░░ 45% (50.2K/128K) ↻2
+3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
+Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 ◐ Edit: file.ts | ✓ Read ×3
 ◐ codex_cli_explore 2m14s ↳2
@@ -92,7 +92,7 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | 行 | 内容 |
 |----|------|
 | **标题** | 模型 + effort、context 进度条、项目名、git 分支、会话计时 |
-| **环境** | 配置数、工作模式、MCP 服务器、指令文件、审批/沙箱策略 |
+| **环境** | 配置/MCP/skill/hook 数量、指令文件、运行时审批/沙箱策略、Fast 模式 |
 | **Tokens** | 总 token（输入/cache/输出拆分）、context 填充率、compact 次数 |
 | **Session** | 工作目录、Session ID、CLI 版本 |
 | **活动** | 正在执行的工具调用、最近工具调用历史和活跃 subagent |
@@ -111,6 +111,7 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 codex                        # 启动并自动显示 HUD
 codex --model gpt-5          # 传递 Codex CLI 参数
 codex "help me debug this"   # 带初始提示
+cx                           # codex 的短别名
 codex-resume                 # 恢复上次会话
 ```
 
@@ -137,7 +138,7 @@ codex-hud --self-check       # 运行环境诊断
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD 面板位置（`top` / `bottom`） |
-| `CODEX_HUD_HEIGHT` | 终端 1/6 | HUD 高度（行数） |
+| `CODEX_HUD_HEIGHT` | `5` | HUD 高度（行数） |
 | `CODEX_HUD_MOUSE` | `1` | 启用鼠标/触控板滚动 |
 
 <details>
@@ -150,6 +151,7 @@ codex-hud --self-check       # 运行环境诊断
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 自动模式最大高度 |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | 即使传入 Codex CLI 参数也自动复用会话 |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex pane 的 tmux alternate-screen |
+| `CODEX_HUD_BIND_TOGGLE` | `0` | 安装作用于整个 tmux server 的 `Prefix+H` HUD 切换键 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | running agent 的界面 timeout；只接受正 safe integer 毫秒值 |
 | `CODEX_HUD_CWD` | （未设置） | 覆盖工作目录 |

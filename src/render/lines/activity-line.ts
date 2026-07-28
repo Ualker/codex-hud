@@ -298,7 +298,34 @@ export function renderTokenLine(data: HudData): string | null {
   }
 
   const parts: string[] = [];
-  
+
+  // Context leads the row so the capacity signal survives narrow terminals.
+  const ctx = data.contextUsage;
+  if (ctx) {
+    const bar = renderContextProgressBar(ctx.percent, 12);
+    const percentDisplay = ctx.percent >= 85 
+      ? theme.error(`${ctx.percent}%`)
+      : ctx.percent >= 70 
+        ? theme.warning(`${ctx.percent}%`) 
+        : theme.success(`${ctx.percent}%`);
+    parts.unshift(
+      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(ctx.used)}/${formatTokenCount(ctx.total)})`
+    );
+  } else if (data.tokenUsage?.model_context_window && usage) {
+    const total = data.tokenUsage.model_context_window;
+    const totalTokens = usage.total_tokens ?? 0;
+    const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
+    const bar = renderContextProgressBar(percent, 12);
+    const percentDisplay = percent >= 85 
+      ? theme.error(`${percent}%`)
+      : percent >= 70 
+        ? theme.warning(`${percent}%`) 
+        : theme.success(`${percent}%`);
+    parts.unshift(
+      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(totalTokens)}/${formatTokenCount(total)})`
+    );
+  }
+
   // Token counts section
   if (usage) {
     const cachedInput = usage.cached_input_tokens ?? 0;
@@ -322,35 +349,8 @@ export function renderTokenLine(data: HudData): string | null {
     }
   }
 
-  // Context usage section with progress bar
-  const ctx = data.contextUsage;
-  if (ctx) {
-    const bar = renderContextProgressBar(ctx.percent, 12);
-    const percentDisplay = ctx.percent >= 85 
-      ? theme.error(`${ctx.percent}%`)
-      : ctx.percent >= 70 
-        ? theme.warning(`${ctx.percent}%`) 
-        : theme.success(`${ctx.percent}%`);
-    parts.push(
-      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(ctx.used)}/${formatTokenCount(ctx.total)})`
-    );
-    // Show compact count if any compactions occurred
-    if (ctx.compactCount > 0) {
-      parts.push(colors.dim(`${icons.refresh}${ctx.compactCount}`));
-    }
-  } else if (data.tokenUsage?.model_context_window && usage) {
-    const total = data.tokenUsage.model_context_window;
-    const totalTokens = usage.total_tokens ?? 0;
-    const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
-    const bar = renderContextProgressBar(percent, 12);
-    const percentDisplay = percent >= 85 
-      ? theme.error(`${percent}%`)
-      : percent >= 70 
-        ? theme.warning(`${percent}%`) 
-        : theme.success(`${percent}%`);
-    parts.push(
-      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(totalTokens)}/${formatTokenCount(total)})`
-    );
+  if (ctx?.compactCount && ctx.compactCount > 0) {
+    parts.push(colors.dim(`${icons.refresh}${ctx.compactCount}`));
   }
 
   return parts.length > 0 ? parts.join(' | ') : null;

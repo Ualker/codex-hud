@@ -21,6 +21,7 @@ touch "$TEST_HOME/.bashrc" "$TEST_HOME/.bash_profile" "$ZDOTDIR_DIR/.zshrc"
 
 cat > "$FISH_CONFIG" <<EOF
 alias codex '$ROOT_DIR/bin/codex-hud'
+alias cx '$ROOT_DIR/bin/codex-hud'
 alias codex-resume '$ROOT_DIR/bin/codex-hud resume'
 alias codex-hud-install '$ROOT_DIR/bin/codex-hud-install'
 alias codex-hud-sync '$ROOT_DIR/bin/codex-hud-sync'
@@ -86,9 +87,9 @@ case "\${1:-}" in
     fi
     ;;
   status)
-    exit 0
-    ;;
-  pull)
+    if [[ "\${FAKE_GIT_DIRTY:-}" == "1" ]]; then
+      echo " M tracked-file"
+    fi
     exit 0
     ;;
 esac
@@ -144,12 +145,14 @@ assert_alias_count() {
 for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFIG"; do
   assert_alias_present "$file" "codex-hud"
   assert_alias_present "$file" "codex"
+  assert_alias_present "$file" "cx"
   assert_alias_present "$file" "codex-resume"
   assert_alias_present "$file" "codex-hud-install"
   assert_alias_present "$file" "codex-hud-sync"
   assert_alias_present "$file" "codex-hud-upgrade"
   assert_alias_present "$file" "codex-hud-uninstall"
   assert_alias_count "$file" "codex" "1"
+  assert_alias_count "$file" "cx" "1"
   assert_alias_count "$file" "codex-resume" "1"
 done
 
@@ -164,11 +167,19 @@ assert_alias_present "$HOME/.bashrc" "codex-hud-sync"
 assert_alias_present "$HOME/.bashrc" "codex-hud-upgrade"
 assert_alias_present "$HOME/.bashrc" "codex-hud-uninstall"
 assert_alias_present "$HOME/.bashrc" "codex-hud"
+assert_alias_present "$HOME/.bashrc" "cx"
 
-"$ROOT_DIR/bin/codex-hud-upgrade" >/tmp/codex-hud-manage-upgrade.log 2>&1
-
-if ! grep -q '^git pull --ff-only$' "$LOG_DIR/git.log"; then
-  echo "expected upgrade to run git pull --ff-only" >&2
+if FAKE_GIT_DIRTY=1 "$ROOT_DIR/bin/codex-hud-upgrade" >/tmp/codex-hud-manage-upgrade.log 2>&1; then
+  echo "expected upgrade wrapper to reject a dirty tracked worktree" >&2
+  exit 1
+fi
+if ! grep -Fq "Upgrade requires a clean tracked worktree" /tmp/codex-hud-manage-upgrade.log; then
+  echo "expected upgrade wrapper to delegate to the transactional preflight" >&2
+  cat /tmp/codex-hud-manage-upgrade.log >&2
+  exit 1
+fi
+if ! grep -q '^git status --short --untracked-files=no$' "$LOG_DIR/git.log"; then
+  echo "expected upgrade preflight to inspect tracked worktree changes" >&2
   cat "$LOG_DIR/git.log" >&2
   exit 1
 fi
@@ -178,6 +189,7 @@ fi
 for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFIG"; do
   assert_alias_absent "$file" "codex-hud"
   assert_alias_absent "$file" "codex"
+  assert_alias_absent "$file" "cx"
   assert_alias_absent "$file" "codex-resume"
   assert_alias_absent "$file" "codex-hud-install"
   assert_alias_absent "$file" "codex-hud-sync"

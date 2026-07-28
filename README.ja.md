@@ -75,15 +75,15 @@ codex
 | コマンド | 説明 |
 |----------|------|
 | `codex-hud-sync` | 現在のチェックアウトを再ビルドしエイリアスを更新 |
-| `codex-hud-upgrade` | 最新の変更をプルして再ビルド |
+| `codex-hud-upgrade` | 現在の追跡ブランチを隔離ビルドし、成功後に fast-forward してエイリアスを更新 |
 | `codex-hud-uninstall` | エイリアスを削除し HUD セッションを停止 |
 
 ## HUD に何が表示される？
 
 ```
 [gpt-5.4 xhigh] █████░░░░ 45% │ my-project git:(main ●) │ 12m
-mode: dev | 3 extensions | 2 AGENTS.md | Approval: on-req | Sandbox: ws-write
-Tokens: 50.2K (in: 35.0K, cache: 5.0K, out: 15.2K) | Ctx: ████░░░░ 45% (50.2K/128K) ↻2
+3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
+Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
 Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 ◐ Edit: file.ts | ✓ Read ×3
 ◐ codex_cli_explore 2m14s ↳2
@@ -92,7 +92,7 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | 行 | 内容 |
 |----|------|
 | **ヘッダー** | モデル + effort、context バー、プロジェクト名、git ブランチ、セッションタイマー |
-| **環境** | 設定数、作業モード、MCP サーバー、命令ファイル、承認/サンドボックス |
+| **環境** | 設定/MCP/skill/hook 数、命令ファイル、実行時の承認/サンドボックス、Fast モード |
 | **Tokens** | 合計 token（入力/cache/出力の内訳）、context 充填率、compact 回数 |
 | **Session** | 作業ディレクトリ、Session ID、CLI バージョン |
 | **アクティビティ** | 実行中のツール呼び出し、最近のツール履歴、アクティブな subagent |
@@ -111,6 +111,7 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 codex                        # HUD 付きで起動
 codex --model gpt-5          # Codex CLI 引数を渡す
 codex "help me debug this"   # プロンプト付き
+cx                           # codex の短いエイリアス
 codex-resume                 # 前回のセッションを再開
 ```
 
@@ -134,7 +135,7 @@ codex-hud --self-check       # 環境診断を実行
 | 変数 | デフォルト | 説明 |
 |------|------------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD ペインの位置（`top` / `bottom`） |
-| `CODEX_HUD_HEIGHT` | ターミナルの 1/6 | HUD の高さ（行数） |
+| `CODEX_HUD_HEIGHT` | `5` | HUD の高さ（行数） |
 | `CODEX_HUD_MOUSE` | `1` | マウス/トラックパッドスクロールを有効化 |
 
 <details>
@@ -147,6 +148,7 @@ codex-hud --self-check       # 環境診断を実行
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 自動モードの最大高さ |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | 同ディレクトリの最新セッションに自動アタッチ |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex ペインの tmux alternate-screen |
+| `CODEX_HUD_BIND_TOGGLE` | `0` | tmux server 全体の `Prefix+H` HUD 切替を有効化 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 初回レンダリング時にスクロールバックをクリア |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | running agent の表示 timeout。正の safe integer ミリ秒値のみ |
 | `CODEX_HUD_CWD` | （未設定） | 作業ディレクトリを上書き |
