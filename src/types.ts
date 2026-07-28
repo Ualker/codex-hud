@@ -239,6 +239,8 @@ export interface EventMsgPayload {
     | 'context_compacted'
     | 'turn_started'
     | 'thread_settings_applied'
+    | 'mcp_tool_call_begin'
+    | 'mcp_tool_call_end'
     | 'other';
   explanation?: string;
   plan?: PlanStep[];
@@ -251,8 +253,29 @@ export interface EventMsgPayload {
   model_context_window?: number;
   // For thread_settings_applied events
   thread_settings?: {
+    model?: string;
+    model_provider_id?: string;
     service_tier?: string | null;
+    reasoning_effort?: string;
+    collaboration_mode?: {
+      settings?: {
+        model?: string;
+        reasoning_effort?: string;
+      };
+    };
   };
+  // For mcp_tool_call_begin / mcp_tool_call_end events
+  call_id?: string;
+  invocation?: {
+    server?: string;
+    tool?: string;
+    arguments?: Record<string, unknown>;
+  };
+  duration?: {
+    secs?: number;
+    nanos?: number;
+  };
+  result?: Record<string, unknown>;
 }
 
 export interface TurnContextPayload {
