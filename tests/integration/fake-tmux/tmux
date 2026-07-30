@@ -49,6 +49,9 @@ case "$cmd" in
       @codex_hud_auto)
         echo "${TMUX_AUTO:-}"
         ;;
+      @codex_hud_height_adaptive)
+        echo "${TMUX_ADAPTIVE:-}"
+        ;;
       @codex_hud_height_max)
         echo "${TMUX_HEIGHT_MAX:-}"
         ;;
@@ -75,6 +78,9 @@ case "$cmd" in
         ;;
       "#{pane_height}")
         echo "${TMUX_PANE_HEIGHT:-}"
+        ;;
+      "#{window_height}")
+        echo "${TMUX_WINDOW_HEIGHT:-}"
         ;;
       "#{pane_in_mode}")
         if [[ -n "${TMUX_MAIN_PANE_ID:-}" && "$target" == "${TMUX_MAIN_PANE_ID}" ]]; then

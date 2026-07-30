@@ -101,11 +101,11 @@ Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in
 | **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、compact 次数；限额使用达到 70% 后显示 reset 信息 |
 | **健康** | Git、rollout、agent、环境/配置和概览采集的 stale/error；未知协议事件计数 |
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent |
-| **Session** | 工作目录、Session ID、CLI 版本；固定高度不足时优先被省略 |
+| **Session** | 工作目录、Session ID、CLI 版本；排在计划和已完成工具历史之前 |
 
 工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具不显示命令正文，文件类工具只显示脱敏后的目标；`full` 才显示已脱敏、限长后的命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
 
-HUD 会按终端单元格宽度处理中文、emoji、组合字符和 ANSI，并保证输出不超过 pane 高度；信息过多时最后一行显示 `+N hidden`。设置 `NO_COLOR=1` 或 `TERM=dumb` 可禁用颜色，`CODEX_HUD_ASCII=1` 可使用 ASCII 状态符号。
+HUD 会按终端单元格宽度处理中文、emoji、组合字符和 ANSI。默认 pane 高度取终端高度的六分之一，并限制在 5–12 行；窄终端最多再增加 3 行。显式设置 `CODEX_HUD_HEIGHT` 时保持固定，除非同时设置 `CODEX_HUD_HEIGHT_AUTO=1`。已有 Session 会在下次 attach 或执行 `codex-hud --reload` 时采用新策略。输出不会超过 pane 高度；信息过多时最后一行显示 `+N hidden`。设置 `NO_COLOR=1` 或 `TERM=dumb` 可禁用颜色，`CODEX_HUD_ASCII=1` 可使用 ASCII 状态符号。
 
 ### Subagent 活动
 
@@ -151,7 +151,7 @@ codex-hud --hud-version      # 显示版本与 revision
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD 面板位置（`top` / `bottom`） |
-| `CODEX_HUD_HEIGHT` | `5` | HUD 高度（行数） |
+| `CODEX_HUD_HEIGHT` | 自适应 `5–12` | 默认取终端高度的六分之一，也可显式指定固定行数 |
 | `CODEX_HUD_MOUSE` | `1` | 启用鼠标/触控板滚动 |
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | 工具详情：`off` / `targets` / `full` |
 
@@ -160,8 +160,8 @@ codex-hud --hud-version      # 显示版本与 revision
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CODEX_HUD_HEIGHT_AUTO` | `0` | 根据宽度自动调整高度 |
-| `CODEX_HUD_HEIGHT_MIN` | `CODEX_HUD_HEIGHT` | 自动模式最小高度 |
+| `CODEX_HUD_HEIGHT_AUTO` | 自适应高度：`1`；显式高度：`0` | 窄 pane 最多额外增加 3 行 |
+| `CODEX_HUD_HEIGHT_MIN` | 自适应：`5`；显式高度：`CODEX_HUD_HEIGHT` | 自动模式最小高度 |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 自动模式最大高度 |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | 即使传入 Codex CLI 参数也自动复用会话 |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex pane 的 tmux alternate-screen |

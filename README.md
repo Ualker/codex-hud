@@ -98,7 +98,7 @@ Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in
 | **Capacity** | Context percent/tokens remaining, input/cache/output, compact count; rate-limit reset details appear at 70% usage |
 | **Health** | Stale/error state for Git, rollout, agents, environment/config, and overview; unknown protocol-event count |
 | **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |
-| **Session** | Working directory, session ID, and CLI version; omitted first when fixed height is tight |
+| **Session** | Working directory, session ID, and CLI version; shown before plan and completed-tool history |
 
 Tool activity stays on one physical line by default. With the default
 `CODEX_HUD_TOOL_DETAILS=targets`, execution tools hide command text while file
@@ -107,9 +107,13 @@ summaries; `off` hides the tool line. Raw stdout/stderr and raw tool arguments
 are never retained or displayed.
 
 The renderer measures terminal cells for CJK text, emoji, combining characters,
-and ANSI. It never emits more rows than the pane height and marks overflow as
-`+N hidden`. Set `NO_COLOR=1` or use `TERM=dumb` to disable color, and set
-`CODEX_HUD_ASCII=1` for ASCII status glyphs.
+and ANSI. By default, the pane uses one sixth of the terminal height (bounded to
+5–12 rows) and adds up to three rows on narrow terminals. Explicit
+`CODEX_HUD_HEIGHT` values remain fixed unless `CODEX_HUD_HEIGHT_AUTO=1` is also
+set. Existing sessions adopt the new sizing policy on the next attach or
+`codex-hud --reload`. The renderer never emits more rows than the pane height
+and marks overflow as `+N hidden`. Set `NO_COLOR=1` or use `TERM=dumb` to
+disable color, and set `CODEX_HUD_ASCII=1` for ASCII status glyphs.
 
 ### Subagent activity
 
@@ -155,7 +159,7 @@ codex-hud --hud-version      # Print version and revision
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD pane position (`top` / `bottom`) |
-| `CODEX_HUD_HEIGHT` | `5` | HUD height in lines |
+| `CODEX_HUD_HEIGHT` | adaptive `5–12` | One sixth of terminal height, or an explicit fixed row count |
 | `CODEX_HUD_MOUSE` | `1` | Enable mouse/trackpad scrolling |
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | Tool detail level: `off`, `targets`, or `full` |
 
@@ -164,8 +168,8 @@ codex-hud --hud-version      # Print version and revision
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODEX_HUD_HEIGHT_AUTO` | `0` | Auto-adjust height based on width |
-| `CODEX_HUD_HEIGHT_MIN` | `CODEX_HUD_HEIGHT` | Min height in auto mode |
+| `CODEX_HUD_HEIGHT_AUTO` | adaptive: `1`; explicit height: `0` | Add up to three rows on narrow panes |
+| `CODEX_HUD_HEIGHT_MIN` | adaptive: `5`; explicit height: `CODEX_HUD_HEIGHT` | Min height in auto mode |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | Max height in auto mode |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | Auto-attach even when Codex CLI args are provided |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | tmux alternate-screen for codex pane |

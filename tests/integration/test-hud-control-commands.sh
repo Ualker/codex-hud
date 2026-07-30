@@ -99,6 +99,22 @@ fi
   "$ROOT_DIR/bin/codex-hud" --reload >/dev/null)
 wait_for_count 2
 
+adaptive_height="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+  tmux show-option -t "$session_name" -qv @codex_hud_height_adaptive)"
+adaptive_width="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+  tmux show-option -t "$session_name" -qv @codex_hud_auto)"
+resolved_height="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+  tmux show-option -t "$session_name" -qv @codex_hud_height)"
+if [[ "$adaptive_height" != "1" || "$adaptive_width" != "1" ]]; then
+  echo "Expected --reload to migrate legacy sessions to adaptive HUD sizing" >&2
+  exit 1
+fi
+if ! [[ "$resolved_height" =~ ^[0-9]+$ ]] || \
+  [[ "$resolved_height" -lt 5 || "$resolved_height" -gt 12 ]]; then
+  echo "Expected --reload to resolve a bounded HUD height, got: $resolved_height" >&2
+  exit 1
+fi
+
 if ! env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
   tmux has-session -t "$session_name" 2>/dev/null; then
   echo "HUD control commands must not terminate the tmux session" >&2

@@ -94,10 +94,12 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | **ヘッダー** | モデル + effort、context バー、プロジェクト名、git ブランチ、セッションタイマー |
 | **環境** | 設定/MCP/skill/hook 数、命令ファイル、実行時の承認/サンドボックス、Fast モード |
 | **Tokens** | 合計 token（入力/cache/出力の内訳）、context 充填率、compact 回数 |
-| **Session** | 作業ディレクトリ、Session ID、CLI バージョン |
+| **Session** | 作業ディレクトリ、Session ID、CLI バージョン。plan と完了済み tool 履歴より先に表示 |
 | **アクティビティ** | サニタイズ済みの実行中ツール詳細、所要時間/終了コードまたはバックグラウンド session の結果、最近のツール履歴、アクティブな subagent |
 
 ツール activity はデフォルトで物理 1 行に収まります。コマンドと patch 対象は表示前にサニタイズおよび長さ制限され、raw stdout/stderr と raw ツール引数は保持も表示もしません。
+
+HUD pane のデフォルト高さはターミナル高の 6 分の 1（5–12 行）で、狭い pane では最大 3 行追加されます。`CODEX_HUD_HEIGHT` を明示すると固定高になり、`CODEX_HUD_HEIGHT_AUTO=1` も設定した場合のみ幅に応じて調整されます。既存 Session は次回の attach または `codex-hud --reload` で新しい設定を採用します。表示が pane 高を超える場合は `+N hidden` を表示します。
 
 ### Subagent activity
 
@@ -137,7 +139,7 @@ codex-hud --self-check       # 環境診断を実行
 | 変数 | デフォルト | 説明 |
 |------|------------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD ペインの位置（`top` / `bottom`） |
-| `CODEX_HUD_HEIGHT` | `5` | HUD の高さ（行数） |
+| `CODEX_HUD_HEIGHT` | 自動 `5–12` | ターミナル高の 6 分の 1、または明示した固定行数 |
 | `CODEX_HUD_MOUSE` | `1` | マウス/トラックパッドスクロールを有効化 |
 
 <details>
@@ -145,8 +147,8 @@ codex-hud --self-check       # 環境診断を実行
 
 | 変数 | デフォルト | 説明 |
 |------|------------|------|
-| `CODEX_HUD_HEIGHT_AUTO` | `0` | 幅に基づいて高さを自動調整 |
-| `CODEX_HUD_HEIGHT_MIN` | `CODEX_HUD_HEIGHT` | 自動モードの最小高さ |
+| `CODEX_HUD_HEIGHT_AUTO` | 自動高：`1`、明示高：`0` | 狭い pane で最大 3 行追加 |
+| `CODEX_HUD_HEIGHT_MIN` | 自動：`5`、明示高：`CODEX_HUD_HEIGHT` | 自動モードの最小高さ |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 自動モードの最大高さ |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | 同ディレクトリの最新セッションに自動アタッチ |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex ペインの tmux alternate-screen |

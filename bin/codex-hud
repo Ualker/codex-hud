@@ -5,9 +5,9 @@
 #
 # Environment variables:
 #   CODEX_HUD_POSITION - HUD pane position: bottom (default), top
-#   CODEX_HUD_HEIGHT   - HUD pane height in lines (default: 5)
-#   CODEX_HUD_HEIGHT_AUTO - Auto-adjust HUD height based on pane width (default: 0)
-#   CODEX_HUD_HEIGHT_MIN - Minimum HUD height when auto-adjusting (default: CODEX_HUD_HEIGHT)
+#   CODEX_HUD_HEIGHT   - HUD pane height in lines (default: terminal height / 6, min 5, max 12)
+#   CODEX_HUD_HEIGHT_AUTO - Auto-adjust height for narrow panes (default: 1 unless height is explicit)
+#   CODEX_HUD_HEIGHT_MIN - Minimum HUD height when auto-adjusting (default: 5 adaptive, explicit height fixed)
 #   CODEX_HUD_HEIGHT_MAX - Maximum HUD height when auto-adjusting (default: 12)
 #   CODEX_HUD_AUTO_ATTACH - If set to true, auto-attach even when Codex args are provided
 #   CODEX_HUD_NO_ATTACH - Deprecated: if set to true, do not attach to existing session
@@ -26,6 +26,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUD_DIR="$(dirname "$SCRIPT_DIR")"
 HUD_HEIGHT="${CODEX_HUD_HEIGHT:-}"
+HUD_HEIGHT_EXPLICIT="0"
+if [[ -n "$HUD_HEIGHT" ]]; then
+    HUD_HEIGHT_EXPLICIT="1"
+fi
 HUD_POSITION="${CODEX_HUD_POSITION:-bottom}"
 ALIAS_MARKER="# codex-hud alias"
 CODEX_CLI_PATH=""
@@ -480,23 +484,46 @@ set_fixed_hud_height() {
     fi
 
     local auto_setting
+    local adaptive_setting
+    local adaptive_policy_stored="0"
     local min_setting
     local max_setting
 
+    if [[ "$HUD_HEIGHT_EXPLICIT" == "1" ]]; then
+        adaptive_setting="0"
+    else
+        adaptive_setting=$(tmux show-option -t "$session_name" -qv @codex_hud_height_adaptive)
+        if [[ -n "$adaptive_setting" ]]; then
+            adaptive_policy_stored="1"
+        else
+            adaptive_setting="1"
+        fi
+    fi
+    adaptive_setting=$(parse_boolean_setting "@codex_hud_height_adaptive" "$adaptive_setting" "1") || return 1
+
     auto_setting="${CODEX_HUD_HEIGHT_AUTO:-}"
     if [[ -z "$auto_setting" ]]; then
-        auto_setting=$(tmux show-option -t "$session_name" -qv @codex_hud_auto)
+        if [[ "$HUD_HEIGHT_EXPLICIT" == "1" ]]; then
+            auto_setting="0"
+        elif [[ "$adaptive_policy_stored" == "1" ]]; then
+            auto_setting=$(tmux show-option -t "$session_name" -qv @codex_hud_auto)
+        fi
     fi
     if [[ -z "$auto_setting" ]]; then
-        auto_setting="0"
+        auto_setting="1"
     fi
+    auto_setting=$(parse_boolean_setting "CODEX_HUD_HEIGHT_AUTO" "$auto_setting" "1") || return 1
 
     min_setting="${CODEX_HUD_HEIGHT_MIN:-}"
     if [[ -z "$min_setting" ]]; then
         min_setting=$(tmux show-option -t "$session_name" -qv @codex_hud_height_min)
     fi
     if [[ -z "$min_setting" ]]; then
-        min_setting="$height"
+        if [[ "$adaptive_setting" == "1" ]]; then
+            min_setting="5"
+        else
+            min_setting="$height"
+        fi
     fi
 
     max_setting="${CODEX_HUD_HEIGHT_MAX:-}"
@@ -512,6 +539,7 @@ set_fixed_hud_height() {
 
     tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane_id"
     tmux set-option -t "$session_name" -q @codex_hud_auto "$auto_setting"
+    tmux set-option -t "$session_name" -q @codex_hud_height_adaptive "$adaptive_setting"
     tmux set-option -t "$session_name" -q @codex_hud_height_min "$min_setting"
     tmux set-option -t "$session_name" -q @codex_hud_height_max "$max_setting"
     tmux set-option -t "$session_name" -q @codex_hud_base_height "$height"
@@ -599,9 +627,12 @@ resolve_hud_height() {
         return 0
     fi
     
-    local desired=5
+    local desired=$((term_height / 6))
     if [[ "$desired" -lt "$min_height" ]]; then
         desired="$min_height"
+    fi
+    if [[ "$desired" -gt 12 ]]; then
+        desired="12"
     fi
     if [[ "$desired" -gt "$max_height" ]]; then
         desired="$max_height"
@@ -610,6 +641,16 @@ resolve_hud_height() {
         desired="1"
     fi
     HUD_HEIGHT="$desired"
+}
+
+resolve_hud_height_for_tmux_target() {
+    local target="$1"
+    local term_height
+    term_height=$(tmux display -p -t "$target" "#{window_height}" 2>/dev/null || true)
+    if ! [[ "$term_height" =~ ^[0-9]+$ ]] || [[ "$term_height" -lt 1 ]]; then
+        term_height=$(tput lines 2>/dev/null || echo 24)
+    fi
+    resolve_hud_height "$term_height"
 }
 
 # Create new tmux session with HUD
@@ -828,6 +869,7 @@ main() {
         local hud_pane_id
         hud_pane_id=$(tmux show-option -t "$SESSION_NAME" -qv @codex_hud_pane)
         if [[ -n "$hud_pane_id" ]]; then
+            resolve_hud_height_for_tmux_target "$hud_pane_id"
             set_fixed_hud_height "$SESSION_NAME" "$hud_pane_id" "$HUD_HEIGHT" "$main_pane_id"
         fi
         tmux attach-session -t "$SESSION_NAME"
@@ -876,9 +918,9 @@ Options:
 
 Environment Variables:
   CODEX_HUD_POSITION  HUD pane position: bottom (default), top
-  CODEX_HUD_HEIGHT    HUD pane height in lines (default: 5)
-  CODEX_HUD_HEIGHT_AUTO Auto-adjust HUD height based on pane width (default: 0)
-  CODEX_HUD_HEIGHT_MIN Minimum HUD height when auto-adjusting (default: CODEX_HUD_HEIGHT)
+  CODEX_HUD_HEIGHT    HUD pane height in lines (default: terminal height / 6, min 5, max 12)
+  CODEX_HUD_HEIGHT_AUTO Auto-adjust height for narrow panes (default: 1 unless height is explicit)
+  CODEX_HUD_HEIGHT_MIN Minimum HUD height when auto-adjusting (default: 5 adaptive, explicit height fixed)
   CODEX_HUD_HEIGHT_MAX Maximum HUD height when auto-adjusting (default: 12)
   CODEX_HUD_AUTO_ATTACH Auto-attach even when Codex args are provided (default: 0)
   CODEX_HUD_NO_ATTACH Deprecated: force new session (overrides auto attach)
@@ -1020,6 +1062,7 @@ list_sessions() {
 reload_hud() {
     local session_name
     local hud_pane
+    local main_pane
     session_name=$(find_existing_session)
     if [[ -z "$session_name" ]]; then
         error "No codex-hud session found for the current directory."
@@ -1028,6 +1071,9 @@ reload_hud() {
     if ! pane_exists_in_session "$session_name" "$hud_pane"; then
         error "HUD pane is unavailable in session: $session_name"
     fi
+    main_pane=$(get_main_pane_id_for_session "$session_name")
+    resolve_hud_height_for_tmux_target "$hud_pane"
+    set_fixed_hud_height "$session_name" "$hud_pane" "$HUD_HEIGHT" "$main_pane"
     tmux respawn-pane -k -t "$hud_pane"
     info "Reloaded HUD pane in session: $session_name"
 }
