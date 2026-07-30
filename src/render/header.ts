@@ -3,21 +3,28 @@
  * Phase 3: Redesigned to match claude-hud layout
  * 
  * Layout:
- * Row 1: [Model] █████░░░░░ 45% | project-name git:(branch *) | ⏱️ 10m
- * Row 2: 2 AGENTS.md | 3 extensions | 3 skills | 2 hooks | Approval: ask for approval | Fast: on
- * Row 3: Ctx: ████░░░░ 45% (50K/128K) | Tokens: 12.5K
- * Row 4: Dir: ~/project | Session: abc12345
- * Row 5 (optional): ◐ Edit: file.ts | ✓ Read ×3
+ * Row 1: [Model] | project-name git:(branch *) | ⏱️ 10m
+ * Row 2: [FULL ACCESS] | Approval | Sandbox | Fast | inventory
+ * Row 3: collector/protocol health warnings when needed
+ * Row 4: context remaining, token counts and rate-limit pressure
+ * Row 5+: live turn/tool/agent/plan activity, then session diagnostics
  */
 
-import type { AgentActivity, HudData, RenderOptions, LayoutConfig } from '../types.js';
+import type {
+  AgentActivity,
+  HudData,
+  RenderOptions,
+  LayoutConfig,
+  SessionOverviewItem,
+} from '../types.js';
 import { DEFAULT_LAYOUT } from '../types.js';
 import {
   colors,
   theme,
   icons,
   coloredBar,
-  coloredPercent,
+  sanitizeTerminalText,
+  truncate,
   truncateAnsi,
   visualLength,
 } from './colors.js';
@@ -28,7 +35,12 @@ import {
   renderUsageLine,
   renderTokenLine,
   renderSessionDetailLine,
-  collectActivityLines,
+  renderToolsLine,
+  renderTodosLine,
+  renderAgentLines,
+  renderTurnActivityLine,
+  renderRateLimitLine,
+  renderHealthLine,
 } from './lines/index.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
@@ -181,59 +193,139 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   lines.push(row1);
   
   // Row 2: Environment line
-  const envLine = renderEnvironmentLine(data);
+  const envLine = renderEnvironmentLine(data, width);
   if (envLine) {
     lines.push(envLine);
   }
-  
-  // Row 3: Token usage and context progress bar (ALWAYS show if data available)
-  const tokenLine = renderTokenLine(data);
-  if (tokenLine) {
-    lines.push(tokenLine);
+
+  // Collector/protocol warnings outrank ordinary usage details.
+  const healthLine = renderHealthLine(data, width);
+  if (healthLine) {
+    lines.push(healthLine);
   }
-  
-  // Row 4: Session details (directory, session ID, etc.)
+
+  // Context capacity is actionable and remains ahead of activity history.
+  const tokenLine = renderTokenLine(data);
+  const rateLimitLine = renderRateLimitLine(data, width);
+  if (tokenLine) {
+    const combined = rateLimitLine
+      ? `${tokenLine} ${colors.dim('│')} ${rateLimitLine}`
+      : tokenLine;
+    if (visualLength(combined) <= width) {
+      lines.push(combined);
+    } else {
+      lines.push(tokenLine);
+      if (rateLimitLine) {
+        lines.push(rateLimitLine);
+      }
+    }
+  } else if (rateLimitLine) {
+    lines.push(rateLimitLine);
+  }
+
+  const toolsLine = renderToolsLine(data.toolActivity, width);
+  const hasRunningTool = Boolean(
+    data.toolActivity?.recentCalls.some(
+      (call) => call.status === 'running'
+    )
+  );
+  const turnLine = renderTurnActivityLine(data.turnActivity, width);
+  const agentLines = renderAgentLines(data.agentActivity, width);
+  const planLine = renderTodosLine(data.planProgress);
+
+  if (hasRunningTool && toolsLine) {
+    lines.push(toolsLine);
+  } else if (turnLine) {
+    lines.push(turnLine);
+  }
+
+  lines.push(...agentLines);
+  if (planLine) {
+    lines.push(planLine);
+  }
+  if (!hasRunningTool && toolsLine) {
+    lines.push(toolsLine);
+  }
+
+  // Session metadata is useful for diagnostics but lower signal than current
+  // activity in a fixed-height HUD.
   const sessionLine = renderSessionDetailLine(data);
   if (sessionLine) {
     lines.push(sessionLine);
   }
-  
-  // Row 5+: Activity lines (tools, todos) - but exclude token and session lines since we rendered them above
-  const activityLines = collectActivityLines(data, width);
-  // Filter out token/context and session lines since we already rendered them.
-  const filteredActivityLines = activityLines.filter(line => {
-    return (
-      !line.includes('Tokens:') &&
-      !line.includes('Ctx:') &&
-      !line.includes('Dir: ') &&
-      !line.includes('Session: ')
-    );
-  });
-  lines.push(...filteredActivityLines);
   
   return lines;
 }
 
 /**
  * Render the overview layout (active sessions only)
- * Each line: Ctx ███░░ 45% | Session: abc12345
+ * Each line: project | phase | Ctx ... % left | age | short session ID
  */
-function renderOverviewLayout(data: HudData, layout: LayoutConfig): string[] {
+function renderOverviewLayout(
+  data: HudData,
+  layout: LayoutConfig,
+  width: number
+): string[] {
   const overview = data.overview;
   if (!overview || overview.sessions.length === 0) {
     return [colors.dim('No active sessions')];
   }
 
+  const now = Date.now();
+  const formatAge = (timestamp: Date | undefined): string => {
+    if (!timestamp) {
+      return '--';
+    }
+    const seconds = Math.max(
+      0,
+      Math.floor((now - timestamp.getTime()) / 1000)
+    );
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h`;
+  };
+  const phaseLabel = (
+    session: SessionOverviewItem
+  ): string => {
+    const phase = session.turnActivity?.phase;
+    switch (phase) {
+      case 'running-tool':
+        return theme.toolRunning('Tool');
+      case 'thinking':
+        return theme.toolRunning('Thinking');
+      case 'responding':
+        return theme.info('Responding');
+      case 'aborted':
+        return theme.error('Aborted');
+      case 'idle':
+        return theme.success('Idle');
+      default:
+        return colors.dim('Unknown');
+    }
+  };
+
   return overview.sessions.map((session) => {
     const shortId = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
     const ctx = session.contextUsage;
     const ctxDisplay = ctx
-      ? `${coloredBar(ctx.percent, layout.barWidth)} ${coloredPercent(ctx.percent)}`
-      : colors.dim('Ctx: --');
-
-    const ctxLabel = ctx ? colors.dim('Ctx ') : '';
-    const sessionLabel = colors.dim('Session: ');
-    return `${ctxLabel}${ctxDisplay} ${sessionLabel}${theme.info(shortId)}`;
+      ? `${coloredBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
+      : colors.dim('ctx --');
+    const project =
+      sanitizeTerminalText(
+        session.projectName ?? session.cwd ?? shortId
+      ) || shortId;
+    const parts = [
+      theme.projectName(truncate(project, 24)),
+      phaseLabel(session),
+      ctxDisplay,
+      colors.dim(`${formatAge(session.lastActivityAt)} ago`),
+      colors.dim(shortId),
+    ];
+    return truncateAnsi(
+      parts.join(` ${colors.dim('│')} `),
+      width
+    );
   });
 }
 
@@ -244,7 +336,7 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   const layout = options.layout ?? DEFAULT_LAYOUT;
 
   if (data.displayMode === 'overview') {
-    return renderOverviewLayout(data, layout);
+    return renderOverviewLayout(data, layout, options.width);
   }
   
   if (layout.mode === 'compact') {

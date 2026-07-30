@@ -8,7 +8,9 @@ import {
   theme,
   colors,
   icons,
+  progressChars,
   getSpinnerFrame,
+  sanitizeTerminalText,
   truncate,
   truncateAnsi,
   visualLength,
@@ -20,9 +22,27 @@ import type {
   ToolActivity,
   ToolCall,
   PlanProgress,
+  RateLimitWindow,
+  TurnActivity,
 } from '../../types.js';
 
 const DESCENDANT_PREFIX = '↳';
+const EXECUTION_TOOL_NAMES = new Set([
+  'bash',
+  'exec_command',
+  'run_terminal_command',
+  'write_stdin',
+]);
+
+type ToolDetailsMode = 'off' | 'targets' | 'full';
+
+function toolDetailsMode(): ToolDetailsMode {
+  const value = process.env.CODEX_HUD_TOOL_DETAILS;
+  if (value === 'off' || value === 'full' || value === 'targets') {
+    return value;
+  }
+  return 'targets';
+}
 
 export function formatAgentElapsed(startedAt: Date, nowMs: number = Date.now()): string {
   const startedAtMs = startedAt.getTime();
@@ -67,8 +87,9 @@ function renderAgentRow(
 }
 
 function renderAgentActivityRow(row: AgentActivityRow, width: number, nowMs: number): string {
+  const safeLabel = sanitizeTerminalText(row.label) || 'agent';
   if (row.status === 'tracking-error') {
-    return renderAgentRow(icons.cross, row.label, ' tracking error', theme.error, width);
+    return renderAgentRow(icons.cross, safeLabel, ' tracking error', theme.error, width);
   }
   if (row.status !== 'starting' && row.status !== 'running') {
     throw new Error(`Unknown agent display status: ${String(row.status)}`);
@@ -85,7 +106,7 @@ function renderAgentActivityRow(row: AgentActivityRow, width: number, nowMs: num
     : '';
   return renderAgentRow(
     spinner,
-    row.label,
+    safeLabel,
     ` ${elapsed}${descendants}`,
     theme.agentRunning,
     width
@@ -128,6 +149,220 @@ function formatToolDuration(durationMs: number): string {
   const minutes = Math.floor(wholeSeconds / 60);
   const remainingSeconds = wholeSeconds % 60;
   return `${minutes}m${remainingSeconds.toString().padStart(2, '0')}s`;
+}
+
+function formatAge(durationMs: number): string {
+  if (durationMs < 60_000) {
+    return `${Math.max(0, Math.floor(durationMs / 1000))}s`;
+  }
+  if (durationMs < 3_600_000) {
+    return `${Math.floor(durationMs / 60_000)}m`;
+  }
+  return `${Math.floor(durationMs / 3_600_000)}h`;
+}
+
+function turnPhasePresentation(
+  activity: TurnActivity,
+  nowMs: number
+): { label: string; icon: string; color: (text: string) => string } {
+  switch (activity.phase) {
+    case 'thinking':
+      return {
+        label: `Thinking ${formatAge(nowMs - activity.since.getTime())}`,
+        icon: getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length),
+        color: theme.toolRunning,
+      };
+    case 'running-tool':
+      return {
+        label: `Running tool ${formatAge(nowMs - activity.since.getTime())}`,
+        icon: getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length),
+        color: theme.toolRunning,
+      };
+    case 'responding':
+      return {
+        label: `Responding ${formatAge(nowMs - activity.since.getTime())}`,
+        icon: getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length),
+        color: theme.info,
+      };
+    case 'aborted':
+      return {
+        label: 'Turn aborted',
+        icon: icons.cross,
+        color: theme.error,
+      };
+    case 'idle':
+      return {
+        label: 'Idle · waiting for you',
+        icon: icons.check,
+        color: theme.success,
+      };
+  }
+}
+
+export function renderTurnActivityLine(
+  activity: TurnActivity | undefined,
+  width: number = Number.POSITIVE_INFINITY,
+  nowMs: number = Date.now()
+): string | null {
+  if (!activity) {
+    return null;
+  }
+  const presentation = turnPhasePresentation(activity, nowMs);
+  const eventAgeMs = Math.max(
+    0,
+    nowMs - activity.lastActivityAt.getTime()
+  );
+  const freshness =
+    eventAgeMs >= 5000
+      ? colors.dim(` · event ${formatAge(eventAgeMs)} ago`)
+      : '';
+  return truncateAnsi(
+    presentation.color(
+      `${presentation.icon} ${presentation.label}`
+    ) + freshness,
+    width
+  );
+}
+
+function formatRateWindow(windowMinutes: number | undefined): string {
+  if (!windowMinutes || windowMinutes <= 0) {
+    return 'limit';
+  }
+  if (windowMinutes % 1440 === 0) {
+    return `${windowMinutes / 1440}d`;
+  }
+  if (windowMinutes % 60 === 0) {
+    return `${windowMinutes / 60}h`;
+  }
+  return `${windowMinutes}m`;
+}
+
+function formatResetTime(
+  epochSeconds: number | undefined,
+  windowMinutes: number | undefined
+): string | null {
+  if (!epochSeconds || !Number.isFinite(epochSeconds)) {
+    return null;
+  }
+  const date = new Date(epochSeconds * 1000);
+  if (!Number.isFinite(date.getTime())) {
+    return null;
+  }
+  return windowMinutes && windowMinutes >= 1440
+    ? date.toLocaleString([], {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    : date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+}
+
+export function renderRateLimitLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
+  const limits = data.rateLimits;
+  const reached =
+    Boolean(limits?.rate_limit_reached_type) ||
+    limits?.spend_control_reached === true;
+  const pressuredWindows = [
+    limits?.primary,
+    limits?.secondary,
+  ].filter(
+    (window): window is RateLimitWindow =>
+      Boolean(window) &&
+      window?.used_percent !== undefined &&
+      window.used_percent >= 70
+  );
+  if (!limits || (!reached && pressuredWindows.length === 0)) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  for (const window of pressuredWindows) {
+    const usedPercent = window.used_percent ?? 0;
+    const color =
+      usedPercent >= 90
+        ? theme.error
+        : usedPercent >= 70
+          ? theme.warning
+          : theme.info;
+    parts.push(
+      color(
+        `${formatRateWindow(window.window_minutes)} limit ${Math.round(usedPercent)}%`
+      )
+    );
+    const reset = formatResetTime(
+      window.resets_at,
+      window.window_minutes
+    );
+    if (reset) {
+      parts.push(colors.dim(`resets ${reset}`));
+    }
+  }
+  if (reached) {
+    parts.push(theme.error('limit reached'));
+  }
+  return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
+}
+
+export function renderHealthLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY,
+  nowMs: number = Date.now()
+): string | null {
+  const warnings: string[] = [];
+  for (const [name, health] of Object.entries(
+    data.collectorHealth ?? {}
+  )) {
+    if (!health) {
+      continue;
+    }
+    if (health.status === 'error') {
+      warnings.push(`${name} error`);
+    } else if (health.status === 'stale') {
+      const age = health.lastSuccessAt
+        ? ` ${formatAge(nowMs - health.lastSuccessAt.getTime())}`
+        : '';
+      warnings.push(`${name} stale${age}`);
+    }
+  }
+
+  const protocolHealth = data.protocolHealth;
+  if (protocolHealth) {
+    const unknownCount = [
+      protocolHealth.unknownTopLevelTypes,
+      protocolHealth.unknownResponseTypes,
+      protocolHealth.unknownEventTypes,
+    ].reduce(
+      (total, counters) =>
+        total +
+        Object.values(counters).reduce(
+          (subtotal, count) => subtotal + count,
+          0
+        ),
+      0
+    );
+    if (unknownCount > 0) {
+      warnings.push(`protocol unknown ${unknownCount}`);
+    }
+  }
+
+  if (warnings.length === 0) {
+    return null;
+  }
+  const warningIcon =
+    process.env.CODEX_HUD_ASCII === '1' ? '!' : '⚠';
+  return truncateAnsi(
+    theme.warning(`${warningIcon} ${warnings.join(' · ')}`),
+    width
+  );
 }
 
 function formatToolWorkdir(workdir: string): string {
@@ -178,7 +413,14 @@ function renderToolCallDetail(
       : theme.success;
 
   const prefix = `${icon} ${call.name}`;
-  const detail = call.summary ?? call.target;
+  const detailsMode = toolDetailsMode();
+  const executionTool = EXECUTION_TOOL_NAMES.has(call.name.toLowerCase());
+  const detail =
+    detailsMode === 'full'
+      ? call.summary ?? call.target
+      : executionTool
+        ? undefined
+        : call.target ?? call.summary;
   const workdir = call.workdir ? `@${formatToolWorkdir(call.workdir)}` : undefined;
   const durationMs = call.status === 'running'
     ? Math.max(0, nowMs - call.timestamp.getTime())
@@ -332,6 +574,9 @@ export function renderToolsLine(
   width: number = Number.POSITIVE_INFINITY,
   nowMs: number = Date.now()
 ): string | null {
+  if (toolDetailsMode() === 'off') {
+    return null;
+  }
   if (!toolActivity || toolActivity.recentCalls.length === 0) {
     return null;
   }
@@ -472,8 +717,8 @@ function renderContextProgressBar(percent: number, width: number = 10): string {
   const filled = Math.round((clamped / 100) * width);
   const empty = width - filled;
   
-  const filledChar = '█';
-  const emptyChar = '░';
+  const filledChar = progressChars.filled;
+  const emptyChar = progressChars.empty;
   
   let colorFn: (s: string) => string;
   if (clamped >= 85) {
@@ -513,26 +758,30 @@ export function renderTokenLine(data: HudData): string | null {
   const ctx = data.contextUsage;
   if (ctx) {
     const bar = renderContextProgressBar(ctx.percent, 12);
-    const percentDisplay = ctx.percent >= 85 
-      ? theme.error(`${ctx.percent}%`)
-      : ctx.percent >= 70 
-        ? theme.warning(`${ctx.percent}%`) 
-        : theme.success(`${ctx.percent}%`);
+    const remainingPercent = Math.max(0, 100 - ctx.percent);
+    const remainingTokens = Math.max(0, ctx.total - ctx.used);
+    const percentDisplay = ctx.percent >= 85
+      ? theme.error(`${remainingPercent}% left`)
+      : ctx.percent >= 70
+        ? theme.warning(`${remainingPercent}% left`)
+        : theme.success(`${remainingPercent}% left`);
     parts.unshift(
-      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(ctx.used)}/${formatTokenCount(ctx.total)})`
+      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(remainingTokens)})`
     );
   } else if (data.tokenUsage?.model_context_window && usage) {
     const total = data.tokenUsage.model_context_window;
     const totalTokens = usage.total_tokens ?? 0;
     const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
+    const remainingPercent = Math.max(0, 100 - percent);
+    const remainingTokens = Math.max(0, total - totalTokens);
     const bar = renderContextProgressBar(percent, 12);
-    const percentDisplay = percent >= 85 
-      ? theme.error(`${percent}%`)
-      : percent >= 70 
-        ? theme.warning(`${percent}%`) 
-        : theme.success(`${percent}%`);
+    const percentDisplay = percent >= 85
+      ? theme.error(`${remainingPercent}% left`)
+      : percent >= 70
+        ? theme.warning(`${remainingPercent}% left`)
+        : theme.success(`${remainingPercent}% left`);
     parts.unshift(
-      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(totalTokens)}/${formatTokenCount(total)})`
+      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(remainingTokens)})`
     );
   }
 
@@ -573,7 +822,9 @@ export function renderSessionDetailLine(data: HudData): string | null {
   const session = data.session;
   
   // Show working directory
-  const cwd = session?.cwd || data.project.cwd;
+  const cwd = sanitizeTerminalText(
+    session?.cwd || data.project.cwd
+  );
   if (cwd) {
     const home = process.env.HOME || '';
     let displayPath = cwd;
@@ -588,17 +839,26 @@ export function renderSessionDetailLine(data: HudData): string | null {
 
   // Show session ID if available
   if (session?.id) {
-    parts.push(colors.dim('Session: ') + theme.info(formatSessionId(session.id)));
+    parts.push(
+      colors.dim('Session: ') +
+      theme.info(formatSessionId(sanitizeTerminalText(session.id)))
+    );
   }
   
   // Show CLI version if available
   if (session?.cliVersion) {
-    parts.push(colors.dim('CLI: ') + theme.value(session.cliVersion));
+    parts.push(
+      colors.dim('CLI: ') +
+      theme.value(sanitizeTerminalText(session.cliVersion))
+    );
   }
   
   // Show model provider if available
   if (session?.modelProvider) {
-    parts.push(colors.dim('Provider: ') + theme.value(session.modelProvider));
+    parts.push(
+      colors.dim('Provider: ') +
+      theme.value(sanitizeTerminalText(session.modelProvider))
+    );
   }
 
   return parts.length > 0 ? parts.join(` ${colors.dim(icons.pipe)} `) : null;

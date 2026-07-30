@@ -3,10 +3,12 @@
  * Phase 3: Redesigned with claude-hud style rendering
  */
 
-import { readCodexConfig } from './collectors/codex-config.js';
 import * as fs from 'fs';
-import { collectGitStatus } from './collectors/git.js';
-import { collectProjectInfo } from './collectors/project.js';
+import * as path from 'path';
+import {
+  collectGitStatusAsync,
+  emptyGitStatus,
+} from './collectors/git.js';
 import { SessionFinder, findActiveRollouts } from './collectors/session-finder.js';
 import {
   AgentActivityCollector,
@@ -14,8 +16,13 @@ import {
   isSubagentSessionSource,
   parseAgentInactivityTimeoutMs,
 } from './collectors/agent-activity.js';
-import { RolloutParser, parseRolloutFile } from './collectors/rollout.js';
+import { RolloutParser } from './collectors/rollout.js';
+import {
+  SlowProjectWorkerClient,
+  type SlowProjectSnapshot,
+} from './collectors/slow-project-client.js';
 import { createParseQueue } from './utils/parse-queue.js';
+import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import { HudFileWatcher } from './collectors/file-watcher.js';
 import { renderToStdout, cleanupRenderer } from './render/index.js';
 import { calculateContextUsage } from './context-usage.js';
@@ -27,13 +34,21 @@ import type {
   SessionOverview,
   SessionOverviewItem,
   TokenUsageInfo,
+  CollectorHealth,
+  CollectorHealthMap,
+  ProjectInfo,
 } from './types.js';
 
 // Session start time
 const SESSION_START = new Date();
 
 // Refresh interval in milliseconds
-const REFRESH_INTERVAL = 1000;
+const ACTIVE_REFRESH_INTERVAL = 500;
+const IDLE_REFRESH_INTERVAL = 1500;
+const UNBOUND_REFRESH_INTERVAL = 2500;
+const GIT_CACHE_TTL_MS = 5000;
+const PROJECT_CACHE_TTL_MS = 60_000;
+const OVERVIEW_CACHE_TTL_MS = 5000;
 
 // Current working directory for the HUD
 const HUD_CWD = process.env.CODEX_HUD_CWD || process.cwd();
@@ -56,12 +71,26 @@ const HUD_SESSION_START = (() => {
 
 // Track if we're running
 let isRunning = true;
+let isShuttingDown = false;
+let gitRefreshTimer: NodeJS.Timeout | null = null;
+let projectRefreshTimer: NodeJS.Timeout | null = null;
+let overviewRefreshTimer: NodeJS.Timeout | null = null;
+let agentRefreshTimer: NodeJS.Timeout | null = null;
 
 // Display mode (single vs overview)
 let displayMode: HudDisplayMode =
   process.env.CODEX_HUD_MODE === 'overview' ? 'overview' : 'single';
 
-const TOGGLE_KEYS = ['\u0014', 't', 'T']; // Ctrl+T or t/T
+const TOGGLE_KEYS = ['\u0014']; // Ctrl+T
+
+function toggleDisplayMode(): void {
+  displayMode = displayMode === 'single' ? 'overview' : 'single';
+  if (displayMode === 'overview') {
+    void overviewCache.refresh(true).catch(() => {
+      // Keep the previous overview snapshot.
+    });
+  }
+}
 
 function getNonCachedInputTokens(usage: TokenUsage | undefined): number {
   if (!usage) {
@@ -106,14 +135,61 @@ function buildContextUsage(
 
 // Phase 2: Session and rollout tracking
 let agentActivityCollector: AgentActivityCollector;
+let cachedAgentActivity: HudData['agentActivity'];
+let agentRefreshInFlight: Promise<void> | null = null;
+const collectorHealth: CollectorHealthMap = {};
+
+function recordCollectorAttempt(
+  name: keyof CollectorHealthMap
+): CollectorHealth {
+  const health: CollectorHealth = {
+    ...collectorHealth[name],
+    status: collectorHealth[name]?.status ?? 'stale',
+    lastAttemptAt: new Date(),
+  };
+  collectorHealth[name] = health;
+  return health;
+}
+
+function recordCollectorSuccess(name: keyof CollectorHealthMap): void {
+  const now = new Date();
+  collectorHealth[name] = {
+    status: 'fresh',
+    lastAttemptAt: collectorHealth[name]?.lastAttemptAt ?? now,
+    lastSuccessAt: now,
+  };
+}
+
+function recordCollectorError(
+  name: keyof CollectorHealthMap,
+  error: unknown
+): void {
+  const previous = collectorHealth[name];
+  collectorHealth[name] = {
+    status: 'error',
+    lastAttemptAt: previous?.lastAttemptAt ?? new Date(),
+    lastSuccessAt: previous?.lastSuccessAt,
+    errorSummary: (error instanceof Error ? error.message : String(error))
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .slice(0, 180),
+  };
+}
+
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
   agentActivityCollector.setRootSession(rolloutSession);
+  cachedAgentActivity = undefined;
+  delete collectorHealth.rollout;
+  delete collectorHealth.agents;
+  recordCollectorAttempt('session');
+  recordCollectorSuccess('session');
 
   // When session changes, update rollout path
   if (rolloutSession) {
     rolloutParser.setRolloutPath(rolloutSession.path);
     hudFileWatcher.setRolloutPath(rolloutSession.path);
+    void refreshRolloutAndAgents();
     return;
   }
 
@@ -123,109 +199,260 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
 
 const rolloutParser = new RolloutParser(10);
 const hudFileWatcher = new HudFileWatcher();
-
-// Cached data that gets updated by watchers
-let cachedHudData: HudData | null = null;
-let configNeedsRefresh = false;
 const parseRolloutSafely = createParseQueue(() => rolloutParser.parse());
 
-/**
- * Collect all HUD data (synchronous parts)
- */
-function collectSyncData(
-  runtimeHookOverrides: readonly string[] = [],
-  runtimeHooksEnabled: boolean | null = null
-): Omit<HudData, 'toolActivity' | 'planProgress' | 'tokenUsage' | 'session' | 'contextUsage'> {
-  const cwd = HUD_CWD;
-  const config = readCodexConfig();
+const initialProject: ProjectInfo = {
+  cwd: HUD_CWD,
+  projectName: path.basename(HUD_CWD),
+  agentsMdCount: 0,
+  hasCodexDir: false,
+  instructionsMdCount: 0,
+  rulesCount: 0,
+  mcpCount: 0,
+  configsCount: 0,
+  extensionsCount: 0,
+  skillsCount: 0,
+  otherAgentSkillsCount: 0,
+  hooksCount: 0,
+  globalConfigActive: false,
+  workMode: 'unknown',
+};
+const slowProjectClient = new SlowProjectWorkerClient();
+let forceNextAssetRefresh = false;
+const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
+  {
+    config: {},
+    project: initialProject,
+    collectedAt: new Date(0),
+  },
+  async () => {
+    const forceAssetRefresh = forceNextAssetRefresh;
+    forceNextAssetRefresh = false;
+    try {
+      return await slowProjectClient.collect(HUD_CWD, {
+        runtimeHookOverrides: sessionFinder.getRuntimeHookOverrides(),
+        runtimeHooksEnabled: sessionFinder.getRuntimeHooksEnabled(),
+        forceAssetRefresh,
+      });
+    } catch (error) {
+      if (forceAssetRefresh) {
+        forceNextAssetRefresh = true;
+      }
+      throw error;
+    }
+  },
+  {
+    ttlMs: PROJECT_CACHE_TTL_MS,
+    staleAfterMs: PROJECT_CACHE_TTL_MS * 2,
+  }
+);
+const gitCache = new AsyncSnapshotCache(
+  emptyGitStatus(),
+  () => collectGitStatusAsync(HUD_CWD),
+  {
+    ttlMs: GIT_CACHE_TTL_MS,
+    staleAfterMs: GIT_CACHE_TTL_MS * 3,
+  }
+);
 
-  return {
-    config,
-    git: collectGitStatus(cwd),
-    project: collectProjectInfo(cwd, config, {
-      runtimeHookOverrides,
-      runtimeHooksEnabled,
-    }),
-    sessionStart: SESSION_START,
-  };
+interface OverviewParserEntry {
+  size: number;
+  parser: RolloutParser;
 }
 
-async function collectOverviewData(): Promise<SessionOverview> {
-  const activeSessions = findActiveRollouts(60, undefined, 7);
-  const now = Date.now();
-  const activityWindowMs = 60 * 1000;
+const overviewParsers = new Map<string, OverviewParserEntry>();
+
+async function refreshOverviewData(): Promise<SessionOverview> {
+  // A 60-second activity window can only cross today's midnight, so scanning
+  // today and yesterday is sufficient and avoids walking eight date folders.
+  const activeSessions = findActiveRollouts(60, undefined, 1);
+  const activePaths = new Set(activeSessions.map((session) => session.path));
   const sessions: SessionOverviewItem[] = [];
 
   for (const sessionFile of activeSessions) {
-    const { result } = await parseRolloutFile(sessionFile.path, 0, 3);
+    let cached = overviewParsers.get(sessionFile.path);
+    if (!cached) {
+      const parser = new RolloutParser(3);
+      parser.setRolloutPath(sessionFile.path);
+      cached = { size: -1, parser };
+      overviewParsers.set(sessionFile.path, cached);
+    }
 
-    if (isSubagentSessionSource(result.session?.source)) {
+    try {
+      if (cached.size !== sessionFile.size || !cached.parser.getCached()) {
+        await cached.parser.parse();
+        cached.size = sessionFile.size;
+      }
+    } catch {
       continue;
     }
 
-    const hasRecentTool =
-      result.lastToolActivityTime &&
-      now - result.lastToolActivityTime.getTime() <= activityWindowMs;
-    const hasRecentAssistant =
-      result.lastAssistantMessageTime &&
-      now - result.lastAssistantMessageTime.getTime() <= activityWindowMs;
-
-    if (!hasRecentTool && !hasRecentAssistant) {
+    const result = cached.parser.getCached();
+    if (!result || isSubagentSessionSource(result.session?.source)) {
       continue;
     }
-
     const contextUsage = buildContextUsage(
       result.tokenUsage ?? undefined,
       result.compactCount,
       result.lastCompactTime
     );
-
+    const cwd = result.session?.cwd;
     sessions.push({
       id: result.session?.id ?? sessionFile.sessionId,
+      cwd,
+      projectName: cwd ? path.basename(cwd) : undefined,
+      model: result.session?.model,
+      turnActivity: result.turnActivity ?? undefined,
+      lastActivityAt:
+        result.lastEventTime ?? result.turnActivity?.lastActivityAt,
       contextUsage,
     });
   }
 
-  return {
-    sessions,
-    updatedAt: new Date(),
+  for (const cachedPath of overviewParsers.keys()) {
+    if (!activePaths.has(cachedPath)) {
+      overviewParsers.delete(cachedPath);
+    }
+  }
+
+  const phaseRank = (phase: SessionOverviewItem['turnActivity']): number => {
+    switch (phase?.phase) {
+      case 'running-tool':
+      case 'thinking':
+        return 0;
+      case 'responding':
+        return 1;
+      case 'aborted':
+        return 2;
+      case 'idle':
+      default:
+        return 3;
+    }
   };
+  sessions.sort((left, right) => {
+    const phaseDelta =
+      phaseRank(left.turnActivity) - phaseRank(right.turnActivity);
+    if (phaseDelta !== 0) {
+      return phaseDelta;
+    }
+    const contextDelta =
+      (right.contextUsage?.percent ?? 0) -
+      (left.contextUsage?.percent ?? 0);
+    if (contextDelta !== 0) {
+      return contextDelta;
+    }
+    return (
+      (right.lastActivityAt?.getTime() ?? 0) -
+      (left.lastActivityAt?.getTime() ?? 0)
+    );
+  });
+
+  return { sessions, updatedAt: new Date() };
+}
+
+const overviewCache = new AsyncSnapshotCache<SessionOverview>(
+  { sessions: [], updatedAt: new Date(0) },
+  refreshOverviewData,
+  {
+    ttlMs: OVERVIEW_CACHE_TTL_MS,
+    staleAfterMs: OVERVIEW_CACHE_TTL_MS * 3,
+  }
+);
+
+/**
+ * Parse watcher-driven rollout and agent updates outside the render clock.
+ */
+async function refreshRolloutAndAgents(): Promise<void> {
+  const session = sessionFinder.getCurrentSession();
+  if (!session || !fs.existsSync(session.path)) {
+    cachedAgentActivity = undefined;
+    return;
+  }
+
+  recordCollectorAttempt('rollout');
+  try {
+    await parseRolloutSafely();
+    recordCollectorSuccess('rollout');
+  } catch (error) {
+    recordCollectorError('rollout', error);
+    return;
+  }
+
+  await refreshAgents();
+}
+
+function refreshAgents(): Promise<void> {
+  if (agentRefreshInFlight) {
+    return agentRefreshInFlight;
+  }
+
+  const request = (async () => {
+    const session = sessionFinder.getCurrentSession();
+    if (!session || !fs.existsSync(session.path)) {
+      cachedAgentActivity = undefined;
+      return;
+    }
+    recordCollectorAttempt('agents');
+    try {
+      cachedAgentActivity = await agentActivityCollector.collect(Date.now());
+      recordCollectorSuccess('agents');
+    } catch (error) {
+      recordCollectorError('agents', error);
+    }
+  })().finally(() => {
+    if (agentRefreshInFlight === request) {
+      agentRefreshInFlight = null;
+    }
+  });
+  agentRefreshInFlight = request;
+  return request;
 }
 
 /**
- * Collect all HUD data including async rollout parsing
+ * Assemble an in-memory snapshot. No filesystem or subprocess work belongs in
+ * this function; collectors update their caches independently.
  */
-async function collectData(): Promise<HudData> {
-  // Refresh the pane process snapshot before collecting environment counts so
-  // dynamically injected `-c hooks.<event>=...` entries appear in this render.
-  // Overview mode keeps its existing interval-driven session discovery.
-  const session = displayMode === 'overview' ? null : sessionFinder.check();
-  const syncData = collectSyncData(
-    sessionFinder.getRuntimeHookOverrides(),
-    sessionFinder.getRuntimeHooksEnabled()
-  );
+function collectData(): HudData {
+  const slowData = slowProjectCache.get();
+  const slowHealth = slowProjectCache.getHealth();
+  const slowCollectorHealth: CollectorHealthMap =
+    slowHealth.status !== 'fresh'
+      ? { environment: slowHealth }
+      : slowData.configError
+        ? {
+            config: {
+              status: 'error',
+              lastAttemptAt: slowData.collectedAt,
+            },
+          }
+        : {};
+  const overviewHealth =
+    displayMode === 'overview'
+      ? { overview: overviewCache.getHealth() }
+      : {};
+  const baseData = {
+    config: slowData.config,
+    git: gitCache.get(),
+    project: slowData.project,
+    sessionStart: SESSION_START,
+    collectorHealth: {
+      ...collectorHealth,
+      ...slowCollectorHealth,
+      git: gitCache.getHealth(),
+      ...overviewHealth,
+    },
+  };
 
   if (displayMode === 'overview') {
-    const overview = await collectOverviewData();
-    const hudData: HudData = {
-      ...syncData,
+    return {
+      ...baseData,
       displayMode,
-      overview,
+      overview: overviewCache.get(),
     };
-    cachedHudData = hudData;
-    return hudData;
   }
 
-  // If we have a session, parse the rollout
-  const hasRolloutFile = session ? fs.existsSync(session.path) : false;
-  let rolloutData = hasRolloutFile ? rolloutParser.getCached() : null;
-  if (hasRolloutFile && (!rolloutData || configNeedsRefresh)) {
-    rolloutData = await parseRolloutSafely();
-    configNeedsRefresh = false;
-  }
-  const agentActivity = hasRolloutFile
-    ? await agentActivityCollector.collect(Date.now())
-    : undefined;
+  const session = sessionFinder.getCurrentSession();
+  const rolloutData = rolloutParser.getCached();
 
   // Build context usage from token usage if available
   // Matches codex "context window left" calculation based on last_token_usage.
@@ -235,19 +462,19 @@ async function collectData(): Promise<HudData> {
     rolloutData?.lastCompactTime
   );
 
-  const hudData: HudData = {
-    ...syncData,
+  return {
+    ...baseData,
     session: rolloutData?.session ?? session?.metadata ?? undefined,
     toolActivity: rolloutData?.toolActivity ?? undefined,
-    agentActivity,
+    agentActivity: cachedAgentActivity,
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
+    rateLimits: rolloutData?.rateLimits ?? undefined,
+    turnActivity: rolloutData?.turnActivity ?? undefined,
+    protocolHealth: rolloutData?.protocolHealth,
     contextUsage,
     displayMode,
   };
-
-  cachedHudData = hudData;
-  return hudData;
 }
 
 /**
@@ -259,30 +486,101 @@ async function mainLoop(): Promise<void> {
   }
 
   try {
-    const data = await collectData();
+    const data = collectData();
     renderToStdout(data);
+    const hasRunningTool = data.toolActivity?.recentCalls.some(
+      (call) => call.status === 'running'
+    );
+    const hasActiveTurn =
+      data.turnActivity !== undefined &&
+      data.turnActivity.phase !== 'idle' &&
+      data.turnActivity.phase !== 'aborted';
+    const hasActiveAgent =
+      (data.agentActivity?.visibleAgentCount ?? 0) > 0;
+    const nextRefreshMs =
+      hasRunningTool || hasActiveTurn || hasActiveAgent
+        ? ACTIVE_REFRESH_INTERVAL
+        : data.session || data.displayMode === 'overview'
+          ? IDLE_REFRESH_INTERVAL
+          : UNBOUND_REFRESH_INTERVAL;
+    setTimeout(mainLoop, nextRefreshMs);
   } catch (error) {
     console.error('Render error:', error);
+    setTimeout(mainLoop, IDLE_REFRESH_INTERVAL);
   }
-
-  // Schedule next render
-  setTimeout(mainLoop, REFRESH_INTERVAL);
 }
 
 /**
  * Handle graceful shutdown
  */
-function shutdown(): void {
+async function shutdown(): Promise<void> {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
   isRunning = false;
 
-  // Clean up watchers
+  if (gitRefreshTimer) {
+    clearInterval(gitRefreshTimer);
+  }
+  if (projectRefreshTimer) {
+    clearInterval(projectRefreshTimer);
+  }
+  if (overviewRefreshTimer) {
+    clearInterval(overviewRefreshTimer);
+  }
+  if (agentRefreshTimer) {
+    clearInterval(agentRefreshTimer);
+  }
   sessionFinder.stop();
-  hudFileWatcher.stop().catch(() => {
-    // Ignore cleanup errors
-  });
-
+  await Promise.allSettled([
+    hudFileWatcher.stop(),
+    slowProjectClient.close(),
+  ]);
   cleanupRenderer();
   process.exit(0);
+}
+
+async function refreshSlowProject(force: boolean = false): Promise<void> {
+  if (force) {
+    forceNextAssetRefresh = true;
+  }
+  try {
+    await slowProjectCache.refresh(force);
+  } catch {
+    return;
+  }
+
+  // A config event can arrive while an older request is in flight. Run one
+  // follow-up request so the new config/asset state is not lost to deduping.
+  if (forceNextAssetRefresh && isRunning) {
+    try {
+      await slowProjectCache.refresh(true);
+    } catch {
+      // Cache health retains the failure and the previous good snapshot.
+    }
+  }
+}
+
+function startCollectorTimers(): void {
+  gitRefreshTimer = setInterval(() => {
+    void gitCache.refresh().catch(() => {
+      // Cache health is rendered from the retained last-good snapshot.
+    });
+  }, 1000);
+  projectRefreshTimer = setInterval(() => {
+    void refreshSlowProject();
+  }, 5000);
+  overviewRefreshTimer = setInterval(() => {
+    if (displayMode === 'overview') {
+      void overviewCache.refresh().catch(() => {
+        // Keep the previous overview snapshot.
+      });
+    }
+  }, 1000);
+  agentRefreshTimer = setInterval(() => {
+    void refreshAgents();
+  }, 1000);
 }
 
 function setupKeyListener(): void {
@@ -294,7 +592,7 @@ function setupKeyListener(): void {
   process.stdin.on('data', (data: Buffer) => {
     const input = data.toString('utf8');
     if (TOGGLE_KEYS.some((key) => input.includes(key))) {
-      displayMode = displayMode === 'single' ? 'overview' : 'single';
+      toggleDisplayMode();
     }
   });
 }
@@ -309,32 +607,42 @@ async function main(): Promise<void> {
   agentActivityCollector = new AgentActivityCollector({ inactivityTimeoutMs });
 
   // Set up signal handlers
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-  process.on('SIGHUP', shutdown);
+  process.on('SIGINT', () => void shutdown());
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGHUP', () => void shutdown());
+  process.on('SIGUSR1', toggleDisplayMode);
 
   // Handle stdin close (tmux pane closed)
-  process.stdin.on('close', shutdown);
+  process.stdin.on('close', () => void shutdown());
   process.stdin.resume();
   setupKeyListener();
 
   // Set up file watchers
   hudFileWatcher.onConfigChange(() => {
-    configNeedsRefresh = true;
+    void refreshSlowProject(true);
   });
 
   hudFileWatcher.onRolloutChange(async (rolloutPath) => {
     // A new rollout file may establish a freshly created (/new) session;
     // let the finder re-rank it immediately instead of waiting out the poll.
     sessionFinder.noteRolloutAppeared(rolloutPath);
-    const session = sessionFinder.check();
-    if (session) {
-      await parseRolloutSafely();
+    sessionFinder.check();
+    await refreshRolloutAndAgents();
+    if (displayMode === 'overview') {
+      void overviewCache.refresh(true).catch(() => {
+        // Keep the previous overview snapshot.
+      });
     }
   });
 
   hudFileWatcher.start();
   sessionFinder.start(5000); // Check for session changes every 5 seconds
+  await Promise.allSettled([
+    gitCache.refresh(true),
+    refreshSlowProject(true),
+    ...(displayMode === 'overview' ? [overviewCache.refresh(true)] : []),
+  ]);
+  startCollectorTimers();
 
   // Start the render loop
   console.log('Codex HUD starting...');

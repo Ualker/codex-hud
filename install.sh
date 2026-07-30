@@ -155,13 +155,14 @@ check_dependencies() {
     if ! command_exists node; then
         error "Node.js is required but not installed.
         
-Install Node.js 18+ from: https://nodejs.org/"
+Install Node.js 20.19+ from: https://nodejs.org/"
     fi
     
-    local node_version
-    node_version=$(node --version | sed 's/v//' | cut -d. -f1)
-    if [[ "$node_version" -lt 18 ]]; then
-        error "Node.js 18+ is required (found v$node_version)"
+    if ! node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+process.exit(major > 20 || (major === 20 && minor >= 19) ? 0 : 1);
+' >/dev/null 2>&1; then
+        error "Node.js 20.19+ is required (found $(node --version))"
     fi
     info "Node.js $(node --version)"
     

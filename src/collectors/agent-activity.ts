@@ -12,6 +12,7 @@ import {
   readCompleteJsonl,
   type JsonlTailBatch,
 } from '../utils/jsonl-tail.js';
+import { stat } from 'node:fs/promises';
 
 export const AGENT_INACTIVITY_TIMEOUT_ENV =
   'CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS';
@@ -485,6 +486,7 @@ export interface AgentActivityCollectorOptions {
 interface RootTracker {
   session: SessionFile;
   offset: number;
+  lastObservedSize: number | null;
   physicalTurnIds: Set<string>;
   canonicalValidated: boolean;
   forkedFromId: string | null;
@@ -497,6 +499,7 @@ interface TrackedAgentNode extends AgentState {
   physicalTurnIds: Set<string>;
   canonicalValidated: boolean;
   localBoundaryFound: boolean;
+  lastObservedSize: number | null;
 }
 
 interface RootForkBoundary {
@@ -696,6 +699,7 @@ export class AgentActivityCollector {
       ? {
           session,
           offset: 0,
+          lastObservedSize: null,
           physicalTurnIds: new Set<string>(),
           canonicalValidated: false,
           forkedFromId: null,
@@ -749,6 +753,15 @@ export class AgentActivityCollector {
     const root = this.root;
     if (root === null) {
       return false;
+    }
+
+    const observedSize = (await stat(root.session.path)).size;
+    if (
+      root.canonicalValidated &&
+      root.trackingError === null &&
+      root.lastObservedSize === observedSize
+    ) {
+      return true;
     }
 
     const batch = await readCompleteJsonl<unknown>(
@@ -807,7 +820,17 @@ export class AgentActivityCollector {
     }
 
     const stagedNodes = this.stageSeeds(seeds, candidate.session.sessionId);
+    for (const seed of seeds) {
+      const existing = this.nodes.get(seed.childThreadId);
+      if (existing) {
+        this.nodes.set(seed.childThreadId, {
+          ...existing,
+          lastObservedSize: null,
+        });
+      }
+    }
     candidate.offset = batch.nextOffset;
+    candidate.lastObservedSize = observedSize;
     candidate.trackingError = null;
     this.root = candidate;
     this.applyStagedNodes(stagedNodes);
@@ -882,6 +905,24 @@ export class AgentActivityCollector {
         resolvedSessionId = resolved.sessionId;
       }
 
+      let observedSize: number | null = null;
+      try {
+        observedSize = (await stat(rolloutPath)).size;
+      } catch (error) {
+        // A previously validated rollout can move from active sessions to the
+        // archive. Let the existing read/re-resolve path handle ENOENT.
+        if (current.rolloutPath === null || !isMissingFileError(error)) {
+          throw error;
+        }
+      }
+      if (
+        current.rolloutPath !== null &&
+        observedSize !== null &&
+        current.lastObservedSize === observedSize
+      ) {
+        return;
+      }
+
       let batch: JsonlTailBatch<unknown>;
       try {
         batch = await readCompleteJsonl<unknown>(rolloutPath, readOffset);
@@ -902,6 +943,7 @@ export class AgentActivityCollector {
 
         rolloutPath = resolved.path;
         resolvedSessionId = resolved.sessionId;
+        observedSize = (await stat(rolloutPath)).size;
         const canonicalBatch = await readCompleteJsonl<unknown>(rolloutPath, 0);
         validateChildCanonicalMeta(
           canonicalBatch.records,
@@ -931,6 +973,8 @@ export class AgentActivityCollector {
         candidate.canonicalValidated = true;
         candidate.rolloutPath = rolloutPath;
       }
+      candidate.lastObservedSize =
+        observedSize ?? (await stat(rolloutPath)).size;
       candidate.physicalTurnIds = collectPhysicalTurnIds(
         batch.records,
         candidate.physicalTurnIds
@@ -991,6 +1035,7 @@ export class AgentActivityCollector {
         physicalTurnIds: new Set<string>(),
         canonicalValidated: false,
         localBoundaryFound: false,
+        lastObservedSize: null,
       });
       stagedThreadIds.add(seed.childThreadId);
     }

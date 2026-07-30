@@ -21,33 +21,58 @@ export function getConfigPath(): string {
   return path.join(getCodexHome(), 'config.toml');
 }
 
+function optionalString(
+  parsed: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const value = parsed[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new TypeError(`Codex config ${key} must be a string.`);
+  }
+  return value;
+}
+
 /**
- * Read and parse the Codex config.toml file
+ * Read and parse the Codex config.toml file, preserving parse errors for
+ * callers that maintain a last-good snapshot.
+ */
+export function readCodexConfigStrict(): CodexConfig {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return {};
+  }
+
+  const content = fs.readFileSync(configPath, 'utf-8');
+  const parsed = TOML.parse(content) as Record<string, unknown>;
+
+  return {
+    model: optionalString(parsed, 'model'),
+    model_reasoning_effort: optionalString(
+      parsed,
+      'model_reasoning_effort'
+    ),
+    model_provider: optionalString(parsed, 'model_provider'),
+    service_tier: optionalString(parsed, 'service_tier'),
+    hooks:
+      typeof parsed.hooks === 'boolean'
+        ? parsed.hooks
+        : undefined,
+    approval_policy: optionalString(parsed, 'approval_policy'),
+    sandbox_mode: optionalString(parsed, 'sandbox_mode'),
+    mcp_servers: parseMcpServers(parsed.mcp_servers),
+  };
+}
+
+/**
+ * Backward-compatible best-effort reader.
  */
 export function readCodexConfig(): CodexConfig {
-  const configPath = getConfigPath();
-  
   try {
-    if (!fs.existsSync(configPath)) {
-      return {};
-    }
-    
-    const content = fs.readFileSync(configPath, 'utf-8');
-    const parsed = TOML.parse(content) as Record<string, unknown>;
-    
-    return {
-      model: parsed.model as string | undefined,
-      model_reasoning_effort: parsed.model_reasoning_effort as string | undefined,
-      model_provider: parsed.model_provider as string | undefined,
-      service_tier: parsed.service_tier as string | undefined,
-      hooks: parsed.hooks as boolean | undefined,
-      approval_policy: parsed.approval_policy as string | undefined,
-      sandbox_mode: parsed.sandbox_mode as string | undefined,
-      mcp_servers: parseMcpServers(parsed.mcp_servers),
-    };
-  } catch (error) {
-    // Return empty config on error
-    console.error(`Error reading config: ${error}`);
+    return readCodexConfigStrict();
+  } catch {
     return {};
   }
 }

@@ -22,7 +22,7 @@ FAKE
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  echo "v20.0.0"
+  echo "v20.19.0"
   exit 0
 fi
 exit 0
@@ -57,7 +57,7 @@ env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux -f /dev/null new-session -d -s bootstra
 env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux -f /dev/null set-option -g base-index 1
 
 set +e
-output=$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" PATH="$FAKE_BIN_DIR:$PATH" CODEX_HUD_HEIGHT=5 CODEX_HUD_HEIGHT_AUTO=0 "$ROOT_DIR/bin/codex-hud" 2>&1)
+output=$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" PATH="$FAKE_BIN_DIR:$PATH" SHELL=/bin/sh CODEX_HUD_HEIGHT=5 CODEX_HUD_HEIGHT_AUTO=0 "$ROOT_DIR/bin/codex-hud" 2>&1)
 status=$?
 set -e
 
@@ -119,8 +119,13 @@ fi
 
 shell_marker="$TMUX_DIR/shell-ready"
 shell_marker_escaped=$(printf '%q' "$shell_marker")
-env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux send-keys -t "$main_pane" "touch $shell_marker_escaped" C-m
-for _ in $(seq 1 100); do
+# Seeing fake-codex output only proves that the process wrote to the pane.
+# pane_current_command can still report the parent shell while its child is
+# exiting, so directly probe the end behavior until the resumed shell executes
+# the harmless marker command.
+for _ in $(seq 1 200); do
+  env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+    tmux send-keys -t "$main_pane" "touch $shell_marker_escaped" C-m
   [[ -e "$shell_marker" ]] && break
   sleep 0.05
 done

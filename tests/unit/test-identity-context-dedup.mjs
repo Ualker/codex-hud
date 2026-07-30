@@ -77,7 +77,7 @@ assert.doesNotMatch(suppressed, /\d+%/, 'showContext:false must drop the context
 
 const kept = stripAnsi(renderIdentityLine(baseData, layout));
 assert.match(kept, BAR_CHARS, 'identity line keeps the context bar by default (compact callers rely on it)');
-assert.match(kept, /45%/, 'identity line keeps the context percentage by default');
+assert.match(kept, /55% left/, 'identity line keeps actionable remaining context by default');
 
 // --- Mechanism: the gate also covers the legacy tokenUsage fallback branch ---
 // When only tokenUsage (no contextUsage) is available, renderIdentityLine takes
@@ -118,7 +118,7 @@ assert.doesNotMatch(expandedRow1, /\d+%/, 'expanded Row 1 must not render the re
 const ctxRow = expandedLines.slice(1).find((l) => l.includes('Ctx:'));
 assert.ok(ctxRow, 'expanded layout must still render the context bar on the token line (Row 3)');
 assert.match(ctxRow, BAR_CHARS, 'expanded Row 3 (Ctx) keeps the detailed context bar');
-assert.match(ctxRow, /45%/, 'expanded Row 3 (Ctx) keeps the context percentage');
+assert.match(ctxRow, /55% left/, 'expanded Row 3 (Ctx) shows actionable remaining context');
 
 // The expanded layout must render the context bar EXACTLY once. With only
 // contextUsage (no tokenUsage), the token line is "Ctx:"-only, so it does not
@@ -143,6 +143,6 @@ const compactLines = renderHud(baseData, {
 const compactRow1 = compactLines[0];
 assert.match(compactRow1, /\[gpt-5\.4 high\]/, 'compact Row 1 shows model and effort');
 assert.match(compactRow1, BAR_CHARS, 'compact Row 1 must keep the context bar (it has no token line)');
-assert.match(compactRow1, /45%/, 'compact Row 1 must keep the context percentage');
+assert.match(compactRow1, /55% left/, 'compact Row 1 must keep actionable remaining context');
 
 console.log('test-identity-context-dedup: PASS');

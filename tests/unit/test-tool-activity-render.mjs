@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { renderToolsLine } from '../../dist/render/lines/activity-line.js';
 import { stripAnsi, visualLength } from '../../dist/render/colors.js';
 
+process.env.CODEX_HUD_TOOL_DETAILS = 'full';
+
 function activity(recentCalls, totalCalls = recentCalls.length) {
   return {
     recentCalls,

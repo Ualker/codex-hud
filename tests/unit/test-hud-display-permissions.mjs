@@ -84,7 +84,7 @@ const baseData = {
 const tokenLine = stripAnsi(renderTokenLine(baseData));
 assert.match(tokenLine, /^Ctx: /, 'context segment must lead the token row');
 assert.ok(tokenLine.indexOf('Ctx: ') < tokenLine.indexOf('Tokens: '), 'Tokens must follow Ctx');
-assert.match(tokenLine, /Ctx: .*79% \(270\.4K\/341\.4K\) \| Tokens: 282\.4K/);
+assert.match(tokenLine, /Ctx: .*21% left \(71\.0K\) \| Tokens: 282\.4K/);
 assert.match(
   tokenLine,
   /Tokens: 282\.4K \| \(in: 842, cache: 281\.3K, out: 199\) \| ↻8$/
@@ -100,7 +100,7 @@ assert.ok(environmentLine, 'expanded layout must render an environment line');
 assert.doesNotMatch(environmentLine, /mode:/, 'environment line must not expose mode');
 assert.match(environmentLine, /Approval: ask for approval/);
 assert.match(environmentLine, /Fast: on/);
-assert.match(environmentLine, /2 extensions.*3 skills.*2 hooks/);
+assert.match(environmentLine, /MCP configured: 2.*Codex skills: 3.*Hooks: 2/);
 
 const runtimePermissionLines = renderHud({
   ...baseData,
@@ -116,7 +116,8 @@ const runtimePermissionLines = renderHud({
 }).map(stripAnsi);
 const runtimeEnvironmentLine = runtimePermissionLines.find((line) => line.includes('Approval:'));
 assert.match(runtimeEnvironmentLine, /Approval: full access/);
-assert.match(runtimeEnvironmentLine, /Sandbox: DANGER/);
+assert.match(runtimeEnvironmentLine, /^\[FULL ACCESS\]/);
+assert.match(runtimeEnvironmentLine, /Sandbox: off/);
 
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'on-request' }), 'ask for approval');
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'untrusted' }), 'ask for approval');

@@ -5,7 +5,7 @@
  */
 
 import type { HudData, GitStatus } from '../../types.js';
-import { theme, icons, colors, visualLength, truncate } from '../colors.js';
+import { theme, icons, colors, sanitizeTerminalText, visualLength, truncate } from '../colors.js';
 
 /**
  * Render git sync status (ahead/behind)
@@ -60,7 +60,8 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
   const maxWidth = options.maxWidth;
   
   // Project name (yellow like claude-hud)
-  const projectName = data.project.projectName;
+  const projectName =
+    sanitizeTerminalText(data.project.projectName) || 'project';
   const projectLabel = theme.projectName(projectName);
   const parts: string[] = [projectLabel];
   let gitDisplay = '';
@@ -69,7 +70,7 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
   // Git status (if in a git repo)
   if (data.git.isGitRepo && data.git.branch) {
     // Build git status string
-    let gitContent = data.git.branch;
+    let gitContent = sanitizeTerminalText(data.git.branch);
     
     // Add dirty indicator
     if (data.git.isDirty) {

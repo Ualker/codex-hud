@@ -77,8 +77,10 @@ export interface ProjectInfo {
   // Codex-specific module status
   configsCount: number;         // Active configuration files
   extensionsCount: number;      // Loaded extensions/plugins
-  skillsCount: number;          // Effective enabled skills
+  skillsCount: number;          // Codex-authoritative enabled skills
+  otherAgentSkillsCount?: number; // Non-Codex .agents copies, diagnostic only
   hooksCount: number;           // Effective enabled hooks
+  globalConfigActive?: boolean;
   workMode: 'development' | 'production' | 'unknown';  // Current work mode
 }
 
@@ -114,6 +116,12 @@ export type HudDisplayMode = 'single' | 'overview';
 
 export interface SessionOverviewItem {
   id: string;
+  projectName?: string;
+  cwd?: string;
+  model?: string;
+  turnActivity?: TurnActivity;
+  lastActivityAt?: Date;
+  activeAgentCount?: number;
   contextUsage?: ContextUsage;
 }
 
@@ -148,7 +156,14 @@ export interface LayoutConfig {
 
 export interface RolloutLine {
   timestamp: string;
-  type: 'session_meta' | 'response_item' | 'event_msg' | 'turn_context';
+  type:
+    | 'session_meta'
+    | 'response_item'
+    | 'event_msg'
+    | 'turn_context'
+    | 'compacted'
+    | 'world_state'
+    | (string & {});
   payload: RolloutPayload;
 }
 
@@ -205,17 +220,23 @@ export interface SessionMetaPayload {
 export interface ResponseItemPayload {
   type:
     | 'message'
+    | 'reasoning'
     | 'function_call'
     | 'function_call_output'
     | 'custom_tool_call'
-    | 'custom_tool_call_output';
+    | 'custom_tool_call_output'
+    | 'tool_search_call'
+    | 'tool_search_output'
+    | (string & {});
   role?: 'user' | 'assistant' | 'developer';
   content?: ContentBlock[];
   id?: string;
   call_id?: string;
   name?: string;
-  arguments?: string;
+  arguments?: string | Record<string, unknown>;
   input?: string;
+  execution?: string;
+  tools?: unknown[];
   status?: string;
   output?: FunctionOutput | ContentBlock[] | string | null;
 }
@@ -238,14 +259,25 @@ export interface EventMsgPayload {
     | 'rate_limit'
     | 'context_compacted'
     | 'turn_started'
+    | 'task_started'
+    | 'task_complete'
+    | 'turn_aborted'
+    | 'agent_reasoning'
+    | 'agent_message'
+    | 'user_message'
     | 'thread_settings_applied'
     | 'mcp_tool_call_begin'
     | 'mcp_tool_call_end'
-    | 'other';
+    | (string & {});
   explanation?: string;
   plan?: PlanStep[];
   info?: TokenUsageInfo;
   rate_limits?: RateLimitSnapshot;
+  turn_id?: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  time_to_first_token_ms?: number;
   // For context_compacted events
   compacted_items?: CompactedItem[];
   summary?: string;
@@ -321,10 +353,68 @@ export interface TokenUsage {
 }
 
 export interface RateLimitSnapshot {
+  limit_id?: string;
+  limit_name?: string | null;
+  plan_type?: string;
+  primary?: RateLimitWindow | null;
+  secondary?: RateLimitWindow | null;
+  credits?: {
+    has_credits?: boolean;
+    unlimited?: boolean;
+    balance?: string | null;
+  } | null;
+  rate_limit_reached_type?: string | null;
+  spend_control_reached?: boolean | null;
+  // Older protocol compatibility.
   requests_remaining?: number;
   tokens_remaining?: number;
   reset_time?: string;
 }
+
+export interface RateLimitWindow {
+  used_percent?: number;
+  window_minutes?: number;
+  resets_at?: number;
+}
+
+// ============================================================================
+// Turn and collector health
+// ============================================================================
+
+export type TurnPhase =
+  | 'thinking'
+  | 'running-tool'
+  | 'responding'
+  | 'idle'
+  | 'aborted';
+
+export interface TurnActivity {
+  phase: TurnPhase;
+  turnId?: string;
+  since: Date;
+  lastActivityAt: Date;
+  lastTurnDurationMs?: number;
+  lastTimeToFirstTokenMs?: number;
+}
+
+export interface ProtocolHealth {
+  unknownTopLevelTypes: Record<string, number>;
+  unknownResponseTypes: Record<string, number>;
+  unknownEventTypes: Record<string, number>;
+}
+
+export type CollectorHealthStatus = 'fresh' | 'stale' | 'error';
+
+export interface CollectorHealth {
+  status: CollectorHealthStatus;
+  lastAttemptAt: Date;
+  lastSuccessAt?: Date;
+  errorSummary?: string;
+}
+
+export type CollectorHealthMap = Partial<
+  Record<'environment' | 'config' | 'git' | 'project' | 'session' | 'rollout' | 'agents' | 'overview', CollectorHealth>
+>;
 
 // ============================================================================
 // Tool Activity Tracking
@@ -454,11 +544,15 @@ export interface HudData {
   // Context/token usage
   contextUsage?: ContextUsage;
   tokenUsage?: TokenUsageInfo;
+  rateLimits?: RateLimitSnapshot;
   
   // Activity tracking
   toolActivity?: ToolActivity;
   agentActivity?: AgentActivity;
   planProgress?: PlanProgress;
+  turnActivity?: TurnActivity;
+  protocolHealth?: ProtocolHealth;
+  collectorHealth?: CollectorHealthMap;
 
   // Display mode and overview data
   displayMode?: HudDisplayMode;

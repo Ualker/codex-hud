@@ -31,7 +31,7 @@ Windows サポートは Ubuntu WSL 経由で `feature/windows-support-dual-entry
 
 **Q: 複数の Codex セッションを同時に監視できますか？**
 
-はい。`Ctrl+T` で**マルチセッション概要モード**に切り替えると、すべてのアクティブセッションの context 使用状況を一画面で確認できます。
+はい。HUD ペインをクリックして `Ctrl+T` を押すか、メインペインで `codex-hud --toggle-mode` を実行すると、**マルチセッション概要モード**に切り替えられます。
 
 ![Codex HUD — マルチセッション概要](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 

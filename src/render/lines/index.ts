@@ -13,6 +13,9 @@ export {
   renderTodosLine, 
   renderTokenLine,
   renderSessionDetailLine,
+  renderTurnActivityLine,
+  renderRateLimitLine,
+  renderHealthLine,
   formatAgentElapsed,
   renderAgentLines,
   collectActivityLines 

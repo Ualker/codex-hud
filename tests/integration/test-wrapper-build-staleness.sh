@@ -30,7 +30,7 @@ FAKE
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  echo "v20.0.0"
+  echo "v20.19.0"
   exit 0
 fi
 exit 0

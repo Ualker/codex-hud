@@ -5,7 +5,7 @@
  */
 
 import type { HudData, ContextUsage, LayoutConfig } from '../../types.js';
-import { theme, colors, coloredBar, coloredPercent, icons, truncate, truncateAnsi, visualLength } from '../colors.js';
+import { theme, colors, coloredBar, getContextColor, icons, sanitizeTerminalText, truncate, truncateAnsi, visualLength } from '../colors.js';
 import { getModelDisplayName } from '../../collectors/codex-config.js';
 
 /**
@@ -57,7 +57,9 @@ export function renderIdentityLine(
   const modelName = data.session?.model ?? getModelDisplayName(data.config);
   const reasoningEffort = data.session?.reasoningEffort ?? data.config.model_reasoning_effort;
   const showReasoningEffort = Boolean((data.session?.model ?? data.config.model) && reasoningEffort);
-  const identityName = showReasoningEffort ? `${modelName} ${reasoningEffort}` : modelName;
+  const identityName = sanitizeTerminalText(
+    showReasoningEffort ? `${modelName} ${reasoningEffort}` : modelName
+  ) || 'default';
   let contextDisplay = '';
 
   // Expanded mode suppresses this because its token line already renders the
@@ -66,7 +68,9 @@ export function renderIdentityLine(
   if (showContext && data.contextUsage) {
     const ctx = data.contextUsage;
     const bar = coloredBar(ctx.percent, layout.barWidth);
-    const percentStr = coloredPercent(ctx.percent);
+    const percentStr = getContextColor(ctx.percent)(
+      `${Math.max(0, 100 - ctx.percent)}% left`
+    );
     
     contextDisplay = `${bar} ${percentStr}`;
     
@@ -84,7 +88,9 @@ export function renderIdentityLine(
     if (contextWindow && contextWindow > 0) {
       const percent = Math.round((total / contextWindow) * 100);
       const bar = coloredBar(percent, layout.barWidth);
-      const percentStr = coloredPercent(percent);
+      const percentStr = getContextColor(percent)(
+        `${Math.max(0, 100 - percent)}% left`
+      );
       contextDisplay = `${bar} ${percentStr}`;
     } else {
       // Just show token count without bar

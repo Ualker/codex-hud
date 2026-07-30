@@ -15,6 +15,9 @@
 #   CODEX_HUD_MOUSE - Enable tmux mouse mode for this session (default: 1)
 #   CODEX_HUD_BIND_TOGGLE - Install the server-wide Prefix+H toggle (default: 0)
 #   CODEX_HUD_CLEAR_SCROLLBACK - If set to 1, clears tmux scrollback on first render
+#   CODEX_HUD_HISTORY_LIMIT - HUD pane scrollback lines (default: 10000)
+#   CODEX_HUD_TOOL_DETAILS - Tool details: off, targets (default), or full
+#   CODEX_HUD_ASCII - Use ASCII-only status glyphs (default: 0)
 #
 
 set -e
@@ -88,6 +91,13 @@ parse_boolean_setting() {
             return 1
             ;;
     esac
+}
+
+node_version_supported() {
+    node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+process.exit(major > 20 || (major === 20 && minor >= 19) ? 0 : 1);
+' >/dev/null 2>&1
 }
 
 resolve_attach_policy() {
@@ -360,7 +370,10 @@ check_dependencies() {
     if ! command_exists node; then
         error "Node.js is required but not installed.
 
-Install Node.js 18+ from: https://nodejs.org/"
+Install Node.js 20.19+ from: https://nodejs.org/"
+    fi
+    if ! node_version_supported; then
+        error "Node.js 20.19+ is required by the installed watcher dependencies (found $(node --version))"
     fi
 }
 
@@ -548,9 +561,14 @@ cleanup_incomplete_session() {
         return 0
     fi
 
+    local session_survives="0"
+    if [[ "${SESSION_CREATED:-}" == "true" ]] && tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        session_survives="1"
+    fi
     if [[ "${SESSION_CREATED:-}" == "true" && "${SESSION_CODEX_STARTED:-}" != "true" && "${SESSION_READY:-}" != "true" ]]; then
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        if [[ "$session_survives" == "1" ]]; then
             tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+            session_survives="0"
         fi
     fi
 }
@@ -603,6 +621,10 @@ create_session() {
     local bind_toggle
     cwd_escaped=$(printf "%q" "$cwd")
     bind_toggle=$(parse_boolean_setting "CODEX_HUD_BIND_TOGGLE" "${CODEX_HUD_BIND_TOGGLE:-}" "0") || return 1
+    local hud_history_limit="${CODEX_HUD_HISTORY_LIMIT:-10000}"
+    if ! [[ "$hud_history_limit" =~ ^[0-9]+$ ]] || [[ "$hud_history_limit" -lt 100 ]]; then
+        error "CODEX_HUD_HISTORY_LIMIT must be an integer of at least 100 (got: $hud_history_limit)"
+    fi
     
     # Calculate terminal dimensions
     local term_height
@@ -656,7 +678,17 @@ create_session() {
     tmux set-option -t "$SESSION_NAME" escape-time 0
     tmux set-option -t "$SESSION_NAME" assume-paste-time 0
     tmux set-option -t "$SESSION_NAME" repeat-time 0
-    tmux set-option -t "$SESSION_NAME" history-limit 200000
+    local inherited_history_limit
+    inherited_history_limit=$(tmux show-option -t "$SESSION_NAME" -v history-limit 2>/dev/null || true)
+    if [[ -z "$inherited_history_limit" ]]; then
+        inherited_history_limit=$(tmux show-option -gv history-limit 2>/dev/null || true)
+    fi
+    if [[ -z "$inherited_history_limit" ]]; then
+        inherited_history_limit="2000"
+    fi
+    # The main pane already exists. Temporarily lower the inherited value for
+    # the HUD split, then restore it for any panes the user creates later.
+    tmux set-option -t "$SESSION_NAME" history-limit "$hud_history_limit"
 
     local alternate_screen
     alternate_screen=$(resolve_alternate_screen_setting) || exit 1
@@ -702,7 +734,9 @@ create_session() {
     # Split the window based on HUD_POSITION
     local session_start
     session_start=$(date +%s)
-    local hud_cmd="cd ${cwd_escaped} && LINES='$HUD_HEIGHT' COLUMNS='$term_width' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$SESSION_NAME' CODEX_HUD_CLEAR_SCROLLBACK='${CODEX_HUD_CLEAR_SCROLLBACK:-}' node '$HUD_DIR/dist/index.js'"
+    # exec makes pane_pid the Node renderer itself, so --toggle-mode can signal
+    # one exact HUD process without walking or guessing the process tree.
+    local hud_cmd="cd ${cwd_escaped} && exec env LINES='$HUD_HEIGHT' COLUMNS='$term_width' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$SESSION_NAME' CODEX_HUD_CLEAR_SCROLLBACK='${CODEX_HUD_CLEAR_SCROLLBACK:-}' node '$HUD_DIR/dist/index.js'"
     
     if [[ "$HUD_POSITION" == "top" ]]; then
         # Split at top, then swap panes
@@ -715,6 +749,7 @@ create_session() {
         hud_pane_id=$(tmux split-window -v -t "$SESSION_NAME" -l "$HUD_HEIGHT" -P -F "#{pane_id}" "$hud_cmd")
         tmux select-pane -t "$main_pane_id"
     fi
+    tmux set-option -t "$SESSION_NAME" history-limit "$inherited_history_limit"
 
     if [[ -n "${hud_pane_id:-}" ]]; then
         set_fixed_hud_height "$SESSION_NAME" "$hud_pane_id" "$HUD_HEIGHT" "$main_pane_id"
@@ -830,8 +865,12 @@ All arguments are passed through to the codex command.
 Options:
   -h, --help          Show this help message
   --self-check        Run environment diagnostics
+  --doctor            Alias for --self-check
   --kill              Kill existing session for current directory
   --list              List all codex-hud sessions
+  --reload            Restart only the HUD pane for this directory
+  --toggle-mode       Toggle single/overview without focusing the HUD pane
+  --hud-version       Show HUD package version and checkout revision
   --attach            Attach to latest existing session in this directory
   --new-session       Always create a new session for this launch
 
@@ -847,10 +886,15 @@ Environment Variables:
   CODEX_HUD_MOUSE Enable tmux mouse mode for this session (default: 1)
   CODEX_HUD_BIND_TOGGLE Install the server-wide Prefix+H toggle (default: 0)
   CODEX_HUD_CLEAR_SCROLLBACK Clear terminal scrollback on first render (default: 0)
+  CODEX_HUD_HISTORY_LIMIT HUD pane scrollback lines (default: 10000)
+  CODEX_HUD_TOOL_DETAILS Tool details: off, targets (default), or full
+  CODEX_HUD_SHOW_OTHER_AGENT_SKILLS Show non-Codex .agents skill count (default: 0)
+  CODEX_HUD_ASCII      Use ASCII status glyphs (default: 0)
+  NO_COLOR             Disable ANSI colors when set
 
 Requirements:
   - tmux (auto-installed if missing)
-  - Node.js 18+
+  - Node.js 20.19+
   - Codex CLI
 
 Examples:
@@ -858,6 +902,8 @@ Examples:
   codex-hud --model gpt-5      Start with specific model
   codex-hud "help me debug"    Start with initial prompt
   codex-hud --kill             Kill existing session
+  codex-hud --reload           Reload only the HUD pane
+  codex-hud --toggle-mode      Toggle overview from the main shell
   codex-hud --attach            Reuse existing session intentionally
   codex-hud --new-session       Force a new session
   CODEX_HUD_POSITION=top codex-hud  HUD on top
@@ -893,6 +939,10 @@ self_check() {
     
     if command_exists node; then
         info "node $(node --version)"
+        if ! node_version_supported; then
+            warn "Node.js 20.19+ is required by chokidar 5."
+            failures=$((failures + 1))
+        fi
     else
         warn "node not found in PATH"
         failures=$((failures + 1))
@@ -927,6 +977,13 @@ self_check() {
     
     if [[ ! -f "$HUD_DIR/dist/index.js" ]]; then
         warn "HUD build output not found: $HUD_DIR/dist/index.js"
+        failures=$((failures + 1))
+    elif find "$HUD_DIR/src" -type f \( -name '*.ts' -o -name '*.tsx' \) \
+        -newer "$HUD_DIR/dist/index.js" -print -quit | grep -q .; then
+        warn "HUD build output is stale; run codex-hud --reload."
+        failures=$((failures + 1))
+    else
+        info "HUD build output is current"
     fi
     
     if [[ "$failures" -gt 0 ]]; then
@@ -960,13 +1017,109 @@ list_sessions() {
     tmux list-sessions 2>/dev/null | grep "^codex-hud-" || echo "  (none)"
 }
 
+reload_hud() {
+    local session_name
+    local hud_pane
+    session_name=$(find_existing_session)
+    if [[ -z "$session_name" ]]; then
+        error "No codex-hud session found for the current directory."
+    fi
+    hud_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_pane)
+    if ! pane_exists_in_session "$session_name" "$hud_pane"; then
+        error "HUD pane is unavailable in session: $session_name"
+    fi
+    tmux respawn-pane -k -t "$hud_pane"
+    info "Reloaded HUD pane in session: $session_name"
+}
+
+resolve_hud_node_pid() {
+    local session_name="$1"
+    local hud_pane="$2"
+    local pane_pid
+    pane_pid=$(tmux list-panes -t "$session_name" -F "#{pane_id} #{pane_pid}" 2>/dev/null \
+        | awk -v target="$hud_pane" '$1 == target { print $2; exit }')
+    if ! [[ "$pane_pid" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+
+    # New sessions exec Node directly; older sessions may retain a shell parent.
+    # Walk only this pane's descendant tree and require the HUD entrypoint.
+    ps -axo pid=,ppid=,comm=,command= 2>/dev/null | awk \
+        -v root="$pane_pid" \
+        -v needle="/dist/index.js" '
+        {
+            row_pid[NR] = $1
+            row_parent[NR] = $2
+            row_comm[NR] = $3
+            command = ""
+            for (field = 4; field <= NF; field++) {
+                command = command (field == 4 ? "" : " ") $field
+            }
+            row_command[NR] = command
+        }
+        END {
+            descendant[root] = 1
+            for (pass = 1; pass <= NR; pass++) {
+                for (row = 1; row <= NR; row++) {
+                    if (descendant[row_parent[row]]) {
+                        descendant[row_pid[row]] = 1
+                    }
+                }
+            }
+            for (row = 1; row <= NR; row++) {
+                executable = row_comm[row]
+                sub(/^.*\//, "", executable)
+                split(row_command[row], command_parts, /[[:space:]]+/)
+                command_executable = command_parts[1]
+                sub(/^.*\//, "", command_executable)
+                if (descendant[row_pid[row]] && (executable == "node" || executable == "nodejs" || command_executable == "node" || command_executable == "nodejs") && index(row_command[row], needle) > 0) {
+                    print row_pid[row]
+                    exit
+                }
+            }
+        }
+    '
+}
+
+toggle_hud_mode() {
+    local session_name
+    local hud_pane
+    local hud_pid
+    session_name=$(find_existing_session)
+    if [[ -z "$session_name" ]]; then
+        error "No codex-hud session found for the current directory."
+    fi
+    hud_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_pane)
+    if ! pane_exists_in_session "$session_name" "$hud_pane"; then
+        error "HUD pane is unavailable in session: $session_name"
+    fi
+    hud_pid=$(resolve_hud_node_pid "$session_name" "$hud_pane" || true)
+    if ! [[ "$hud_pid" =~ ^[0-9]+$ ]]; then
+        error "Unable to resolve the HUD Node process for session: $session_name. Try codex-hud --reload."
+    fi
+    kill -USR1 "$hud_pid"
+    info "Toggled HUD mode in session: $session_name"
+}
+
+show_hud_version() {
+    local version="unknown"
+    local revision="unknown"
+    if command_exists node && [[ -f "$HUD_DIR/package.json" ]]; then
+        version=$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(String(p.version || "unknown"));' "$HUD_DIR/package.json")
+    fi
+    if command_exists git; then
+        revision=$(git -C "$HUD_DIR" rev-parse --short HEAD 2>/dev/null || printf "unknown")
+    fi
+    echo "codex-hud $version ($revision)"
+}
+
 # Check for special flags first
 case "${1:-}" in
     -h|--help)
         show_help
         exit 0
         ;;
-    --self-check)
+    --self-check|--doctor)
         self_check
         exit 0
         ;;
@@ -985,6 +1138,30 @@ case "${1:-}" in
         else
             error "tmux not installed"
         fi
+        exit 0
+        ;;
+    --reload)
+        if command_exists tmux; then
+            if ! command_exists node || ! node_version_supported; then
+                error "Node.js 20.19+ is required to rebuild and reload the HUD."
+            fi
+            build_hud
+            reload_hud
+        else
+            error "tmux not installed"
+        fi
+        exit 0
+        ;;
+    --toggle-mode)
+        if command_exists tmux; then
+            toggle_hud_mode
+        else
+            error "tmux not installed"
+        fi
+        exit 0
+        ;;
+    --hud-version)
+        show_hud_version
         exit 0
         ;;
 esac

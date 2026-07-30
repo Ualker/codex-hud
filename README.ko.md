@@ -31,7 +31,7 @@ Windows 지원은 Ubuntu WSL을 통해 `feature/windows-support-dual-entry` bran
 
 **Q: 여러 Codex 세션을 동시에 모니터링할 수 있나요?**
 
-네. `Ctrl+T`로 **멀티 세션 개요 모드**로 전환하면, 모든 활성 세션의 context 사용 현황을 한 화면에서 확인할 수 있습니다.
+네. HUD pane을 클릭한 뒤 `Ctrl+T`를 누르거나 main pane에서 `codex-hud --toggle-mode`를 실행하면 **멀티 세션 개요 모드**로 전환할 수 있습니다.
 
 ![Codex HUD — 멀티 세션 개요](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 

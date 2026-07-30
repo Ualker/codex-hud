@@ -6,12 +6,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ProjectInfo, CodexConfig } from '../types.js';
-import { getMcpServerCount } from './codex-config.js';
-import { collectCodexAssetCounts } from './codex-assets.js';
+import { getConfigPath, getMcpServerCount } from './codex-config.js';
+import { collectCodexAssetBreakdown } from './codex-assets.js';
 
 export interface ProjectCollectionOptions {
   runtimeHookOverrides?: readonly string[];
   runtimeHooksEnabled?: boolean | null;
+  forceAssetRefresh?: boolean;
 }
 
 const AGENTS_MD_FILENAMES = [
@@ -191,7 +192,8 @@ export function collectProjectInfo(
   
   // Count extensions (MCP servers count as extensions)
   const mcpCount = config ? getMcpServerCount(config) : 0;
-  const assetCounts = collectCodexAssetCounts(workDir, process.env, config, {
+  const assetCounts = collectCodexAssetBreakdown(workDir, process.env, config, {
+    forceRefresh: options.forceAssetRefresh,
     runtimeHookOverrides: options.runtimeHookOverrides,
     runtimeHooksEnabled: options.runtimeHooksEnabled,
   });
@@ -205,9 +207,11 @@ export function collectProjectInfo(
     rulesCount: countRulesFiles(workDir),
     mcpCount,
     configsCount,
-    extensionsCount: mcpCount,  // MCP servers are treated as extensions
-    skillsCount: assetCounts.skillsCount,
+    extensionsCount: mcpCount,  // Legacy alias; rendered as "MCP configured".
+    skillsCount: assetCounts.codexSkillsCount,
+    otherAgentSkillsCount: assetCounts.otherAgentSkillsCount,
     hooksCount: assetCounts.hooksCount,
+    globalConfigActive: fs.existsSync(getConfigPath()),
     workMode,
   };
 }

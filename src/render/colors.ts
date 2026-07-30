@@ -7,34 +7,41 @@
 const ESC = '\x1b[';
 const RESET = `${ESC}0m`;
 const DIM = `${ESC}2m`;
+const COLOR_ENABLED =
+  process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb';
+const ASCII_MODE = process.env.CODEX_HUD_ASCII === '1';
+
+function ansi(code: string, text: string): string {
+  return COLOR_ENABLED ? `${ESC}${code}m${text}${RESET}` : text;
+}
 
 // Foreground colors
 export const colors = {
   // Basic colors
-  black: (text: string) => `${ESC}30m${text}${RESET}`,
-  red: (text: string) => `${ESC}31m${text}${RESET}`,
-  green: (text: string) => `${ESC}32m${text}${RESET}`,
-  yellow: (text: string) => `${ESC}33m${text}${RESET}`,
-  blue: (text: string) => `${ESC}34m${text}${RESET}`,
-  magenta: (text: string) => `${ESC}35m${text}${RESET}`,
-  cyan: (text: string) => `${ESC}36m${text}${RESET}`,
-  white: (text: string) => `${ESC}37m${text}${RESET}`,
+  black: (text: string) => ansi('30', text),
+  red: (text: string) => ansi('31', text),
+  green: (text: string) => ansi('32', text),
+  yellow: (text: string) => ansi('33', text),
+  blue: (text: string) => ansi('34', text),
+  magenta: (text: string) => ansi('35', text),
+  cyan: (text: string) => ansi('36', text),
+  white: (text: string) => ansi('37', text),
   
   // Bright colors
-  brightBlack: (text: string) => `${ESC}90m${text}${RESET}`,
-  brightRed: (text: string) => `${ESC}91m${text}${RESET}`,
-  brightGreen: (text: string) => `${ESC}92m${text}${RESET}`,
-  brightYellow: (text: string) => `${ESC}93m${text}${RESET}`,
-  brightBlue: (text: string) => `${ESC}94m${text}${RESET}`,
-  brightMagenta: (text: string) => `${ESC}95m${text}${RESET}`,
-  brightCyan: (text: string) => `${ESC}96m${text}${RESET}`,
-  brightWhite: (text: string) => `${ESC}97m${text}${RESET}`,
+  brightBlack: (text: string) => ansi('90', text),
+  brightRed: (text: string) => ansi('91', text),
+  brightGreen: (text: string) => ansi('92', text),
+  brightYellow: (text: string) => ansi('93', text),
+  brightBlue: (text: string) => ansi('94', text),
+  brightMagenta: (text: string) => ansi('95', text),
+  brightCyan: (text: string) => ansi('96', text),
+  brightWhite: (text: string) => ansi('97', text),
   
   // Semantic colors
-  dim: (text: string) => `${ESC}2m${text}${RESET}`,
-  bold: (text: string) => `${ESC}1m${text}${RESET}`,
-  italic: (text: string) => `${ESC}3m${text}${RESET}`,
-  underline: (text: string) => `${ESC}4m${text}${RESET}`,
+  dim: (text: string) => ansi('2', text),
+  bold: (text: string) => ansi('1', text),
+  italic: (text: string) => ansi('3', text),
+  underline: (text: string) => ansi('4', text),
 };
 
 // Semantic aliases for HUD components (claude-hud style)
@@ -98,9 +105,9 @@ export const theme = {
 
 // Progress bar characters
 export const progressChars = {
-  filled: '█',
-  empty: '░',
-  half: '▓',
+  filled: ASCII_MODE ? '#' : '█',
+  empty: ASCII_MODE ? '-' : '░',
+  half: ASCII_MODE ? '=' : '▓',
 };
 
 // Status icons
@@ -115,10 +122,10 @@ export const icons = {
   untracked: '?',
   
   // Activity
-  check: '✓',
-  cross: '✗',
-  running: '◐',       // In-progress spinner character
-  spinner: ['◐', '◓', '◑', '◒'],  // Rotating spinner
+  check: ASCII_MODE ? 'OK' : '✓',
+  cross: ASCII_MODE ? 'X' : '✗',
+  running: ASCII_MODE ? '|' : '◐',       // In-progress spinner character
+  spinner: ASCII_MODE ? ['|', '/', '-', '\\'] : ['◐', '◓', '◑', '◒'],
   
   // Info
   clock: '⏱️',
@@ -142,14 +149,94 @@ export const icons = {
  */
 export function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1b\[[0-9;]*m/g, '');
+  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
 /**
- * Get visual length of text (excluding ANSI codes)
+ * Make untrusted dynamic labels safe to write to a terminal. Styling is added
+ * only after this boundary, so embedded ANSI/OSC/control/bidi sequences cannot
+ * alter the HUD or visually reorder text.
+ */
+export function sanitizeTerminalText(text: string): string {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, '')
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Approximate the number of terminal cells occupied by a grapheme.
+ */
+function graphemeWidth(grapheme: string): number {
+  if (!grapheme) {
+    return 0;
+  }
+  if (
+    grapheme.includes('\u200d') ||
+    /\p{Extended_Pictographic}/u.test(grapheme)
+  ) {
+    return 2;
+  }
+
+  let width = 0;
+  for (const character of grapheme) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      codePoint === 0 ||
+      codePoint < 32 ||
+      (codePoint >= 0x7f && codePoint < 0xa0) ||
+      codePoint === 0x200d ||
+      (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
+      /\p{Mark}/u.test(character)
+    ) {
+      continue;
+    }
+
+    const isWide =
+      codePoint >= 0x1100 &&
+      (
+        codePoint <= 0x115f ||
+        codePoint === 0x2329 ||
+        codePoint === 0x232a ||
+        (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+        (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+        (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+        (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+        (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+        (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+        (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+        (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+      );
+    width += isWide ? 2 : 1;
+  }
+  return width;
+}
+
+function segmentGraphemes(text: string): string[] {
+  if (typeof Intl.Segmenter === 'function') {
+    const segmenter = new Intl.Segmenter(undefined, {
+      granularity: 'grapheme',
+    });
+    return [...segmenter.segment(text)].map((part) => part.segment);
+  }
+  return Array.from(text);
+}
+
+function plainVisualLength(text: string): number {
+  return segmentGraphemes(text).reduce(
+    (total, grapheme) => total + graphemeWidth(grapheme),
+    0
+  );
+}
+
+/**
+ * Get visual length of text (excluding ANSI codes).
  */
 export function visualLength(text: string): number {
-  return stripAnsi(text).length;
+  return plainVisualLength(stripAnsi(text));
 }
 
 /**
@@ -166,8 +253,19 @@ export function padEnd(text: string, width: number): string {
  */
 export function truncate(text: string, maxWidth: number, ellipsis = '…'): string {
   const stripped = stripAnsi(text);
-  if (stripped.length <= maxWidth) return text;
-  return stripped.slice(0, maxWidth - ellipsis.length) + ellipsis;
+  if (plainVisualLength(stripped) <= maxWidth) return text;
+  const limit = Math.max(0, maxWidth - plainVisualLength(ellipsis));
+  let output = '';
+  let width = 0;
+  for (const grapheme of segmentGraphemes(stripped)) {
+    const nextWidth = graphemeWidth(grapheme);
+    if (width + nextWidth > limit) {
+      break;
+    }
+    output += grapheme;
+    width += nextWidth;
+  }
+  return output + ellipsis;
 }
 
 /**
@@ -177,27 +275,38 @@ export function truncateAnsi(text: string, maxWidth: number, ellipsis = '…'): 
   if (maxWidth <= 0) return '';
   if (visualLength(text) <= maxWidth) return text;
 
-  const limit = Math.max(0, maxWidth - ellipsis.length);
+  const limit = Math.max(0, maxWidth - plainVisualLength(ellipsis));
   let out = '';
   let visible = 0;
   let i = 0;
   let sawAnsi = false;
 
   while (i < text.length && visible < limit) {
-    const ch = text[i];
-    if (ch === '\x1b' && text[i + 1] === '[') {
-      const end = text.indexOf('m', i + 2);
-      if (end === -1) {
-        break;
-      }
-      out += text.slice(i, end + 1);
+    if (text[i] === '\x1b' && text[i + 1] === '[') {
+      const match = /^\x1b\[[0-?]*[ -/]*[@-~]/.exec(text.slice(i));
+      if (!match) break;
+      out += match[0];
       sawAnsi = true;
-      i = end + 1;
+      i += match[0].length;
       continue;
     }
-    out += ch;
-    visible += 1;
-    i += 1;
+
+    const nextAnsi = text.indexOf('\x1b[', i);
+    const segmentEnd = nextAnsi === -1 ? text.length : nextAnsi;
+    const segment = text.slice(i, segmentEnd);
+    for (const grapheme of segmentGraphemes(segment)) {
+      const width = graphemeWidth(grapheme);
+      if (visible + width > limit) {
+        i = text.length;
+        break;
+      }
+      out += grapheme;
+      visible += width;
+      i += grapheme.length;
+    }
+    if (i < segmentEnd) {
+      break;
+    }
   }
 
   const truncated = out + ellipsis;
