@@ -13,14 +13,23 @@ export interface CodexAssetCounts {
   hooksCount: number;
 }
 
+export interface CodexAssetBreakdown {
+  codexSkillsCount: number;
+  otherAgentSkillsCount: number;
+  hooksCount: number;
+}
+
 export interface CodexAssetCollectionOptions {
   forceRefresh?: boolean;
   runtimeHookOverrides?: readonly string[];
   runtimeHooksEnabled?: boolean | null;
 }
 
-const ASSET_CACHE_TTL_MS = 5000;
-const assetCache = new Map<string, { checkedAt: number; counts: CodexAssetCounts }>();
+const ASSET_CACHE_TTL_MS = 60_000;
+const assetCache = new Map<
+  string,
+  { checkedAt: number; breakdown: CodexAssetBreakdown }
+>();
 
 type AssetEnvironment = NodeJS.ProcessEnv;
 
@@ -301,6 +310,24 @@ export function collectCodexAssetCounts(
   config?: CodexConfig,
   options: CodexAssetCollectionOptions = {}
 ): CodexAssetCounts {
+  const breakdown = collectCodexAssetBreakdown(cwd, env, config, options);
+  return {
+    skillsCount:
+      breakdown.codexSkillsCount + breakdown.otherAgentSkillsCount,
+    hooksCount: breakdown.hooksCount,
+  };
+}
+
+/**
+ * Keep Codex-authoritative skills separate from `.agents` copies owned by
+ * other Agent runtimes. The legacy aggregate remains available above.
+ */
+export function collectCodexAssetBreakdown(
+  cwd: string,
+  env: AssetEnvironment = process.env,
+  config?: CodexConfig,
+  options: CodexAssetCollectionOptions = {}
+): CodexAssetBreakdown {
   const runtimeHookOverrides = [...new Set(options.runtimeHookOverrides ?? [])].sort();
   const runtimeHooksEnabled = options.runtimeHooksEnabled ?? null;
   const hooksEnabled = runtimeHooksEnabled ?? (config?.hooks !== false);
@@ -318,42 +345,44 @@ export function collectCodexAssetCounts(
   const now = Date.now();
   const cached = assetCache.get(cacheKey);
   if (!options.forceRefresh && cached && now - cached.checkedAt < ASSET_CACHE_TTL_MS) {
-    return cached.counts;
+    return cached.breakdown;
   }
 
   const ancestors = ancestorDirectories(cwd);
-  const skillsRoots: string[] = [];
+  const codexSkillsRoots: string[] = [];
+  const otherAgentSkillsRoots: string[] = [];
   const hooksFiles: string[] = [];
 
   const codexHome = env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  skillsRoots.push(path.join(codexHome, 'skills'));
+  codexSkillsRoots.push(path.join(codexHome, 'skills'));
   hooksFiles.push(path.join(codexHome, 'hooks.json'));
 
   for (const directory of ancestors) {
-    skillsRoots.push(path.join(directory, '.agents', 'skills'));
-    skillsRoots.push(path.join(directory, '.codex', 'skills'));
+    otherAgentSkillsRoots.push(path.join(directory, '.agents', 'skills'));
+    codexSkillsRoots.push(path.join(directory, '.codex', 'skills'));
     hooksFiles.push(path.join(directory, '.agents', 'hooks.json'));
     hooksFiles.push(path.join(directory, '.codex', 'hooks.json'));
   }
 
   for (const key of ['CODEX_SYSTEM_SKILLS_DIR', 'CODEX_ADMIN_SKILLS_DIR']) {
     const root = resolveOptionalRoot(env, key);
-    if (root) skillsRoots.push(root);
+    if (root) codexSkillsRoots.push(root);
   }
   for (const key of ['CODEX_SYSTEM_HOOKS_FILE', 'CODEX_ADMIN_HOOKS_FILE']) {
     const file = resolveOptionalRoot(env, key);
     if (file) hooksFiles.push(file);
   }
 
-  const counts = {
-    skillsCount: collectSkillCount(skillsRoots),
+  const breakdown = {
+    codexSkillsCount: collectSkillCount(codexSkillsRoots),
+    otherAgentSkillsCount: collectSkillCount(otherAgentSkillsRoots),
     hooksCount: collectHookCount(
       hooksEnabled ? hooksFiles : [],
       hooksEnabled ? runtimeHookOverrides : []
     ),
   };
-  assetCache.set(cacheKey, { checkedAt: now, counts });
-  return counts;
+  assetCache.set(cacheKey, { checkedAt: now, breakdown });
+  return breakdown;
 }
 
 export function invalidateCodexAssetCache(): void {

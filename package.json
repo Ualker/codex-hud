@@ -9,9 +9,14 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test:render": "npm run build && node dist/index.js"
+    "test": "npm run typecheck && npm run build && bash tests/run-suite.sh unit && bash tests/run-suite.sh integration",
+    "test:unit": "npm run build && bash tests/run-suite.sh unit",
+    "test:integration": "npm run build && bash tests/run-suite.sh integration",
+    "test:e2e:agent": "npm run build && node tests/e2e/test-agent-status-hud.mjs",
+    "test:render": "npm run build && node dist/test-render.js"
   },
   "keywords": [
     "codex",
@@ -23,11 +28,10 @@
   "author": "",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.19.0"
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
-    "@types/chokidar": "^1.7.5",
     "chokidar": "^5.0.0"
   },
   "devDependencies": {

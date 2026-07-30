@@ -241,11 +241,11 @@ test_node_available() {
     
     local node_version
     node_version=$(node --version)
-    local major_version
-    major_version=$(echo "$node_version" | sed 's/v//' | cut -d. -f1)
-    
-    if [[ "$major_version" -lt 18 ]]; then
-        test_fail "Node.js version $node_version is too old (need 18+)"
+    if ! node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+process.exit(major > 20 || (major === 20 && minor >= 19) ? 0 : 1);
+' >/dev/null 2>&1; then
+        test_fail "Node.js version $node_version is too old (need 20.19+)"
         return
     fi
     

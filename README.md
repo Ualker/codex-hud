@@ -20,14 +20,17 @@ Real-time statusline HUD for [OpenAI Codex CLI](https://github.com/openai/codex)
 Because you're flying blind without one. Codex HUD gives you a persistent dashboard at the bottom of your terminal:
 
 - **Branch, model, permissions** — at a glance, no guessing
-- **Token usage (including cache)** — know exactly how much context you've burned
-- **Context window fill bar** — see when you're about to hit the wall
-- **MCP server status & tool calls** — watch what Codex is actually doing
+- **Token usage (including cache) and context remaining** — see when you're about to hit the wall
+- **Current turn, tool, plan, and subagent state** — watch what Codex is actually doing
+- **Rate-limit and collector-health warnings** — distinguish no data from stale or failed data
+- **Approval, sandbox, Fast, MCP, and Codex skills** — security-critical state stays visible first
 - **Reasoning effort level** — see the current thinking depth
 
 **Q: I run multiple Codex sessions. Can I monitor them all?**
 
-Yes. Toggle to **multi-session overview** (`Ctrl+T`) and see every active session with its context usage — all in one place.
+Yes. Click the HUD pane and press `Ctrl+T`, or run
+`codex-hud --toggle-mode` from the main pane. Overview sorts sessions by
+project, live phase, context remaining, and recent activity.
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -73,27 +76,40 @@ After the first install, these are available in your shell:
 | `codex-hud-sync` | Rebuild and refresh aliases for the current checkout |
 | `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
 | `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
+| `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases |
+| `codex-hud --reload` | Rebuild when needed, then restart only the current directory's HUD pane |
+| `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
+| `codex-hud --hud-version` | Print the package version and checkout revision |
 
 ## What's on the HUD?
 
-```
-[gpt-5.4 xhigh] █████░░░░ 45% │ my-project git:(main ●) │ 12m
-3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
-Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
-Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
-◐ exec_command: npm test @my-project 1.4s | ✗ exec_command: rg … 48ms exit 1
-◐ codex_cli_explore 2m14s ↳2
+```text
+[gpt-5.6-sol high] my-project git:(main *) | 12m
+[FULL ACCESS] | Approval: full access | Sandbox: off | Fast: on | MCP configured: 3 | Codex skills: 5
+Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
+◐ Thinking 42s · event 8s ago
+◐ exec_command @my-project 1.4s | ✓ read_file ×3
 ```
 
 | Line | Shows |
 |------|-------|
-| **Header** | Model + effort, context bar, project, git branch, session timer |
-| **Environment** | Config/MCP/skill/hook counts, instruction files, runtime approval/sandbox, Fast mode |
-| **Tokens** | Total tokens with input/cache/output breakdown, context fill, compact count |
-| **Session** | Working directory, session ID, CLI version |
-| **Activity** | Sanitized running-tool details, duration/exit or yielded-session results, recent tool history, and active subagents |
+| **Header** | Model + effort, project, git branch, and session duration |
+| **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first; then MCP, Codex skills, hooks, AGENTS.md, and config sources |
+| **Capacity** | Context percent/tokens remaining, input/cache/output, compact count; rate-limit reset details appear at 70% usage |
+| **Health** | Stale/error state for Git, rollout, agents, environment/config, and overview; unknown protocol-event count |
+| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |
+| **Session** | Working directory, session ID, and CLI version; omitted first when fixed height is tight |
 
-Tool activity stays on one physical line by default. Commands and patch targets are sanitized and bounded before rendering; raw stdout/stderr and raw tool arguments are never retained or displayed.
+Tool activity stays on one physical line by default. With the default
+`CODEX_HUD_TOOL_DETAILS=targets`, execution tools hide command text while file
+tools show only sanitized targets. `full` enables sanitized, bounded command
+summaries; `off` hides the tool line. Raw stdout/stderr and raw tool arguments
+are never retained or displayed.
+
+The renderer measures terminal cells for CJK text, emoji, combining characters,
+and ANSI. It never emits more rows than the pane height and marks overflow as
+`+N hidden`. Set `NO_COLOR=1` or use `TERM=dumb` to disable color, and set
+`CODEX_HUD_ASCII=1` for ASCII status glyphs.
 
 ### Subagent activity
 
@@ -125,7 +141,10 @@ codex-hud --kill             # Kill session for current directory
 codex-hud --list             # List all HUD sessions
 codex-hud --attach           # Attach to existing session
 codex-hud --new-session      # Force a new session
-codex-hud --self-check       # Run diagnostics
+codex-hud --doctor           # Run diagnostics (--self-check alias)
+codex-hud --reload           # Restart only this directory's HUD pane
+codex-hud --toggle-mode      # Toggle single/overview mode
+codex-hud --hud-version      # Print version and revision
 ```
 </details>
 
@@ -138,6 +157,7 @@ codex-hud --self-check       # Run diagnostics
 | `CODEX_HUD_POSITION` | `bottom` | HUD pane position (`top` / `bottom`) |
 | `CODEX_HUD_HEIGHT` | `5` | HUD height in lines |
 | `CODEX_HUD_MOUSE` | `1` | Enable mouse/trackpad scrolling |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Tool detail level: `off`, `targets`, or `full` |
 
 <details>
 <summary>All environment variables</summary>
@@ -151,6 +171,11 @@ codex-hud --self-check       # Run diagnostics
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | tmux alternate-screen for codex pane |
 | `CODEX_HUD_BIND_TOGGLE` | `0` | Install the server-wide `Prefix+H` HUD toggle |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
+| `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Hide execution commands by default; `full` shows sanitized summaries and `off` hides the tool row |
+| `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | Also show `.agents` skill count; `CODEX_HOME/skills` remains authoritative for Codex |
+| `CODEX_HUD_ASCII` | `0` | Use ASCII progress and status glyphs |
+| `NO_COLOR` | (unset) | Disable ANSI colors when set |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | Running-agent presentation timeout; positive safe integer milliseconds only |
 | `CODEX_HUD_CWD` | (unset) | Override working directory |
 | `CODEX_HOME` | `~/.codex` | Codex home directory |
@@ -174,6 +199,9 @@ enabled = true
 
 ## System Support
 
+Runtime requires Node.js `>=20.19.0` (matching Chokidar 5's engine contract) and
+tmux.
+
 | Platform | Status |
 |----------|--------|
 | Linux | Supported |
@@ -184,15 +212,19 @@ enabled = true
 ## Development
 
 ```bash
-npm install && npm run build   # Build
-npm run dev                    # Watch mode
-node dist/index.js             # Run HUD directly
+npm install                    # Install dependencies
+npm run typecheck              # Typecheck only
+npm run test:unit              # Build and run unit tests
+npm run test:integration       # Build and run isolated integration tests
+npm test                       # Typecheck, build, and run all tests
+npm run test:render            # Run the render examples
 ```
 
 ## Changelog
 
 | Date | Change |
 |------|--------|
+| 2026-07-30 | Incremental protocol parsing, async collector caches, health/rate/turn state, Unicode width, privacy, and HUD controls |
 | 2026-07-12 | Document authoritative subagent activity, timeout semantics, and overview filtering |
 | 2026-04-09 | Add quick install/sync/upgrade/uninstall commands |
 | 2026-04-09 | Bind HUD session to current tmux pane; display reasoning effort |

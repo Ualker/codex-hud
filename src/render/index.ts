@@ -17,7 +17,7 @@ const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
 
 let lastStdoutFrame: string | null = null;
-const STATUS_HINT = 'Ctrl+T: Toggle • Drag: Resize';
+const STATUS_HINT = 'Click HUD, Ctrl+T • Drag to resize';
 
 function applyStatusHint(lines: string[], width: number): string[] {
   if (lines.length === 0 || width <= 0) {
@@ -75,7 +75,11 @@ export function getTerminalHeight(): number {
 /**
  * Respect terminal height by trimming lines and adding a truncation indicator when necessary
  */
-function limitLines(lines: string[], maxLines: number): string[] {
+export function fitLinesToViewport(
+  lines: string[],
+  maxLines: number,
+  width: number
+): string[] {
   if (maxLines <= 0) {
     return [];
   }
@@ -86,12 +90,19 @@ function limitLines(lines: string[], maxLines: number): string[] {
 
   const limited = lines.slice(0, maxLines);
   const truncatedCount = lines.length - maxLines;
-  const moreText =
-    truncatedCount === 1
-      ? '…1 more line hidden'
-      : `…${truncatedCount} more lines hidden`;
+  const moreText = `+${truncatedCount} hidden`;
   const indicator = colors.dim(moreText);
-  limited[limited.length - 1] = `${limited[limited.length - 1]} ${indicator}`;
+  const separatorWidth = 1;
+  const available = Math.max(
+    0,
+    width - visualLength(indicator) - separatorWidth
+  );
+  const preserved = truncateAnsi(
+    limited[limited.length - 1] ?? '',
+    available
+  );
+  limited[limited.length - 1] =
+    available > 0 ? `${preserved} ${indicator}` : truncateAnsi(indicator, width);
   return limited;
 }
 
@@ -141,7 +152,10 @@ export function render(data: HudData): void {
   
   const maxLines = Math.max(1, height);
   const lines = truncateLines(
-    applyStatusHint(limitLines(renderHud(data, options), maxLines), width),
+    applyStatusHint(
+      fitLinesToViewport(renderHud(data, options), maxLines, width),
+      width
+    ),
     width
   );
   
@@ -224,7 +238,10 @@ export function renderToStdout(data: HudData): void {
   
   const maxLines = Math.max(1, height);
   const lines = truncateLines(
-    applyStatusHint(limitLines(renderHud(data, options), maxLines), width),
+    applyStatusHint(
+      fitLinesToViewport(renderHud(data, options), maxLines, width),
+      width
+    ),
     width
   );
 

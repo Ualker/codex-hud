@@ -4,7 +4,6 @@
  */
 
 import * as fs from 'fs';
-import * as readline from 'readline';
 import type {
   RolloutLine,
   ResponseItemPayload,
@@ -15,9 +14,14 @@ import type {
   ToolActivity,
   ToolResult,
   PlanProgress,
+  PlanStep,
+  ProtocolHealth,
+  RateLimitSnapshot,
   SessionInfo,
   TokenUsageInfo,
+  TurnActivity,
 } from '../types.js';
+import { readCompleteJsonl } from '../utils/jsonl-tail.js';
 
 /**
  * Result of parsing a rollout file
@@ -27,6 +31,9 @@ export interface RolloutParseResult {
   toolActivity: ToolActivity;
   planProgress: PlanProgress | null;
   tokenUsage: TokenUsageInfo | null;
+  rateLimits: RateLimitSnapshot | null;
+  turnActivity: TurnActivity | null;
+  protocolHealth: ProtocolHealth;
   // Compact event tracking
   compactCount: number;
   lastCompactTime: Date | null;
@@ -153,12 +160,179 @@ function parseJsonValue(value?: string): unknown {
   }
 }
 
+function parseArgumentsValue(
+  value: ResponseItemPayload['arguments']
+): unknown {
+  if (typeof value === 'string') {
+    return parseJsonValue(value);
+  }
+  return value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+const KNOWN_TOP_LEVEL_TYPES = new Set([
+  'session_meta',
+  'response_item',
+  'event_msg',
+  'turn_context',
+  'compacted',
+  'world_state',
+]);
+
+const KNOWN_RESPONSE_TYPES = new Set([
+  'message',
+  'reasoning',
+  'function_call',
+  'function_call_output',
+  'custom_tool_call',
+  'custom_tool_call_output',
+  'tool_search_call',
+  'tool_search_output',
+]);
+
+const KNOWN_EVENT_TYPES = new Set([
+  'plan_update',
+  'token_count',
+  'rate_limit',
+  'context_compacted',
+  'turn_started',
+  'task_started',
+  'task_complete',
+  'turn_aborted',
+  'agent_reasoning',
+  'agent_message',
+  'user_message',
+  'thread_settings_applied',
+  'mcp_tool_call_begin',
+  'mcp_tool_call_end',
+  // Known low-signal event kinds intentionally ignored by the HUD.
+  'patch_apply_begin',
+  'patch_apply_end',
+  'exec_command_begin',
+  'exec_command_end',
+  'view_image_tool_call',
+  'web_search_begin',
+  'web_search_end',
+]);
+
+function incrementCounter(
+  counters: Record<string, number>,
+  key: string
+): void {
+  counters[key] = (counters[key] ?? 0) + 1;
+}
+
+function mergeCounters(
+  target: Record<string, number>,
+  previous: Record<string, number>
+): void {
+  for (const [key, count] of Object.entries(previous)) {
+    target[key] = (target[key] ?? 0) + count;
+  }
+}
+
+function asValidDate(value: unknown, fallback: Date): Date {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : fallback;
+}
+
+function parsePlanSteps(value: unknown): PlanStep[] | undefined {
+  if (!isRecord(value) || !Array.isArray(value.plan)) {
+    return undefined;
+  }
+
+  const steps: PlanStep[] = [];
+  for (const candidate of value.plan) {
+    if (!isRecord(candidate)) {
+      return undefined;
+    }
+    const rawStep = stringValue(candidate.step);
+    const step = rawStep
+      ? sanitizeDisplayText(rawStep, 512)
+      : undefined;
+    const status = candidate.status;
+    if (
+      !step ||
+      (status !== 'pending' &&
+        status !== 'in_progress' &&
+        status !== 'completed')
+    ) {
+      return undefined;
+    }
+    steps.push({ step, status });
+  }
+  return steps;
+}
+
+function createPlanProgress(
+  steps: readonly PlanStep[],
+  timestamp: Date
+): PlanProgress {
+  const copiedSteps = steps.map((step) => ({ ...step }));
+  const completed = copiedSteps.filter(
+    (step) => step.status === 'completed'
+  ).length;
+  return {
+    steps: copiedSteps,
+    todos: [],
+    completedSteps: completed,
+    totalSteps: copiedSteps.length,
+    completedTodos: 0,
+    totalTodos: 0,
+    lastUpdate: timestamp,
+  };
+}
+
+function transitionTurn(
+  previous: TurnActivity | null,
+  phase: TurnActivity['phase'],
+  timestamp: Date,
+  options: {
+    turnId?: string;
+    durationMs?: number;
+    timeToFirstTokenMs?: number;
+  } = {}
+): TurnActivity {
+  const sameTurn =
+    !options.turnId ||
+    !previous?.turnId ||
+    options.turnId === previous.turnId;
+  const samePhase = previous?.phase === phase && sameTurn;
+
+  return {
+    phase,
+    turnId: options.turnId ?? previous?.turnId,
+    since: samePhase ? previous.since : timestamp,
+    lastActivityAt: timestamp,
+    lastTurnDurationMs:
+      options.durationMs ?? previous?.lastTurnDurationMs,
+    lastTimeToFirstTokenMs:
+      options.timeToFirstTokenMs ?? previous?.lastTimeToFirstTokenMs,
+  };
+}
+
+function matchesActiveTurn(
+  previous: TurnActivity | null,
+  eventTurnId: string | undefined,
+  allowMissingEventId: boolean
+): boolean {
+  if (!previous?.turnId) {
+    return true;
+  }
+  if (!eventTurnId) {
+    return allowMissingEventId;
+  }
+  return eventTurnId === previous.turnId;
 }
 
 function getMcpToolName(payload: EventMsgPayload): string | undefined {
@@ -340,6 +514,14 @@ function summarizeToolArguments(
       const summary = `${completed}/${plan.length}`;
       return { summary };
     }
+    case 'tool_search': {
+      const limit = args.limit;
+      const summary =
+        typeof limit === 'number' && Number.isFinite(limit)
+          ? `limit ${limit}`
+          : undefined;
+      return { summary };
+    }
     case 'apply_patch': {
       const patch = stringValue(args.patch ?? args.input);
       const summary = patch ? summarizePatch(patch) : undefined;
@@ -495,6 +677,16 @@ function analyzeToolCall(payload: ResponseItemPayload): {
   name: string;
   details: ToolDisplayDetails;
 } {
+  if (payload.type === 'tool_search_call') {
+    return {
+      name: 'tool_search',
+      details: summarizeToolArguments(
+        'tool_search',
+        parseArgumentsValue(payload.arguments)
+      ),
+    };
+  }
+
   const protocolName =
     sanitizeDisplayText(payload.name ?? 'unknown', 80) ?? 'unknown';
 
@@ -503,7 +695,7 @@ function analyzeToolCall(payload: ResponseItemPayload): {
       name: protocolName,
       details: summarizeToolArguments(
         protocolName,
-        parseJsonValue(payload.arguments)
+        parseArgumentsValue(payload.arguments)
       ),
     };
   }
@@ -536,11 +728,19 @@ function analyzeToolCall(payload: ResponseItemPayload): {
 }
 
 function isToolCallPayload(payload: ResponseItemPayload): boolean {
-  return payload.type === 'function_call' || payload.type === 'custom_tool_call';
+  return (
+    payload.type === 'function_call' ||
+    payload.type === 'custom_tool_call' ||
+    payload.type === 'tool_search_call'
+  );
 }
 
 function isToolCallOutputPayload(payload: ResponseItemPayload): boolean {
-  return payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output';
+  return (
+    payload.type === 'function_call_output' ||
+    payload.type === 'custom_tool_call_output' ||
+    payload.type === 'tool_search_output'
+  );
 }
 
 function extractToolOutputTexts(
@@ -718,13 +918,14 @@ export async function parseRolloutFile(
   fromOffset: number = 0,
   maxRecentCalls: number = 10,
   runningCalls: Map<string, ToolCall> = new Map(),
-  existingSession: SessionInfo | null = null
+  existingSession: SessionInfo | null = null,
+  existingTurnActivity: TurnActivity | null = null
 ): Promise<RolloutParseOutput> {
   const toolActivity: ToolActivity = {
     recentCalls: [],
     totalCalls: 0,
     callsByType: {},
-    lastUpdateTime: new Date(),
+    lastUpdateTime: new Date(0),
   };
 
   let session: SessionInfo | null = existingSession ? { ...existingSession } : null;
@@ -735,39 +936,51 @@ export async function parseRolloutFile(
   let sessionServiceTier: string | null | undefined = existingSession?.serviceTier;
   let planProgress: PlanProgress | null = null;
   let tokenUsage: TokenUsageInfo | null = null;
+  let rateLimits: RateLimitSnapshot | null = null;
+  let turnActivity: TurnActivity | null = existingTurnActivity
+    ? { ...existingTurnActivity }
+    : null;
   let compactCount = 0;
   let lastCompactTime: Date | null = null;
   let lastToolActivityTime: Date | null = null;
   let lastAssistantMessageTime: Date | null = null;
   let lastEventTime: Date | null = null;
+  const protocolHealth: ProtocolHealth = {
+    unknownTopLevelTypes: {},
+    unknownResponseTypes: {},
+    unknownEventTypes: {},
+  };
+
+  const buildResult = (): RolloutParseResult => ({
+    session,
+    toolActivity,
+    planProgress,
+    tokenUsage,
+    rateLimits,
+    turnActivity,
+    protocolHealth,
+    compactCount,
+    lastCompactTime,
+    lastToolActivityTime,
+    lastAssistantMessageTime,
+    lastEventTime,
+  });
 
   if (!fs.existsSync(rolloutPath)) {
     runningCalls.clear();
     return {
-      result: {
-        session,
-        toolActivity,
-        planProgress,
-        tokenUsage,
-        compactCount,
-        lastCompactTime,
-        lastToolActivityTime,
-        lastAssistantMessageTime,
-        lastEventTime,
-      },
+      result: buildResult(),
       newOffset: 0,
       runningCalls,
       wasTruncated: false,
     };
   }
 
-  const stats = fs.statSync(rolloutPath);
-  const fileSize = stats.size;
-
-  // If fromOffset is beyond file size, file might have been truncated
-  const wasTruncated = fromOffset > fileSize;
-  const startOffset = wasTruncated ? 0 : fromOffset;
-  if (wasTruncated) {
+  // Commit only bytes through the final newline. A JSON object that is still
+  // being written remains unread until a later pass, instead of being skipped
+  // permanently by advancing the cursor to EOF.
+  const batch = await readCompleteJsonl<RolloutLine>(rolloutPath, fromOffset);
+  if (batch.truncated) {
     runningCalls.clear();
     session = null;
     sessionModel = undefined;
@@ -775,335 +988,413 @@ export async function parseRolloutFile(
     sessionApprovalPolicy = undefined;
     sessionSandboxMode = undefined;
     sessionServiceTier = undefined;
+    turnActivity = null;
   }
 
-  return new Promise((resolve) => {
-    const fileStream = fs.createReadStream(rolloutPath, {
-      encoding: 'utf8',
-      start: startOffset,
-    });
-
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity,
-    });
-
-    let resolved = false;
-    const finish = (newOffset: number) => {
-      if (resolved) {
-        return;
-      }
-      resolved = true;
-      resolve({
-        result: {
-          session,
-          toolActivity,
-          planProgress,
-          tokenUsage,
-          compactCount,
-          lastCompactTime,
-          lastToolActivityTime,
-          lastAssistantMessageTime,
-          lastEventTime,
-        },
-        newOffset,
-        runningCalls,
-        wasTruncated,
-      });
+  const addToolCall = (
+    toolName: string,
+    callId: string,
+    timestamp: Date,
+    details: ToolDisplayDetails = {}
+  ): ToolCall => {
+    const toolCall: ToolCall = {
+      id: callId,
+      name: toolName,
+      timestamp,
+      status: 'running',
+      target: details.target,
+      summary: details.summary,
+      workdir: details.workdir,
     };
+    runningCalls.set(callId, toolCall);
+    toolActivity.totalCalls++;
+    toolActivity.callsByType[toolName] =
+      (toolActivity.callsByType[toolName] ?? 0) + 1;
+    toolActivity.recentCalls.push(toolCall);
+    if (toolActivity.recentCalls.length > maxRecentCalls) {
+      toolActivity.recentCalls.shift();
+    }
+    return toolCall;
+  };
 
-    rl.on('line', (line) => {
-      if (!line.trim()) return;
+  const completeToolCall = (
+    callId: string,
+    timestamp: Date,
+    output: ResponseItemPayload['output']
+  ): void => {
+    const runningCall = runningCalls.get(callId);
+    if (!runningCall) {
+      return;
+    }
+    const completion = parseToolCompletion(runningCall.name, output);
+    runningCall.status = completion.failed ? 'error' : 'completed';
+    runningCall.duration = timestamp.getTime() - runningCall.timestamp.getTime();
+    runningCall.result = completion.result;
+    runningCalls.delete(callId);
 
-      try {
-        const entry = JSON.parse(line) as RolloutLine;
-        const timestamp = new Date(entry.timestamp);
+    const index = toolActivity.recentCalls.findIndex(
+      (call) => call.id === callId
+    );
+    if (index >= 0) {
+      toolActivity.recentCalls[index] = runningCall;
+    } else {
+      toolActivity.recentCalls.push(runningCall);
+      if (toolActivity.recentCalls.length > maxRecentCalls) {
+        toolActivity.recentCalls.shift();
+      }
+    }
+  };
 
-        // Process based on entry type
-        lastEventTime = timestamp;
-        if (entry.type === 'session_meta' && !session) {
-          const meta = entry.payload as SessionMetaPayload;
-          session = {
-            id: meta.id,
-            rolloutPath,
-            startTime: new Date(meta.timestamp),
-            cwd: meta.cwd,
-            cliVersion: meta.cli_version,
-            model: sessionModel,
-            reasoningEffort: sessionReasoningEffort,
-            approvalPolicy: sessionApprovalPolicy,
-            sandboxMode: sessionSandboxMode,
-            serviceTier: sessionServiceTier,
-            modelProvider: meta.model_provider,
-            source: meta.source,
-            forkedFromId: meta.forked_from_id,
-            parentThreadId: meta.parent_thread_id,
-            agentPath: meta.agent_path,
-            git: meta.git
-              ? {
-                  branch: meta.git.branch,
-                  commitHash: meta.git.commit_hash,
-                }
-              : undefined,
-          };
-        } else if (entry.type === 'turn_context') {
-          const payload = entry.payload as TurnContextPayload;
-          const contextModel = payload.model ?? payload.collaboration_mode?.settings?.model;
-          const reasoningEffort =
-            payload.reasoning_effort ?? payload.collaboration_mode?.settings?.reasoning_effort;
+  for (const entry of batch.records) {
+    const timestamp = new Date(entry.timestamp);
+    if (!Number.isFinite(timestamp.getTime())) {
+      continue;
+    }
 
-          if (payload.approval_policy !== undefined) {
-            sessionApprovalPolicy = payload.approval_policy;
-            if (session) {
-              session.approvalPolicy = payload.approval_policy;
+    lastEventTime = timestamp;
+    toolActivity.lastUpdateTime = timestamp;
+    if (!KNOWN_TOP_LEVEL_TYPES.has(entry.type)) {
+      incrementCounter(protocolHealth.unknownTopLevelTypes, entry.type);
+      continue;
+    }
+
+    if (entry.type === 'session_meta' && !session) {
+      const meta = entry.payload as SessionMetaPayload;
+      session = {
+        id: meta.id,
+        rolloutPath,
+        startTime: new Date(meta.timestamp),
+        cwd: meta.cwd,
+        cliVersion: meta.cli_version,
+        model: sessionModel,
+        reasoningEffort: sessionReasoningEffort,
+        approvalPolicy: sessionApprovalPolicy,
+        sandboxMode: sessionSandboxMode,
+        serviceTier: sessionServiceTier,
+        modelProvider: meta.model_provider,
+        source: meta.source,
+        forkedFromId: meta.forked_from_id,
+        parentThreadId: meta.parent_thread_id,
+        agentPath: meta.agent_path,
+        git: meta.git
+          ? {
+              branch: meta.git.branch,
+              commitHash: meta.git.commit_hash,
             }
-          }
+          : undefined,
+      };
+      continue;
+    }
 
-          const sandboxMode = payload.sandbox_policy?.type;
-          if (sandboxMode !== undefined) {
-            sessionSandboxMode = sandboxMode;
-            if (session) {
-              session.sandboxMode = sandboxMode;
-            }
-          }
+    if (entry.type === 'turn_context') {
+      const payload = entry.payload as TurnContextPayload;
+      const contextModel =
+        payload.model ?? payload.collaboration_mode?.settings?.model;
+      const reasoningEffort =
+        payload.reasoning_effort ??
+        payload.collaboration_mode?.settings?.reasoning_effort;
 
-          if (contextModel) {
-            sessionModel = contextModel;
-            if (session) {
-              session.model = contextModel;
-            }
-          }
+      if (payload.approval_policy !== undefined) {
+        sessionApprovalPolicy = payload.approval_policy;
+        if (session) {
+          session.approvalPolicy = payload.approval_policy;
+        }
+      }
+      const sandboxMode = payload.sandbox_policy?.type;
+      if (sandboxMode !== undefined) {
+        sessionSandboxMode = sandboxMode;
+        if (session) {
+          session.sandboxMode = sandboxMode;
+        }
+      }
+      if (contextModel) {
+        sessionModel = contextModel;
+        if (session) {
+          session.model = contextModel;
+        }
+      }
+      if (reasoningEffort) {
+        sessionReasoningEffort = reasoningEffort;
+        if (session) {
+          session.reasoningEffort = reasoningEffort;
+        }
+      }
+      continue;
+    }
 
-          if (reasoningEffort) {
-            sessionReasoningEffort = reasoningEffort;
-            if (session) {
-              session.reasoningEffort = reasoningEffort;
-            }
-          }
-        } else if (entry.type === 'response_item') {
-          const payload = entry.payload as ResponseItemPayload;
+    if (entry.type === 'compacted') {
+      compactCount++;
+      lastCompactTime = timestamp;
+      continue;
+    }
+    if (entry.type === 'world_state') {
+      continue;
+    }
 
-          if (isToolCallPayload(payload) && payload.name) {
-            // New tool call started
-            lastToolActivityTime = timestamp;
-            const { name: toolName, details } = analyzeToolCall(payload);
-            const toolCall: ToolCall = {
-              id: payload.call_id ?? payload.id ?? `call_${Date.now()}`,
-              name: toolName,
-              timestamp,
-              status: 'running',
-              target: details.target,
-              summary: details.summary,
-              workdir: details.workdir,
-            };
+    if (entry.type === 'response_item') {
+      const payload = entry.payload as ResponseItemPayload;
+      if (!KNOWN_RESPONSE_TYPES.has(payload.type)) {
+        incrementCounter(protocolHealth.unknownResponseTypes, payload.type);
+        continue;
+      }
 
-            runningCalls.set(toolCall.id, toolCall);
-            toolActivity.totalCalls++;
-            toolActivity.callsByType[toolName] =
-              (toolActivity.callsByType[toolName] ?? 0) + 1;
+      if (
+        isToolCallPayload(payload) &&
+        (payload.name || payload.type === 'tool_search_call')
+      ) {
+        lastToolActivityTime = timestamp;
+        const { name: toolName, details } = analyzeToolCall(payload);
+        const callId =
+          payload.call_id ?? payload.id ?? `call_${timestamp.getTime()}`;
+        addToolCall(toolName, callId, timestamp, details);
+        turnActivity = transitionTurn(
+          turnActivity,
+          'running-tool',
+          timestamp
+        );
 
-            // Add to recent calls (will update status when completed)
-            toolActivity.recentCalls.push(toolCall);
-            if (toolActivity.recentCalls.length > maxRecentCalls) {
-              toolActivity.recentCalls.shift();
-            }
-          } else if (isToolCallOutputPayload(payload) && payload.call_id) {
-            // Tool call completed
-            lastToolActivityTime = timestamp;
-            const runningCall = runningCalls.get(payload.call_id);
-            if (runningCall) {
-              const completion = parseToolCompletion(
-                runningCall.name,
-                payload.output
-              );
-              runningCall.status = completion.failed ? 'error' : 'completed';
-              runningCall.duration = timestamp.getTime() - runningCall.timestamp.getTime();
-              runningCall.result = completion.result;
-              runningCalls.delete(payload.call_id);
-
-              // Update in recentCalls array
-              const idx = toolActivity.recentCalls.findIndex(
-                (c) => c.id === payload.call_id
-              );
-              if (idx >= 0) {
-                toolActivity.recentCalls[idx] = runningCall;
-              } else {
-                toolActivity.recentCalls.push(runningCall);
-                if (toolActivity.recentCalls.length > maxRecentCalls) {
-                  toolActivity.recentCalls.shift();
-                }
-              }
-            }
-          } else if (payload.type === 'message' && payload.role === 'assistant') {
-            lastAssistantMessageTime = timestamp;
-          }
-        } else if (entry.type === 'event_msg') {
-          const payload = entry.payload as EventMsgPayload;
-
-          if (payload.type === 'plan_update' && payload.plan) {
-            const completed = payload.plan.filter((s) => s.status === 'completed').length;
-            planProgress = {
-              steps: payload.plan,
-              todos: [],
-              completedSteps: completed,
-              totalSteps: payload.plan.length,
-              completedTodos: 0,
-              totalTodos: 0,
-              lastUpdate: timestamp,
-            };
-          } else if (payload.type === 'token_count' && payload.info) {
-            tokenUsage = payload.info;
-          } else if (payload.type === 'context_compacted') {
-            // /compact command was executed - track it
-            compactCount++;
-            lastCompactTime = timestamp;
-          } else if (payload.type === 'turn_started' && payload.model_context_window) {
-            // New turn started - update context window if provided
-            if (!tokenUsage) {
-              tokenUsage = { model_context_window: payload.model_context_window };
-            } else {
-              tokenUsage.model_context_window = payload.model_context_window;
-            }
-          } else if (payload.type === 'thread_settings_applied') {
-            const threadSettings = payload.thread_settings;
-            const settingsModel =
-              stringValue(threadSettings?.model) ??
-              stringValue(threadSettings?.collaboration_mode?.settings?.model);
-            const settingsEffort =
-              stringValue(threadSettings?.reasoning_effort) ??
-              stringValue(
-                threadSettings?.collaboration_mode?.settings?.reasoning_effort
-              );
-
-            if (settingsModel) {
-              sessionModel = settingsModel;
-              if (session) {
-                session.model = settingsModel;
-              }
-            }
-
-            if (settingsEffort) {
-              sessionReasoningEffort = settingsEffort;
-              if (session) {
-                session.reasoningEffort = settingsEffort;
-              }
-            }
-
-            const serviceTier = threadSettings?.service_tier;
-            if (serviceTier !== undefined) {
-              sessionServiceTier = serviceTier;
-              if (session) {
-                session.serviceTier = serviceTier;
-              }
-            }
-          } else if (
-            payload.type === 'mcp_tool_call_begin' ||
-            payload.type === 'mcp_tool_call_end'
-          ) {
-            const mcpName = getMcpToolName(payload);
-            const callId = getMcpCallId(payload);
-            if (mcpName && callId) {
-              lastToolActivityTime = timestamp;
-              const existingCall = runningCalls.get(callId);
-
-              if (payload.type === 'mcp_tool_call_begin') {
-                if (!existingCall) {
-                  const toolCall: ToolCall = {
-                    id: callId,
-                    name: mcpName,
-                    timestamp,
-                    status: 'running',
-                  };
-
-                  runningCalls.set(callId, toolCall);
-                  toolActivity.totalCalls++;
-                  toolActivity.callsByType[mcpName] =
-                    (toolActivity.callsByType[mcpName] ?? 0) + 1;
-                  toolActivity.recentCalls.push(toolCall);
-                  if (toolActivity.recentCalls.length > maxRecentCalls) {
-                    toolActivity.recentCalls.shift();
-                  }
-                }
-              } else {
-                const status = getMcpToolStatus(payload);
-                const duration = getMcpDurationMs(payload);
-
-                if (existingCall) {
-                  const previousName = existingCall.name;
-                  existingCall.name = mcpName;
-                  if (previousName !== mcpName) {
-                    const previousCount =
-                      toolActivity.callsByType[previousName] ?? 0;
-                    if (previousCount <= 1) {
-                      delete toolActivity.callsByType[previousName];
-                    } else {
-                      toolActivity.callsByType[previousName] =
-                        previousCount - 1;
-                    }
-                    toolActivity.callsByType[mcpName] =
-                      (toolActivity.callsByType[mcpName] ?? 0) + 1;
-                  }
-
-                  existingCall.status = status;
-                  existingCall.duration = duration;
-                  runningCalls.delete(callId);
-
-                  const idx = toolActivity.recentCalls.findIndex(
-                    (call) => call.id === callId
-                  );
-                  if (idx >= 0) {
-                    toolActivity.recentCalls[idx] = existingCall;
-                  } else {
-                    toolActivity.recentCalls.push(existingCall);
-                    if (toolActivity.recentCalls.length > maxRecentCalls) {
-                      toolActivity.recentCalls.shift();
-                    }
-                  }
-                } else {
-                  const toolCall: ToolCall = {
-                    id: callId,
-                    name: mcpName,
-                    timestamp,
-                    status,
-                    duration,
-                  };
-
-                  toolActivity.totalCalls++;
-                  toolActivity.callsByType[mcpName] =
-                    (toolActivity.callsByType[mcpName] ?? 0) + 1;
-                  toolActivity.recentCalls.push(toolCall);
-                  if (toolActivity.recentCalls.length > maxRecentCalls) {
-                    toolActivity.recentCalls.shift();
-                  }
-                }
-              }
-            }
+        if (toolName.toLowerCase() === 'update_plan') {
+          const plan = parsePlanSteps(
+            parseArgumentsValue(payload.arguments)
+          );
+          if (plan) {
+            planProgress = createPlanProgress(plan, timestamp);
           }
         }
-
-        toolActivity.lastUpdateTime = timestamp;
-      } catch {
-        // Skip malformed lines
+      } else if (isToolCallOutputPayload(payload) && payload.call_id) {
+        lastToolActivityTime = timestamp;
+        completeToolCall(payload.call_id, timestamp, payload.output);
+        if (
+          turnActivity?.phase === 'running-tool' &&
+          runningCalls.size === 0
+        ) {
+          turnActivity = transitionTurn(
+            turnActivity,
+            'thinking',
+            timestamp
+          );
+        }
+      } else if (
+        payload.type === 'message' &&
+        payload.role === 'assistant'
+      ) {
+        lastAssistantMessageTime = timestamp;
+        turnActivity = transitionTurn(
+          turnActivity,
+          'responding',
+          timestamp
+        );
       }
-    });
+      continue;
+    }
 
-    const computeNewOffset = (): number => {
-      const latestSize = fs.statSync(rolloutPath).size;
-      return computeNextOffset(startOffset, fileStream.bytesRead, latestSize);
-    };
+    if (entry.type !== 'event_msg') {
+      continue;
+    }
 
-    rl.on('close', () => {
-      finish(computeNewOffset());
-    });
+    const payload = entry.payload as EventMsgPayload;
+    if (!KNOWN_EVENT_TYPES.has(payload.type)) {
+      incrementCounter(protocolHealth.unknownEventTypes, payload.type);
+      continue;
+    }
 
-    rl.on('error', () => {
-      finish(computeNewOffset());
-    });
+    if (payload.type === 'plan_update' && payload.plan) {
+      const plan = parsePlanSteps({ plan: payload.plan });
+      if (plan) {
+        planProgress = createPlanProgress(plan, timestamp);
+      }
+    } else if (payload.type === 'token_count') {
+      if (payload.info) {
+        tokenUsage = payload.info;
+      }
+      if (payload.rate_limits) {
+        rateLimits = payload.rate_limits;
+      }
+    } else if (payload.type === 'rate_limit' && payload.rate_limits) {
+      rateLimits = payload.rate_limits;
+    } else if (payload.type === 'context_compacted') {
+      compactCount++;
+      lastCompactTime = timestamp;
+    } else if (
+      payload.type === 'turn_started' ||
+      payload.type === 'task_started'
+    ) {
+      if (payload.model_context_window) {
+        tokenUsage ??= {};
+        tokenUsage.model_context_window = payload.model_context_window;
+      }
+      const startedAt = asValidDate(payload.started_at, timestamp);
+      turnActivity = transitionTurn(
+        turnActivity,
+        'thinking',
+        startedAt,
+        { turnId: payload.turn_id }
+      );
+    } else if (payload.type === 'task_complete') {
+      if (!matchesActiveTurn(turnActivity, payload.turn_id, false)) {
+        continue;
+      }
+      const completedAt = asValidDate(payload.completed_at, timestamp);
+      turnActivity = transitionTurn(
+        turnActivity,
+        'idle',
+        completedAt,
+        {
+          turnId: payload.turn_id,
+          durationMs:
+            typeof payload.duration_ms === 'number'
+              ? payload.duration_ms
+              : undefined,
+          timeToFirstTokenMs:
+            typeof payload.time_to_first_token_ms === 'number'
+              ? payload.time_to_first_token_ms
+              : undefined,
+        }
+      );
+    } else if (payload.type === 'turn_aborted') {
+      if (!matchesActiveTurn(turnActivity, payload.turn_id, true)) {
+        continue;
+      }
+      turnActivity = transitionTurn(
+        turnActivity,
+        'aborted',
+        timestamp,
+        { turnId: payload.turn_id }
+      );
+    } else if (payload.type === 'agent_reasoning') {
+      turnActivity = transitionTurn(
+        turnActivity,
+        'thinking',
+        timestamp,
+        { turnId: payload.turn_id }
+      );
+    } else if (payload.type === 'agent_message') {
+      lastAssistantMessageTime = timestamp;
+      turnActivity = transitionTurn(
+        turnActivity,
+        'responding',
+        timestamp,
+        { turnId: payload.turn_id }
+      );
+    } else if (payload.type === 'thread_settings_applied') {
+      const threadSettings = payload.thread_settings;
+      const settingsModel =
+        stringValue(threadSettings?.model) ??
+        stringValue(threadSettings?.collaboration_mode?.settings?.model);
+      const settingsEffort =
+        stringValue(threadSettings?.reasoning_effort) ??
+        stringValue(
+          threadSettings?.collaboration_mode?.settings?.reasoning_effort
+        );
 
-    fileStream.on('error', () => {
-      finish(computeNewOffset());
-    });
-  });
+      if (settingsModel) {
+        sessionModel = settingsModel;
+        if (session) {
+          session.model = settingsModel;
+        }
+      }
+      if (settingsEffort) {
+        sessionReasoningEffort = settingsEffort;
+        if (session) {
+          session.reasoningEffort = settingsEffort;
+        }
+      }
+      const serviceTier = threadSettings?.service_tier;
+      if (serviceTier !== undefined) {
+        sessionServiceTier = serviceTier;
+        if (session) {
+          session.serviceTier = serviceTier;
+        }
+      }
+    } else if (
+      payload.type === 'mcp_tool_call_begin' ||
+      payload.type === 'mcp_tool_call_end'
+    ) {
+      const mcpName = getMcpToolName(payload);
+      const callId = getMcpCallId(payload);
+      if (!mcpName || !callId) {
+        continue;
+      }
+
+      lastToolActivityTime = timestamp;
+      const existingCall = runningCalls.get(callId);
+      if (payload.type === 'mcp_tool_call_begin') {
+        if (!existingCall) {
+          addToolCall(mcpName, callId, timestamp);
+        }
+        turnActivity = transitionTurn(
+          turnActivity,
+          'running-tool',
+          timestamp
+        );
+        continue;
+      }
+
+      const status = getMcpToolStatus(payload);
+      const duration = getMcpDurationMs(payload);
+      if (existingCall) {
+        const previousName = existingCall.name;
+        existingCall.name = mcpName;
+        if (previousName !== mcpName) {
+          const previousCount =
+            toolActivity.callsByType[previousName] ?? 0;
+          if (previousCount <= 1) {
+            delete toolActivity.callsByType[previousName];
+          } else {
+            toolActivity.callsByType[previousName] = previousCount - 1;
+          }
+          toolActivity.callsByType[mcpName] =
+            (toolActivity.callsByType[mcpName] ?? 0) + 1;
+        }
+        existingCall.status = status;
+        existingCall.duration = duration;
+        runningCalls.delete(callId);
+        const index = toolActivity.recentCalls.findIndex(
+          (call) => call.id === callId
+        );
+        if (index >= 0) {
+          toolActivity.recentCalls[index] = existingCall;
+        } else {
+          toolActivity.recentCalls.push(existingCall);
+          if (toolActivity.recentCalls.length > maxRecentCalls) {
+            toolActivity.recentCalls.shift();
+          }
+        }
+      } else {
+        const toolCall: ToolCall = {
+          id: callId,
+          name: mcpName,
+          timestamp,
+          status,
+          duration,
+        };
+        toolActivity.totalCalls++;
+        toolActivity.callsByType[mcpName] =
+          (toolActivity.callsByType[mcpName] ?? 0) + 1;
+        toolActivity.recentCalls.push(toolCall);
+        if (toolActivity.recentCalls.length > maxRecentCalls) {
+          toolActivity.recentCalls.shift();
+        }
+      }
+      if (
+        turnActivity?.phase === 'running-tool' &&
+        runningCalls.size === 0
+      ) {
+        turnActivity = transitionTurn(
+          turnActivity,
+          'thinking',
+          timestamp
+        );
+      }
+    }
+  }
+
+  return {
+    result: buildResult(),
+    newOffset: batch.nextOffset,
+    runningCalls,
+    wasTruncated: batch.truncated,
+  };
 }
 
 /**
@@ -1150,7 +1441,8 @@ export class RolloutParser {
       this.lastOffset,
       this.maxRecentCalls,
       this.runningCalls,
-      this.cachedResult?.session ?? null
+      this.cachedResult?.session ?? null,
+      this.cachedResult?.turnActivity ?? null
     );
 
     // Some rollouts first emit a generic function_call and later enrich that
@@ -1229,6 +1521,13 @@ export class RolloutParser {
         deduped.unshift(call);
       }
       result.toolActivity.recentCalls = deduped.slice(-this.maxRecentCalls);
+      if (
+        this.cachedResult.toolActivity.lastUpdateTime.getTime() >
+        result.toolActivity.lastUpdateTime.getTime()
+      ) {
+        result.toolActivity.lastUpdateTime =
+          this.cachedResult.toolActivity.lastUpdateTime;
+      }
 
       // Merge compact tracking
       result.compactCount += this.cachedResult.compactCount;
@@ -1247,6 +1546,31 @@ export class RolloutParser {
       if (!result.tokenUsage && this.cachedResult.tokenUsage) {
         result.tokenUsage = this.cachedResult.tokenUsage;
       }
+
+      // Plans, limits and lifecycle snapshots are state, not per-batch events.
+      // Preserve the previous value until a later record explicitly supersedes it.
+      result.planProgress ??= this.cachedResult.planProgress;
+      result.rateLimits ??= this.cachedResult.rateLimits;
+      result.turnActivity ??= this.cachedResult.turnActivity;
+
+      result.lastToolActivityTime ??=
+        this.cachedResult.lastToolActivityTime;
+      result.lastAssistantMessageTime ??=
+        this.cachedResult.lastAssistantMessageTime;
+      result.lastEventTime ??= this.cachedResult.lastEventTime;
+
+      mergeCounters(
+        result.protocolHealth.unknownTopLevelTypes,
+        this.cachedResult.protocolHealth.unknownTopLevelTypes
+      );
+      mergeCounters(
+        result.protocolHealth.unknownResponseTypes,
+        this.cachedResult.protocolHealth.unknownResponseTypes
+      );
+      mergeCounters(
+        result.protocolHealth.unknownEventTypes,
+        this.cachedResult.protocolHealth.unknownEventTypes
+      );
     }
 
     this.cachedResult = result;

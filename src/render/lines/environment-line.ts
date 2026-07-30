@@ -5,7 +5,14 @@
  */
 
 import type { HudData } from '../../types.js';
-import { theme, colors, icons } from '../colors.js';
+import {
+  theme,
+  colors,
+  icons,
+  sanitizeTerminalText,
+  truncateAnsi,
+  visualLength,
+} from '../colors.js';
 import {
   getApprovalPolicyDisplay,
   getFastModeDisplay,
@@ -16,78 +23,110 @@ import {
  * Render the environment line
  * Format: 2 configs | 3 extensions | N skills | M hooks | Approval: policy | Fast: on
  */
-export function renderEnvironmentLine(data: HudData): string | null {
-  const parts: string[] = [];
-  
-  // Codex-specific: Active configs count
-  if (data.project.configsCount > 0) {
-    parts.push(theme.info(`${data.project.configsCount}`) + colors.dim(' configs'));
-  }
-  
-  // Codex-specific: Extensions count (MCP servers)
-  if (data.project.extensionsCount > 0) {
-    parts.push(theme.info(`${data.project.extensionsCount}`) + colors.dim(' extensions'));
-  }
-
-  if (data.project.skillsCount > 0) {
-    parts.push(theme.info(`${data.project.skillsCount}`) + colors.dim(' skills'));
-  }
-
-  if (data.project.hooksCount > 0) {
-    parts.push(theme.info(`${data.project.hooksCount}`) + colors.dim(' hooks'));
-  }
-  
-  // AGENTS.md count
-  if (data.project.agentsMdCount > 0) {
-    parts.push(theme.success(`${data.project.agentsMdCount}`) + colors.dim(' AGENTS.md'));
-  }
-  
-  // INSTRUCTIONS.md count (if exists)
-  if (data.project.instructionsMdCount > 0) {
-    parts.push(theme.success(`${data.project.instructionsMdCount}`) + colors.dim(' INSTRUCTIONS.md'));
-  }
-  
-  // Rules count (if exists)
-  if (data.project.rulesCount > 0) {
-    parts.push(theme.info(`${data.project.rulesCount}`) + colors.dim(' rules'));
-  }
-  
-  // MCP servers count (legacy display, kept for backward compat)
-  const mcpCount = getMcpServerCount(data.config);
-  if (mcpCount > 0 && data.project.extensionsCount === 0) {
-    // Only show if not already shown as extensions
-    parts.push(theme.info(`${mcpCount}`) + colors.dim(' MCPs'));
-  }
-  
-  // Approval policy
-  const approvalPolicy = getApprovalPolicyDisplay(data.config, {
-    approvalPolicy: data.session?.approvalPolicy,
-    sandboxMode: data.session?.sandboxMode,
-  });
-  parts.push(colors.dim('Approval: ') + theme.value(approvalPolicy));
-
-  // Fast mode reflects the latest runtime service tier when available.
-  parts.push(theme.value(getFastModeDisplay(data.config, {
-    serviceTier: data.session?.serviceTier,
-  })));
+export function renderEnvironmentLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
+  const critical: string[] = [];
+  const details: string[] = [];
 
   // Runtime turn_context state takes precedence over static config.
   const sandbox = data.session?.sandboxMode ?? data.config.sandbox_mode;
+  const approvalPolicy =
+    data.session?.approvalPolicy ?? data.config.approval_policy;
+  if (sandbox === 'danger-full-access') {
+    critical.push(theme.error('[FULL ACCESS]'));
+  }
+
+  // Approval and sandbox are security state, so they must survive before
+  // inventory counts on narrow panes.
+  const approvalDisplay = getApprovalPolicyDisplay(data.config, {
+    approvalPolicy,
+    sandboxMode: sandbox,
+  });
+  critical.push(colors.dim('Approval: ') + theme.value(approvalDisplay));
+
   if (sandbox) {
-    let sandboxDisplay: string;
-    if (sandbox === 'danger-full-access') {
-      sandboxDisplay = theme.error('DANGER');
-    } else if (sandbox === 'workspace-write') {
-      sandboxDisplay = theme.warning('ws-write');
-    } else {
-      sandboxDisplay = theme.info(sandbox);
+    const sandboxDisplay =
+      sandbox === 'danger-full-access'
+        ? theme.error('off')
+        : sandbox === 'workspace-write'
+          ? theme.warning('workspace-write')
+          : theme.info(sanitizeTerminalText(sandbox));
+    critical.push(colors.dim('Sandbox: ') + sandboxDisplay);
+  }
+
+  critical.push(
+    theme.value(
+      getFastModeDisplay(data.config, {
+        serviceTier: data.session?.serviceTier,
+      })
+    )
+  );
+
+  const mcpCount =
+    data.project.mcpCount || getMcpServerCount(data.config);
+  if (mcpCount > 0) {
+    details.push(
+      colors.dim('MCP configured: ') + theme.info(`${mcpCount}`)
+    );
+  }
+  if (data.project.skillsCount > 0) {
+    details.push(
+      colors.dim('Codex skills: ') +
+        theme.info(`${data.project.skillsCount}`)
+    );
+  }
+  if (
+    process.env.CODEX_HUD_SHOW_OTHER_AGENT_SKILLS === '1' &&
+    (data.project.otherAgentSkillsCount ?? 0) > 0
+  ) {
+    details.push(
+      colors.dim('Other-agent skills: ') +
+        theme.info(`${data.project.otherAgentSkillsCount}`)
+    );
+  }
+  if (data.project.hooksCount > 0) {
+    details.push(
+      colors.dim('Hooks: ') + theme.info(`${data.project.hooksCount}`)
+    );
+  }
+  if (data.project.agentsMdCount > 0) {
+    details.push(
+      colors.dim('AGENTS.md: ') +
+        theme.success(`${data.project.agentsMdCount}`)
+    );
+  }
+
+  const configSources =
+    (data.project.globalConfigActive ? 1 : 0) +
+    data.project.configsCount;
+  if (configSources > 0) {
+    const sourceLabel = [
+      data.project.globalConfigActive ? 'global' : '',
+      data.project.configsCount > 0
+        ? `${data.project.configsCount} project`
+        : '',
+    ].filter(Boolean).join('+');
+    details.push(colors.dim(`Config: ${sourceLabel}`));
+  }
+  if (data.project.rulesCount > 0) {
+    details.push(
+      colors.dim('Rules: ') + theme.info(`${data.project.rulesCount}`)
+    );
+  }
+
+  const separator = ` ${colors.dim(icons.pipe)} `;
+  const selected = [...critical];
+  for (const detail of details) {
+    const candidate = [...selected, detail].join(separator);
+    if (
+      !Number.isFinite(width) ||
+      visualLength(candidate) <= width
+    ) {
+      selected.push(detail);
     }
-    parts.push(colors.dim('Sandbox: ') + sandboxDisplay);
   }
-  
-  if (parts.length === 0) {
-    return null;
-  }
-  
-  return parts.join(` ${colors.dim(icons.pipe)} `);
+
+  return truncateAnsi(selected.join(separator), width);
 }

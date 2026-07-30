@@ -24,14 +24,16 @@ Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu W
 因为没有它你就是在盲飞。Codex HUD 在终端底部提供一个持久的仪表盘：
 
 - **分支、模型、权限** —— 一目了然，不用猜
-- **Token 用量（含 cache）** —— 精确知道烧了多少上下文
-- **Context 窗口填充条** —— 快撞墙时提前知道
-- **MCP 服务器状态 & 工具调用** —— 看 Codex 实际在干什么
+- **Token 用量（含 cache）与 Context 剩余量** —— 快撞墙时提前知道
+- **当前 turn、工具、计划与 subagent 状态** —— 看 Codex 实际在干什么
+- **限流与采集健康告警** —— 区分“没有数据”和“数据已陈旧/解析异常”
+- **权限、Sandbox、Fast、MCP 与 Codex skill** —— 高风险状态优先显示
 - **Reasoning effort 级别** —— 当前思考深度一目了然
 
 **Q: 我同时跑多个 Codex session，能一起监控吗？**
 
-可以。按 `Ctrl+T` 切换到**多 Session 概览模式**，一屏显示所有活跃 session 的 context 使用情况。
+可以。先点击 HUD pane，再按 `Ctrl+T`；也可以在主 pane 执行
+`codex-hud --toggle-mode`。概览按项目、当前阶段、Context 剩余量和最近活动排序。
 
 ![Codex HUD — 多 Session 概览](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -77,27 +79,33 @@ codex
 | `codex-hud-sync` | 重新构建并刷新当前 checkout 的别名 |
 | `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
 | `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
+| `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias |
+| `codex-hud --reload` | 必要时先重建，再仅重启当前目录对应的 HUD pane |
+| `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
+| `codex-hud --hud-version` | 显示包版本和 checkout revision |
 
 ## HUD 显示了什么？
 
-```
-[gpt-5.4 xhigh] █████░░░░ 45% │ my-project git:(main ●) │ 12m
-3 extensions | 5 skills | 2 hooks | 2 AGENTS.md | Approval: ask for approval | Fast: on | Sandbox: ws-write
-Ctx: ████░░░░ 45% (50.2K/128K) | Tokens: 50.2K | (in: 35.0K, cache: 5.0K, out: 15.2K) | ↻2
-Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
-◐ exec_command: npm test @my-project 1.4s | ✗ exec_command: rg … 48ms exit 1
-◐ codex_cli_explore 2m14s ↳2
+```text
+[gpt-5.6-sol high] my-project git:(main *) | 12m
+[FULL ACCESS] | Approval: full access | Sandbox: off | Fast: on | MCP configured: 3 | Codex skills: 5
+Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
+◐ Thinking 42s · event 8s ago
+◐ exec_command @my-project 1.4s | ✓ read_file ×3
 ```
 
 | 行 | 内容 |
 |----|------|
-| **标题** | 模型 + effort、context 进度条、项目名、git 分支、会话计时 |
-| **环境** | 配置/MCP/skill/hook 数量、指令文件、运行时审批/沙箱策略、Fast 模式 |
-| **Tokens** | 总 token（输入/cache/输出拆分）、context 填充率、compact 次数 |
-| **Session** | 工作目录、Session ID、CLI 版本 |
-| **活动** | 脱敏后的运行工具详情、耗时/退出码或后台 session 结果、最近工具调用历史和活跃 subagent |
+| **标题** | 模型 + effort、项目名、git 分支、会话时长 |
+| **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先；随后是 MCP、Codex skill、hook、AGENTS.md 和配置来源 |
+| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、compact 次数；限额使用达到 70% 后显示 reset 信息 |
+| **健康** | Git、rollout、agent、环境/配置和概览采集的 stale/error；未知协议事件计数 |
+| **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent |
+| **Session** | 工作目录、Session ID、CLI 版本；固定高度不足时优先被省略 |
 
-工具活动默认仍只占一行。命令和 patch 目标会先进行脱敏和限长；原始 stdout/stderr 与原始工具参数不会被保留或显示。
+工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具不显示命令正文，文件类工具只显示脱敏后的目标；`full` 才显示已脱敏、限长后的命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
+
+HUD 会按终端单元格宽度处理中文、emoji、组合字符和 ANSI，并保证输出不超过 pane 高度；信息过多时最后一行显示 `+N hidden`。设置 `NO_COLOR=1` 或 `TERM=dumb` 可禁用颜色，`CODEX_HUD_ASCII=1` 可使用 ASCII 状态符号。
 
 ### Subagent 活动
 
@@ -128,7 +136,10 @@ codex-hud --kill             # 终止当前目录的会话
 codex-hud --list             # 列出所有 HUD 会话
 codex-hud --attach           # 复用已有会话
 codex-hud --new-session      # 强制新建会话
-codex-hud --self-check       # 运行环境诊断
+codex-hud --doctor           # 运行环境诊断（--self-check 的别名）
+codex-hud --reload           # 只重启当前目录的 HUD pane
+codex-hud --toggle-mode      # 切换单 Session/概览模式
+codex-hud --hud-version      # 显示版本与 revision
 ```
 
 </details>
@@ -142,6 +153,7 @@ codex-hud --self-check       # 运行环境诊断
 | `CODEX_HUD_POSITION` | `bottom` | HUD 面板位置（`top` / `bottom`） |
 | `CODEX_HUD_HEIGHT` | `5` | HUD 高度（行数） |
 | `CODEX_HUD_MOUSE` | `1` | 启用鼠标/触控板滚动 |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 工具详情：`off` / `targets` / `full` |
 
 <details>
 <summary>全部环境变量</summary>
@@ -155,6 +167,11 @@ codex-hud --self-check       # 运行环境诊断
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex pane 的 tmux alternate-screen |
 | `CODEX_HUD_BIND_TOGGLE` | `0` | 安装作用于整个 tmux server 的 `Prefix+H` HUD 切换键 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
+| `CODEX_HUD_HISTORY_LIMIT` | `10000` | 仅 HUD pane 使用的 scrollback 行数；主 pane 保留继承值 |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行命令默认隐藏；`full` 显示脱敏摘要，`off` 隐藏工具行 |
+| `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | 额外显示 `.agents` 的 skill 数；Codex skill 权威目录仍是 `CODEX_HOME/skills` |
+| `CODEX_HUD_ASCII` | `0` | 使用 ASCII 进度条和状态符号 |
+| `NO_COLOR` | （未设置） | 设置任意值后禁用 ANSI 颜色 |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | running agent 的界面 timeout；只接受正 safe integer 毫秒值 |
 | `CODEX_HUD_CWD` | （未设置） | 覆盖工作目录 |
 | `CODEX_HOME` | `~/.codex` | Codex home 目录 |
@@ -178,6 +195,8 @@ enabled = true
 
 ## 系统支持
 
+运行时要求 Node.js `>=20.19.0`（与 Chokidar 5 的 engine 契约一致）和 tmux。
+
 | 平台 | 状态 |
 |------|------|
 | Linux | 已支持 |
@@ -188,15 +207,19 @@ enabled = true
 ## 开发
 
 ```bash
-npm install && npm run build   # 构建
-npm run dev                    # 监听模式
-node dist/index.js             # 直接运行 HUD
+npm install                    # 安装依赖
+npm run typecheck              # 仅类型检查
+npm run test:unit              # 构建并运行单元测试
+npm run test:integration       # 构建并运行隔离集成测试
+npm test                       # 类型检查 + 构建 + 全部测试
+npm run test:render            # 运行渲染示例
 ```
 
 ## 更新日志
 
 | 日期 | 变更 |
 |------|------|
+| 2026-07-30 | 增量协议解析、异步采集缓存、健康/限流/turn 状态、Unicode 宽度、隐私和 HUD 控制命令 |
 | 2026-07-12 | 记录权威 subagent 活动、timeout 语义与概览过滤行为 |
 | 2026-04-09 | 新增快速安装/同步/升级/卸载命令 |
 | 2026-04-09 | HUD 按 tmux pane 绑定会话；显示 reasoning effort |

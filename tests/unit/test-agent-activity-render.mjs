@@ -210,8 +210,12 @@ for (const status of ['starting', 'running']) {
     `${status} row must render spinner, label, elapsed time, and descendants`
   );
   assert.doesNotMatch(stripAnsi(rendered), /starting|running/, 'normal rows omit state words');
-  assert.match(rendered, /\x1b\[/, 'normal rows retain ANSI styling');
-  assert.ok(rendered.endsWith('\x1b[0m'), 'normal row ANSI styling must be terminated');
+  if (process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb') {
+    assert.match(rendered, /\x1b\[/, 'normal rows retain ANSI styling');
+    assert.ok(rendered.endsWith('\x1b[0m'), 'normal row ANSI styling must be terminated');
+  } else {
+    assert.doesNotMatch(rendered, /\x1b\[/, 'NO_COLOR suppresses ANSI styling');
+  }
 }
 
 const [withoutDescendants] = renderAgentLines(
@@ -251,7 +255,9 @@ const [normalWidth20] = renderAgentLines(
 );
 assert.equal(stripAnsi(normalWidth20), '◐ codex_cl… 2m14s ↳2');
 assert.equal(visualLength(normalWidth20), 20);
-assert.ok(normalWidth20.endsWith('\x1b[0m'), 'truncated normal ANSI must be terminated');
+if (process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb') {
+  assert.ok(normalWidth20.endsWith('\x1b[0m'), 'truncated normal ANSI must be terminated');
+}
 
 const [errorWidth24] = renderAgentLines(
   makeAgentActivity({
@@ -262,7 +268,9 @@ const [errorWidth24] = renderAgentLines(
 );
 assert.equal(stripAnsi(errorWidth24), '✗ codex_… tracking error');
 assert.equal(visualLength(errorWidth24), 24);
-assert.ok(errorWidth24.endsWith('\x1b[0m'), 'truncated error ANSI must be terminated');
+if (process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb') {
+  assert.ok(errorWidth24.endsWith('\x1b[0m'), 'truncated error ANSI must be terminated');
+}
 
 const [extremelyNarrow] = renderAgentLines(
   makeAgentActivity({ rows: [makeRow()] }),
@@ -571,7 +579,7 @@ const stdoutOutput = writes.join('');
 const physicalLines = stdoutOutput.split('\x1b[2K').slice(1);
 assert.equal(physicalLines.length, 5, 'height clipping writes exactly the visible physical line count');
 const finalPhysicalLine = stripAnsi(physicalLines[physicalLines.length - 1]).trimEnd();
-assert.match(finalPhysicalLine, /…3 more lines hidden/);
+assert.match(finalPhysicalLine, /\+3 hidden/);
 
 const metrics = {
   elapsedExpected: '2m14s',

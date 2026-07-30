@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-FAKE_TMUX_DIR="$SCRIPT_DIR/fake-tmux"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+FAKE_TMUX_DIR="$ROOT_DIR/tests/integration/fake-tmux"
 FAKE_BIN_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -19,7 +19,7 @@ FAKE
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  echo "v20.0.0"
+  echo "v20.19.0"
   exit 0
 fi
 exit 0

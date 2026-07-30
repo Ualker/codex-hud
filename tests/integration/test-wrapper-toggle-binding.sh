@@ -18,7 +18,7 @@ for command_name in codex node npm; do
   cat > "$FAKE_BIN_DIR/$command_name" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  echo "v20.0.0"
+  echo "v20.19.0"
 fi
 exit 0
 FAKE
