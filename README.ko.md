@@ -94,10 +94,12 @@ Dir: ~/my-project | Session: abc12345 | CLI: 0.4.2
 | **헤더** | 모델 + effort, context 바, 프로젝트명, git 브랜치, 세션 타이머 |
 | **환경** | 설정/MCP/skill/hook 수, 명령 파일, 런타임 승인/샌드박스, Fast 모드 |
 | **Tokens** | 총 token (입력/cache/출력 내역), context 채움률, compact 횟수 |
-| **Session** | 작업 디렉토리, Session ID, CLI 버전 |
+| **Session** | 작업 디렉토리, Session ID, CLI 버전. plan과 완료된 tool 이력보다 먼저 표시 |
 | **활동** | 정제된 실행 중 도구 세부 정보, 소요 시간/종료 코드 또는 백그라운드 session 결과, 최근 도구 이력, 활성 subagent |
 
 도구 activity는 기본적으로 한 줄만 사용합니다. 명령과 patch 대상은 표시 전에 정제되고 길이가 제한되며, 원시 stdout/stderr와 원시 도구 인수는 저장하거나 표시하지 않습니다.
+
+HUD pane의 기본 높이는 터미널 높이의 1/6(5–12행)이며, 좁은 pane에서는 최대 3행을 추가합니다. `CODEX_HUD_HEIGHT`를 명시하면 고정 높이를 유지하고, `CODEX_HUD_HEIGHT_AUTO=1`도 설정한 경우에만 너비에 따라 조정합니다. 기존 Session은 다음 attach 또는 `codex-hud --reload` 때 새 정책을 적용합니다. 표시가 pane 높이를 넘으면 `+N hidden`을 표시합니다.
 
 ### Subagent activity
 
@@ -137,7 +139,7 @@ codex-hud --self-check       # 환경 진단 실행
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD 패인 위치 (`top` / `bottom`) |
-| `CODEX_HUD_HEIGHT` | `5` | HUD 높이 (행 수) |
+| `CODEX_HUD_HEIGHT` | 자동 `5–12` | 터미널 높이의 1/6 또는 명시한 고정 행 수 |
 | `CODEX_HUD_MOUSE` | `1` | 마우스/트랙패드 스크롤 활성화 |
 
 <details>
@@ -145,8 +147,8 @@ codex-hud --self-check       # 환경 진단 실행
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `CODEX_HUD_HEIGHT_AUTO` | `0` | 너비에 따라 높이 자동 조정 |
-| `CODEX_HUD_HEIGHT_MIN` | `CODEX_HUD_HEIGHT` | 자동 모드 최소 높이 |
+| `CODEX_HUD_HEIGHT_AUTO` | 자동 높이: `1`, 명시 높이: `0` | 좁은 pane에서 최대 3행 추가 |
+| `CODEX_HUD_HEIGHT_MIN` | 자동: `5`, 명시 높이: `CODEX_HUD_HEIGHT` | 자동 모드 최소 높이 |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 자동 모드 최대 높이 |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | 같은 디렉토리의 최신 세션에 자동 연결 |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex 패인의 tmux alternate-screen |

@@ -69,6 +69,7 @@ if [[ -z "$base_height" ]]; then
 fi
 
 auto=$(tmux show-option -t "$session_name" -qv @codex_hud_auto)
+adaptive=$(tmux show-option -t "$session_name" -qv @codex_hud_height_adaptive)
 max_height=$(tmux show-option -t "$session_name" -qv @codex_hud_height_max)
 min_height=$(tmux show-option -t "$session_name" -qv @codex_hud_height_min)
 focus_main=$(tmux show-option -t "$session_name" -qv @codex_hud_focus_main)
@@ -78,6 +79,7 @@ if [[ -z "$auto" ]]; then
     auto="${CODEX_HUD_HEIGHT_AUTO:-}"
 fi
 auto=$(parse_boolean_setting "CODEX_HUD_HEIGHT_AUTO" "$auto" "0") || exit 1
+adaptive=$(parse_boolean_setting "@codex_hud_height_adaptive" "$adaptive" "0") || exit 1
 focus_main=$(parse_boolean_setting "@codex_hud_focus_main" "$focus_main" "1") || exit 1
 if [[ -z "$max_height" ]]; then
     max_height="${CODEX_HUD_HEIGHT_MAX:-12}"
@@ -91,6 +93,17 @@ if ! is_positive_int "$min_height"; then
 fi
 if ! is_positive_int "$max_height"; then
     max_height="12"
+fi
+
+window_height=$(tmux display -p -t "$pane" "#{window_height}" 2>/dev/null || true)
+if [[ "$adaptive" == "1" ]] && is_positive_int "$window_height"; then
+    base_height=$((window_height / 6))
+    if [[ "$base_height" -lt 5 ]]; then
+        base_height="5"
+    fi
+    if [[ "$base_height" -gt "$max_height" ]]; then
+        base_height="$max_height"
+    fi
 fi
 
 target="$base_height"
@@ -116,6 +129,13 @@ if [[ "$auto" != "0" ]]; then
     fi
 fi
 
+if is_positive_int "$window_height" && [[ "$target" -ge "$window_height" ]]; then
+    target=$((window_height - 1))
+fi
+if [[ "$target" -lt 1 ]]; then
+    target="1"
+fi
+
 main_pane=""
 if pane_exists_in_session "$stored_main_pane"; then
     main_pane="$stored_main_pane"
@@ -131,6 +151,9 @@ if [[ -n "$main_pane" ]]; then
     fi
 fi
 
+if [[ "$adaptive" == "1" ]]; then
+    tmux set-option -t "$session_name" -q @codex_hud_base_height "$base_height"
+fi
 tmux set-option -t "$session_name" -q @codex_hud_height "$target"
 
 current=$(tmux display -p -t "$pane" "#{pane_height}" 2>/dev/null || true)

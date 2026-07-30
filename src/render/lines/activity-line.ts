@@ -12,6 +12,7 @@ import {
   getSpinnerFrame,
   sanitizeTerminalText,
   truncate,
+  truncateStart,
   truncateAnsi,
   visualLength,
 } from '../colors.js';
@@ -815,8 +816,11 @@ export function renderTokenLine(data: HudData): string | null {
   return parts.length > 0 ? parts.join(' | ') : null;
 }
 
-export function renderSessionDetailLine(data: HudData): string | null {
-  const parts: string[] = [];
+export function renderSessionDetailLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
+  const optionalParts: string[] = [];
   
   // Always show session info if we have a session
   const session = data.session;
@@ -831,15 +835,24 @@ export function renderSessionDetailLine(data: HudData): string | null {
     if (home && cwd.startsWith(home)) {
       displayPath = '~' + cwd.slice(home.length);
     }
-    if (displayPath.length > 50) {
-      displayPath = '…' + displayPath.slice(-49);
+    if (Number.isFinite(width)) {
+      const pathWidth = Math.max(1, width - visualLength('Dir: '));
+      displayPath = truncateStart(displayPath, pathWidth);
     }
-    parts.push(colors.dim('Dir: ') + theme.value(displayPath));
+    const directoryPart =
+      colors.dim('Dir: ') + theme.value(displayPath);
+    if (
+      Number.isFinite(width) &&
+      visualLength(directoryPart) >= width
+    ) {
+      return truncateAnsi(directoryPart, width);
+    }
+    optionalParts.push(directoryPart);
   }
 
   // Show session ID if available
   if (session?.id) {
-    parts.push(
+    optionalParts.push(
       colors.dim('Session: ') +
       theme.info(formatSessionId(sanitizeTerminalText(session.id)))
     );
@@ -847,7 +860,7 @@ export function renderSessionDetailLine(data: HudData): string | null {
   
   // Show CLI version if available
   if (session?.cliVersion) {
-    parts.push(
+    optionalParts.push(
       colors.dim('CLI: ') +
       theme.value(sanitizeTerminalText(session.cliVersion))
     );
@@ -855,13 +868,33 @@ export function renderSessionDetailLine(data: HudData): string | null {
   
   // Show model provider if available
   if (session?.modelProvider) {
-    parts.push(
+    optionalParts.push(
       colors.dim('Provider: ') +
       theme.value(sanitizeTerminalText(session.modelProvider))
     );
   }
 
-  return parts.length > 0 ? parts.join(` ${colors.dim(icons.pipe)} `) : null;
+  if (optionalParts.length === 0) {
+    return null;
+  }
+
+  const separator = ` ${colors.dim(icons.pipe)} `;
+  if (!Number.isFinite(width)) {
+    return optionalParts.join(separator);
+  }
+
+  const selected: string[] = [];
+  for (const part of optionalParts) {
+    const candidate = [...selected, part].join(separator);
+    if (visualLength(candidate) > width) {
+      break;
+    }
+    selected.push(part);
+  }
+  return truncateAnsi(
+    (selected.length > 0 ? selected : [optionalParts[0] ?? '']).join(separator),
+    width
+  );
 }
 
 export function collectActivityLines(data: HudData, width?: number): string[] {
@@ -872,7 +905,10 @@ export function collectActivityLines(data: HudData, width?: number): string[] {
     lines.push(tokenLine);
   }
 
-  const sessionLine = renderSessionDetailLine(data);
+  const sessionLine = renderSessionDetailLine(
+    data,
+    width ?? Number.POSITIVE_INFINITY
+  );
   if (sessionLine) {
     lines.push(sessionLine);
   }

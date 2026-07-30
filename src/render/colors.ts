@@ -269,6 +269,32 @@ export function truncate(text: string, maxWidth: number, ellipsis = '…'): stri
 }
 
 /**
+ * Truncate plain text from the start while preserving the most specific tail.
+ * Useful for paths where the final directory components carry the most value.
+ */
+export function truncateStart(text: string, maxWidth: number, ellipsis = '…'): string {
+  const stripped = stripAnsi(text);
+  if (plainVisualLength(stripped) <= maxWidth) return text;
+  if (maxWidth <= 0) return '';
+
+  const ellipsisWidth = plainVisualLength(ellipsis);
+  const limit = Math.max(0, maxWidth - ellipsisWidth);
+  const graphemes = segmentGraphemes(stripped);
+  let output = '';
+  let width = 0;
+  for (let index = graphemes.length - 1; index >= 0; index--) {
+    const grapheme = graphemes[index] ?? '';
+    const nextWidth = graphemeWidth(grapheme);
+    if (width + nextWidth > limit) {
+      break;
+    }
+    output = grapheme + output;
+    width += nextWidth;
+  }
+  return ellipsis + output;
+}
+
+/**
  * Truncate text to a visual width while preserving ANSI sequences.
  */
 export function truncateAnsi(text: string, maxWidth: number, ellipsis = '…'): string {

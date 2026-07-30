@@ -7,7 +7,7 @@
  * Row 2: [FULL ACCESS] | Approval | Sandbox | Fast | inventory
  * Row 3: collector/protocol health warnings when needed
  * Row 4: context remaining, token counts and rate-limit pressure
- * Row 5+: live turn/tool/agent/plan activity, then session diagnostics
+ * Row 5+: live turn/tool/agent activity, session diagnostics, then plan/history
  */
 
 import type {
@@ -163,8 +163,7 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
  * Row 1: [Model] █████░░░░░ 45% | project-name git:(branch *) | ⏱️ 10m
  * Row 2: 2 AGENTS.md | 3 extensions | 3 skills | 2 hooks | Approval: ask for approval | Fast: on
  * Row 3: Ctx: ████░░░░ 45% (50K/128K) | Tokens: 12.5K
- * Row 4: Dir: ~/project | Session: abc12345
- * Row 5+: Activity lines (tools, todos)
+ * Row 4+: Current activity and agents, then Dir/Session, plan, and tool history
  */
 function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number): string[] {
   const lines: string[] = [];
@@ -240,18 +239,17 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   }
 
   lines.push(...agentLines);
+  // Keep project identity visible before plan and completed-tool history. Live
+  // turn/tool/agent state still outranks it.
+  const sessionLine = renderSessionDetailLine(data, width);
+  if (sessionLine) {
+    lines.push(sessionLine);
+  }
   if (planLine) {
     lines.push(planLine);
   }
   if (!hasRunningTool && toolsLine) {
     lines.push(toolsLine);
-  }
-
-  // Session metadata is useful for diagnostics but lower signal than current
-  // activity in a fixed-height HUD.
-  const sessionLine = renderSessionDetailLine(data);
-  if (sessionLine) {
-    lines.push(sessionLine);
   }
   
   return lines;
