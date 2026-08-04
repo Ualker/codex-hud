@@ -196,6 +196,7 @@ node dist/index.js             # HUD を直接実行
 
 | 日付 | 変更内容 |
 |------|----------|
+| 2026-08-04 | targets モードで実行コマンドのヘッド表示、parse-queue/不正行フリーズ修正、chokidar 5 watcher 修復、セッションプローブ非同期化、OSC 8 ハイパーリンク |
 | 2026-07-12 | authoritative な subagent activity、timeout の意味、概要フィルタリングを文書化 |
 | 2026-04-09 | クイックインストール/同期/アップグレード/アンインストールコマンドを追加 |
 | 2026-04-09 | HUD セッションを tmux ペインにバインド、reasoning effort を表示 |

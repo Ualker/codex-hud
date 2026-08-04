@@ -5,7 +5,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { createRequire } from 'module';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 import { extractCodexRuntimeHookState } from './runtime-hooks.js';
@@ -42,6 +43,10 @@ const LAUNCH_ROLLOUT_BACKDATE_TOLERANCE_MS = 30 * 1000;
 // machine purely from process startup overhead; a tight timeout makes binding
 // fail randomly.
 const PROBE_TIMEOUT_MS = 8000;
+
+// Probes run off the event loop; under load a spawn can take seconds and
+// must never freeze the render loop (execFileSync did exactly that).
+const execFileAsync = promisify(execFile);
 // Full pane->thread resolution is expensive (subprocess spawns); throttle it so
 // the 1s render loop reuses the cached binding.
 const FULL_RESOLVE_INTERVAL_MS = 4000;
@@ -483,31 +488,66 @@ function findSnapshotForPane(mainPaneId: string): PaneSnapshot | null {
   return matches[0] ?? null;
 }
 
-function findRolloutPathBySessionIdInRoot(rootDir: string, sessionId: string): string | null {
+/**
+ * Latest possible instant covered by a YYYY[/MM[/DD]] directory prefix,
+ * interpreted in local time (rollout paths use local dates).
+ */
+function latestMsForDatePrefix(parts: readonly number[]): number {
+  const [year, month, day] = parts;
+  if (parts.length === 1) {
+    return new Date(year + 1, 0, 1).getTime();
+  }
+  if (parts.length === 2) {
+    return new Date(year, month, 1).getTime();
+  }
+  return new Date(year, month - 1, day + 1).getTime();
+}
+
+function findRolloutPathBySessionIdInRoot(
+  rootDir: string,
+  sessionId: string,
+  sinceMs?: number
+): string | null {
   if (!fs.existsSync(rootDir)) {
     return null;
   }
 
   const expectedSuffix = `-${sessionId}.jsonl`;
-  const stack = [rootDir];
+  const stack: { dir: string; dateParts: number[] }[] = [
+    { dir: rootDir, dateParts: [] },
+  ];
 
   while (stack.length > 0) {
-    const currentDir = stack.pop();
-    if (!currentDir) {
+    const frame = stack.pop();
+    if (!frame) {
       continue;
     }
 
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      entries = fs.readdirSync(frame.dir, { withFileTypes: true });
     } catch {
       continue;
     }
 
     for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
+      const fullPath = path.join(frame.dir, entry.name);
       if (entry.isDirectory()) {
-        stack.push(fullPath);
+        // Prune date directories that end before the requested window; keep
+        // non-date directories (defensive against layout changes).
+        if (
+          sinceMs !== undefined &&
+          frame.dateParts.length < 3 &&
+          /^\d{1,4}$/.test(entry.name)
+        ) {
+          const dateParts = [...frame.dateParts, Number(entry.name)];
+          if (latestMsForDatePrefix(dateParts) < sinceMs) {
+            continue;
+          }
+          stack.push({ dir: fullPath, dateParts });
+          continue;
+        }
+        stack.push({ dir: fullPath, dateParts: frame.dateParts });
         continue;
       }
 
@@ -549,11 +589,15 @@ function buildSessionFile(filePath: string): SessionFile | null {
  * sessions. This intentionally does not use the local sqlite/log fallback:
  * subagent lifecycle tracking needs a concrete JSONL file to tail.
  */
-export function findRolloutByThreadId(threadId: string): SessionFile | null {
+export function findRolloutByThreadId(
+  threadId: string,
+  sinceMs?: number
+): SessionFile | null {
   const codexHome = getCodexHome();
   const activePath = findRolloutPathBySessionIdInRoot(
     path.join(codexHome, 'sessions'),
-    threadId
+    threadId,
+    sinceMs
   );
   if (activePath) {
     return buildSessionFile(activePath);
@@ -561,17 +605,18 @@ export function findRolloutByThreadId(threadId: string): SessionFile | null {
 
   const archivedPath = findRolloutPathBySessionIdInRoot(
     path.join(codexHome, ARCHIVED_SESSIONS_SUBDIR),
-    threadId
+    threadId,
+    sinceMs
   );
 
   return archivedPath ? buildSessionFile(archivedPath) : null;
 }
 
-function findSessionByThreadId(
+async function findSessionByThreadId(
   sessionId: string,
   targetCwd: string | null,
   knownRolloutPath?: string | null
-): SessionFile | null {
+): Promise<SessionFile | null> {
   if (knownRolloutPath && fs.existsSync(knownRolloutPath)) {
     const knownSession = buildSessionFile(knownRolloutPath);
     if (knownSession) {
@@ -629,7 +674,10 @@ function getLogDatabaseCandidates(): string[] {
  * one row per line, columns joined with \x1f, NULL as empty string.
  * Returns null when the query could not be executed (treated as transient).
  */
-function querySqlite(dbPath: string, statements: string[]): string | null {
+async function querySqlite(
+  dbPath: string,
+  statements: string[]
+): Promise<string | null> {
   if (nodeSqlite) {
     try {
       const db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
@@ -654,15 +702,15 @@ function querySqlite(dbPath: string, statements: string[]): string | null {
   }
 
   try {
-    return execFileSync(
+    const { stdout } = await execFileAsync(
       'sqlite3',
       ['-readonly', '-separator', '\x1f', dbPath, statements.join(';\n') + ';'],
       {
         encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
         timeout: PROBE_TIMEOUT_MS,
       }
-    ).trimEnd();
+    );
+    return stdout.trimEnd();
   } catch {
     return null;
   }
@@ -697,13 +745,17 @@ function getStateDatabaseCandidates(): string[] {
     });
 }
 
-function getPaneProcessId(mainPaneId: string): string | null {
+async function getPaneProcessId(mainPaneId: string): Promise<string | null> {
   try {
-    const output = execFileSync('tmux', ['display', '-p', '-t', mainPaneId, '#{pane_pid}'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: PROBE_TIMEOUT_MS,
-    }).trim();
+    const { stdout } = await execFileAsync(
+      'tmux',
+      ['display', '-p', '-t', mainPaneId, '#{pane_pid}'],
+      {
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+      }
+    );
+    const output = stdout.trim();
     return /^\d+$/.test(output) ? output : null;
   } catch {
     return null;
@@ -715,18 +767,20 @@ interface ProcessTreeSnapshot {
   commands: string[];
 }
 
-function getProcessTreeSnapshot(rootPid: string): ProcessTreeSnapshot | null {
+async function getProcessTreeSnapshot(
+  rootPid: string
+): Promise<ProcessTreeSnapshot | null> {
   if (!/^\d+$/.test(rootPid)) {
     return { processIds: [], commands: [] };
   }
 
   let output: string;
   try {
-    output = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], {
+    ({ stdout: output } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,command='], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: PROBE_TIMEOUT_MS,
-    });
+      maxBuffer: 10 * 1024 * 1024,
+    }));
   } catch {
     return null;
   }
@@ -776,10 +830,10 @@ function extractLogField(body: string, field: string): string | undefined {
   return match?.[1];
 }
 
-function buildLogBackedSession(
+async function buildLogBackedSession(
   threadId: string,
   targetCwd: string | null
-): SessionFile | null {
+): Promise<SessionFile | null> {
   if (!isThreadId(threadId)) {
     return null;
   }
@@ -799,7 +853,7 @@ SELECT
 `.trim();
 
   for (const dbPath of getLogDatabaseCandidates()) {
-    const output = querySqlite(dbPath, [sql]);
+    const output = await querySqlite(dbPath, [sql]);
     if (!output) {
       continue;
     }
@@ -849,10 +903,10 @@ interface ThreadCandidate {
  * Returns null when every logs database query failed (transient error),
  * as opposed to [] which means the query ran and found nothing.
  */
-function findThreadCandidatesForProcesses(
+async function findThreadCandidatesForProcesses(
   processIds: string[],
   sinceMs: number
-): ThreadCandidate[] | null {
+): Promise<ThreadCandidate[] | null> {
   const validProcessIds = processIds.filter((processId) => /^\d+$/.test(processId)).slice(0, 32);
   if (validProcessIds.length === 0) {
     return [];
@@ -876,7 +930,7 @@ LIMIT ${MAX_THREAD_CANDIDATES}
 
   let sawSuccessfulQuery = false;
   for (const dbPath of getLogDatabaseCandidates()) {
-    const output = querySqlite(dbPath, [sql]);
+    const output = await querySqlite(dbPath, [sql]);
     if (output === null) {
       continue;
     }
@@ -931,7 +985,9 @@ interface ThreadFacts {
   fetchedAt: number;
 }
 
-function queryThreadFactsFromState(threadIds: string[]): Map<string, ThreadFacts> | null {
+async function queryThreadFactsFromState(
+  threadIds: string[]
+): Promise<Map<string, ThreadFacts> | null> {
   const facts = new Map<string, ThreadFacts>();
   if (threadIds.length === 0) {
     return facts;
@@ -952,7 +1008,7 @@ function queryThreadFactsFromState(threadIds: string[]): Map<string, ThreadFacts
   ];
 
   for (const dbPath of stateDbs) {
-    const output = querySqlite(dbPath, statements);
+    const output = await querySqlite(dbPath, statements);
     if (output === null) {
       continue;
     }
@@ -1011,6 +1067,8 @@ interface PaneThreadBinding {
 export class SessionFinder {
   private currentSession: SessionFile | null = null;
   private checkInterval: NodeJS.Timeout | null = null;
+  private checkInFlight: Promise<SessionFile | null> | null = null;
+  private checkQueuedForce = false;
   private targetCwd: string | null = null;
   private currentThreadId: string | null = null;
   private targetStartTime: Date | null = null;
@@ -1034,8 +1092,8 @@ export class SessionFinder {
    * Start watching for session changes
    */
   start(checkIntervalMs: number = 5000): void {
-    this.check();
-    this.checkInterval = setInterval(() => this.check(), checkIntervalMs);
+    void this.check();
+    this.checkInterval = setInterval(() => void this.check(), checkIntervalMs);
   }
 
   /**
@@ -1049,9 +1107,31 @@ export class SessionFinder {
   }
 
   /**
-   * Check for active or recent sessions
+   * Check for active or recent sessions.
+   *
+   * Probes spawn subprocesses, so concurrent calls (poll timer + watcher
+   * bursts) coalesce onto one in-flight run; a `force` arriving mid-run is
+   * replayed once afterwards so its cache-busting intent is not lost.
    */
-  check(force: boolean = false): SessionFile | null {
+  check(force: boolean = false): Promise<SessionFile | null> {
+    if (this.checkInFlight) {
+      this.checkQueuedForce ||= force;
+      return this.checkInFlight;
+    }
+
+    this.checkInFlight = this.runCheck(force)
+      .catch(() => this.currentSession)
+      .finally(() => {
+        this.checkInFlight = null;
+        if (this.checkQueuedForce) {
+          this.checkQueuedForce = false;
+          void this.check(true);
+        }
+      });
+    return this.checkInFlight;
+  }
+
+  private async runCheck(force: boolean): Promise<SessionFile | null> {
     const now = Date.now();
     const current = this.currentSession;
     const currentExists = current ? fs.existsSync(current.path) || isLogBackedSession(current) : false;
@@ -1081,7 +1161,7 @@ export class SessionFinder {
       return this.resolveNextSession(this.findFallbackSession(), currentExists);
     }
 
-    const binding = this.resolvePaneThreadBinding(mainPaneId, now);
+    const binding = await this.resolvePaneThreadBinding(mainPaneId, now);
     if (binding.threadId) {
       this.boundViaProcess = true;
       return this.bindThread(binding.threadId, currentExists);
@@ -1112,7 +1192,7 @@ export class SessionFinder {
 
     const previousThreadId = this.currentThreadId;
     this.currentThreadId = threadId;
-    const next = findSessionByThreadId(threadId, this.targetCwd);
+    const next = await findSessionByThreadId(threadId, this.targetCwd);
 
     if (!next) {
       return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
@@ -1127,7 +1207,7 @@ export class SessionFinder {
    * session (typically the first user message of a /new session); re-rank
    * it immediately instead of waiting out the facts TTL and poll interval.
    */
-  noteRolloutAppeared(rolloutPath: string): void {
+  async noteRolloutAppeared(rolloutPath: string): Promise<void> {
     const parsed = parseRolloutFilename(path.basename(rolloutPath));
     if (!parsed) {
       return;
@@ -1141,7 +1221,7 @@ export class SessionFinder {
     }
 
     this.threadFactsCache.delete(parsed.sessionId);
-    this.check(true);
+    await this.check(true);
   }
 
   /**
@@ -1159,7 +1239,10 @@ export class SessionFinder {
   /**
    * Bind to a thread chosen by the pane-process resolution.
    */
-  private bindThread(threadId: string, currentExists: boolean): SessionFile | null {
+  private async bindThread(
+    threadId: string,
+    currentExists: boolean
+  ): Promise<SessionFile | null> {
     const current = this.currentSession;
 
     // Already bound to a real rollout file for this thread: nothing to re-resolve.
@@ -1185,9 +1268,9 @@ export class SessionFinder {
         (facts?.rolloutPath && fs.existsSync(facts.rolloutPath)
           ? buildSessionFile(facts.rolloutPath)
           : null) ?? findRecentRolloutBySessionId(threadId, 2);
-      next = rollout ?? buildLogBackedSession(threadId, this.targetCwd) ?? current;
+      next = rollout ?? (await buildLogBackedSession(threadId, this.targetCwd)) ?? current;
     } else {
-      next = findSessionByThreadId(threadId, this.targetCwd, facts?.rolloutPath ?? null);
+      next = await findSessionByThreadId(threadId, this.targetCwd, facts?.rolloutPath ?? null);
     }
 
     if (!next) {
@@ -1200,15 +1283,18 @@ export class SessionFinder {
   /**
    * Resolve which thread of the pane's process tree the HUD should follow.
    */
-  private resolvePaneThreadBinding(mainPaneId: string, now: number): PaneThreadBinding {
-    const panePid = this.getPanePid(mainPaneId);
+  private async resolvePaneThreadBinding(
+    mainPaneId: string,
+    now: number
+  ): Promise<PaneThreadBinding> {
+    const panePid = await this.getPanePid(mainPaneId);
     if (!panePid) {
       this.runtimeHookOverrides = [];
       this.runtimeHooksEnabled = null;
       return { threadId: null, keepCurrent: this.boundViaProcess };
     }
 
-    const processTree = getProcessTreeSnapshot(panePid);
+    const processTree = await getProcessTreeSnapshot(panePid);
     if (processTree) {
       const hookState = extractCodexRuntimeHookState(processTree.commands);
       this.runtimeHookOverrides = hookState.overrides;
@@ -1224,7 +1310,7 @@ export class SessionFinder {
       now - THREAD_CANDIDATE_WINDOW_MS,
       (this.targetStartTime?.getTime() ?? 0) - 60_000
     );
-    const candidates = findThreadCandidatesForProcesses(
+    const candidates = await findThreadCandidatesForProcesses(
       processTree?.processIds ?? [panePid],
       sinceMs
     );
@@ -1233,7 +1319,7 @@ export class SessionFinder {
       return { threadId: null, keepCurrent: this.boundViaProcess };
     }
 
-    const annotated = this.annotateCandidates(candidates);
+    const annotated = await this.annotateCandidates(candidates);
     const chosen = this.chooseThread(annotated);
     return { threadId: chosen, keepCurrent: this.boundViaProcess };
   }
@@ -1241,7 +1327,7 @@ export class SessionFinder {
   /**
    * Pane pid is stable for the lifetime of the pane; avoid re-spawning tmux.
    */
-  private getPanePid(mainPaneId: string): string | null {
+  private async getPanePid(mainPaneId: string): Promise<string | null> {
     if (this.cachedPanePid) {
       try {
         process.kill(Number(this.cachedPanePid), 0);
@@ -1251,7 +1337,7 @@ export class SessionFinder {
       }
     }
 
-    const panePid = getPaneProcessId(mainPaneId);
+    const panePid = await getPaneProcessId(mainPaneId);
     if (panePid) {
       this.cachedPanePid = panePid;
     }
@@ -1261,7 +1347,9 @@ export class SessionFinder {
   /**
    * Attach rank/subagent facts to candidates, refreshing the cache as needed.
    */
-  private annotateCandidates(candidates: ThreadCandidate[]): AnnotatedThread[] {
+  private async annotateCandidates(
+    candidates: ThreadCandidate[]
+  ): Promise<AnnotatedThread[]> {
     const now = Date.now();
     const needsFetch: string[] = [];
 
@@ -1278,7 +1366,7 @@ export class SessionFinder {
     }
 
     if (needsFetch.length > 0) {
-      const fetched = queryThreadFactsFromState(needsFetch);
+      const fetched = await queryThreadFactsFromState(needsFetch);
       if (fetched !== null) {
         for (const threadId of needsFetch) {
           const stateFacts = fetched.get(threadId);

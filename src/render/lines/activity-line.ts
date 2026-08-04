@@ -26,14 +26,11 @@ import type {
   RateLimitWindow,
   TurnActivity,
 } from '../../types.js';
+import { isExecutionTool } from '../../utils/tool-names.js';
+import { extractCommandHead } from '../../utils/command-head.js';
+import { osc8Link, fileUrl } from '../../utils/hyperlinks.js';
 
 const DESCENDANT_PREFIX = '↳';
-const EXECUTION_TOOL_NAMES = new Set([
-  'bash',
-  'exec_command',
-  'run_terminal_command',
-  'write_stdin',
-]);
 
 type ToolDetailsMode = 'off' | 'targets' | 'full';
 
@@ -134,6 +131,8 @@ interface ToolCallGroup {
   name: string;
   count: number;
   status: ToolGroupStatus;
+  /** Command head of the group's most recent execution call, if any. */
+  detail?: string;
 }
 
 function formatToolDuration(durationMs: number): string {
@@ -353,6 +352,9 @@ export function renderHealthLine(
     if (unknownCount > 0) {
       warnings.push(`protocol unknown ${unknownCount}`);
     }
+    if (protocolHealth.malformedLines > 0) {
+      warnings.push(`protocol malformed ${protocolHealth.malformedLines}`);
+    }
   }
 
   if (warnings.length === 0) {
@@ -382,6 +384,22 @@ function presentationStatus(call: ToolCall): ToolGroupStatus {
     return 'yielded';
   }
   return 'completed';
+}
+
+/**
+ * Safe display detail for an execution tool in `targets` mode.
+ * write_stdin targets are collector-synthesized labels without command
+ * content, so they pass through unchanged.
+ */
+function executionDisplayHead(call: ToolCall): string | undefined {
+  if (!call.target) {
+    return undefined;
+  }
+  if (call.name.toLowerCase() === 'write_stdin') {
+    return sanitizeTerminalText(call.target);
+  }
+  const head = extractCommandHead(call.target);
+  return head ? sanitizeTerminalText(head) : undefined;
 }
 
 function toolCallHasDetail(call: ToolCall): boolean {
@@ -415,12 +433,16 @@ function renderToolCallDetail(
 
   const prefix = `${icon} ${call.name}`;
   const detailsMode = toolDetailsMode();
-  const executionTool = EXECUTION_TOOL_NAMES.has(call.name.toLowerCase());
+  const executionTool = isExecutionTool(call.name);
+  // In `targets` mode execution tools show only a command head (`npm test`,
+  // `sed && rg`); the full summary stays exclusive to `full` mode. The head
+  // is re-derived here as defense in depth: even if a raw command ends up in
+  // `target`, only program names and known subcommands reach the screen.
   const detail =
     detailsMode === 'full'
       ? call.summary ?? call.target
       : executionTool
-        ? undefined
+        ? executionDisplayHead(call)
         : call.target ?? call.summary;
   const workdir = call.workdir ? `@${formatToolWorkdir(call.workdir)}` : undefined;
   const durationMs = call.status === 'running'
@@ -483,24 +505,30 @@ function renderToolCallDetail(
 function groupToolCalls(calls: ToolCall[]): ToolCallGroup[] {
   const groups: ToolCallGroup[] = [];
   
-  // Completed wait calls are low-signal orchestration noise; running waits remain visible.
+  // Completed wait calls are low-signal orchestration noise; running waits
+  // remain visible. update_plan already surfaces through the plan line.
   const finishedCalls = calls.filter(
     c =>
       (c.status === 'completed' || c.status === 'error') &&
-      !(c.status === 'completed' && c.name.toLowerCase() === 'wait')
+      !(c.status === 'completed' && c.name.toLowerCase() === 'wait') &&
+      c.name.toLowerCase() !== 'update_plan'
   );
-  
+
   for (const call of finishedCalls) {
     const last = groups[groups.length - 1];
     const status = presentationStatus(call);
-    
+    const detail = isExecutionTool(call.name)
+      ? executionDisplayHead(call)
+      : undefined;
+
     if (last && last.name === call.name && last.status === status) {
       last.count++;
+      last.detail = detail ?? last.detail;
     } else {
-      groups.push({ name: call.name, count: 1, status });
+      groups.push({ name: call.name, count: 1, status, detail });
     }
   }
-  
+
   return groups;
 }
 
@@ -516,7 +544,8 @@ function renderToolGroup(group: ToolCallGroup): string {
       ? theme.toolRunning
       : theme.success;
   const count = group.count > 1 ? ` ${icons.multiply}${group.count}` : '';
-  return colorFn(`${icon} ${group.name}${count}`);
+  const detail = group.detail ? ` (${truncate(group.detail, 24)})` : '';
+  return colorFn(`${icon} ${group.name}${count}`) + (detail ? colors.dim(detail) : '');
 }
 
 function joinToolParts(
@@ -840,7 +869,7 @@ export function renderSessionDetailLine(
       displayPath = truncateStart(displayPath, pathWidth);
     }
     const directoryPart =
-      colors.dim('Dir: ') + theme.value(displayPath);
+      colors.dim('Dir: ') + osc8Link(theme.value(displayPath), fileUrl(cwd));
     if (
       Number.isFinite(width) &&
       visualLength(directoryPart) >= width

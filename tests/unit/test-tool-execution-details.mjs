@@ -231,6 +231,13 @@ try {
   );
   assert.doesNotMatch(failed.summary, /\u001b|\u202e|\r|\n/);
 
+  // target carries only the privacy-preserving command head.
+  assert.match(failed.target, /^curl/);
+  assert.doesNotMatch(
+    failed.target,
+    /sk-secret-value|top-secret-token|header-secret|hunter2|Authorization|--token/
+  );
+
   const yielded = calls.call_yielded;
   assert.equal(yielded.status, 'completed');
   assert.deepEqual(yielded.result, {
@@ -239,9 +246,11 @@ try {
     wallTimeMs: 30000,
   });
   assert.equal(yielded.summary, 'npm test');
+  assert.equal(yielded.target, 'npm test');
 
   const poll = calls.call_poll;
   assert.equal(poll.summary, 'poll session 4242');
+  assert.equal(poll.target, 'poll session 4242');
   assert.deepEqual(poll.result, {
     kind: 'yielded',
     sessionId: '4242',
@@ -256,6 +265,7 @@ try {
   const customExec = calls.call_custom_json_exec;
   assert.equal(customExec.name, 'exec_command');
   assert.equal(customExec.summary, 'git status --short');
+  assert.equal(customExec.target, 'git status');
   assert.equal(customExec.workdir, '/tmp/repo');
   assert.deepEqual(customExec.result, {
     kind: 'completed',
@@ -273,7 +283,42 @@ try {
   assert.equal(unknown.status, 'completed');
   assert.deepEqual(unknown.result, { kind: 'unknown' });
 
-  console.log('test-tool-execution-details: PASS (exit, yield, redact, patch, custom)');
+  // An aborted turn must not leave tools spinning as "running" forever.
+  const abortRecords = [
+    canonicalSessionMeta({
+      id: '019a8888-f888-7ff8-8888-888888888888',
+      cwd: '/tmp/codex-hud-agent-project',
+    }),
+    functionCall(
+      '2026-07-12T00:01:00.000Z',
+      'call_interrupted',
+      'exec_command',
+      { cmd: 'sleep 100', workdir: '/tmp/repo' }
+    ),
+    {
+      timestamp: '2026-07-12T00:01:05.000Z',
+      type: 'event_msg',
+      payload: { type: 'turn_aborted', turn_id: 'turn-abort-1' },
+    },
+  ];
+  const abortRolloutPath = writeRolloutFile(root, {
+    sessionId: '019a8888-f888-7ff8-8888-888888888888',
+    timestampLabel: '2026-07-12T00-08-00',
+    records: abortRecords,
+  });
+  const abortParse = await parseRolloutFile(abortRolloutPath, 0, 20);
+  assert.equal(
+    abortParse.runningCalls.size,
+    0,
+    'turn_aborted clears running calls'
+  );
+  const interrupted = abortParse.result.toolActivity.recentCalls.find(
+    (call) => call.id === 'call_interrupted'
+  );
+  assert.equal(interrupted.status, 'error');
+  assert.equal(interrupted.duration, 5000);
+
+  console.log('test-tool-execution-details: PASS (exit, yield, redact, patch, custom, abort)');
 } finally {
   cleanupAgentTestRoot(root);
 }

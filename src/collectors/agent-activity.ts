@@ -474,13 +474,19 @@ export function isSubagentSessionSource(source: SessionSource | undefined): bool
   return typeof source === 'object' && source !== null && 'subagent' in source;
 }
 
-export type RolloutResolver = (threadId: string) => SessionFile | null;
+export type RolloutResolver = (
+  threadId: string,
+  sinceMs?: number
+) => SessionFile | null;
 export type TrackingErrorLogger = (message: string) => void;
 
 export interface AgentActivityCollectorOptions {
   inactivityTimeoutMs: number;
   resolveRollout?: RolloutResolver;
   logError?: TrackingErrorLogger;
+  /** Tracking-error retry backoff bounds; 0 disables the backoff (tests). */
+  trackingErrorRetryMinMs?: number;
+  trackingErrorRetryMaxMs?: number;
 }
 
 interface RootTracker {
@@ -500,11 +506,22 @@ interface TrackedAgentNode extends AgentState {
   canonicalValidated: boolean;
   localBoundaryFound: boolean;
   lastObservedSize: number | null;
+  /** Tracking-error retry backoff so failing nodes do not rescan every cycle. */
+  nextRetryAtMs: number;
+  retryBackoffMs: number;
 }
 
 interface RootForkBoundary {
   localBoundaryIndex: number;
 }
+
+// Tracking-error retries start at 1s and cap at 10s between attempts.
+const MIN_TRACKING_RETRY_MS = 1000;
+const MAX_TRACKING_RETRY_MS = 10_000;
+
+// Rollout files never predate their thread's spawn by more than this slack
+// (covers timezone-vs-UTC drift in date directories plus clock skew).
+const ROLLOUT_RESOLVE_SLACK_MS = 48 * 60 * 60 * 1000;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -587,6 +604,10 @@ function taskStartedTurnId(record: unknown): string | null {
     : null;
 }
 
+// Boundary matching only ever needs recent turns; a hard cap keeps very long
+// sessions from growing (and re-copying) this set without bound.
+const MAX_TRACKED_TURN_IDS = 1024;
+
 function collectPhysicalTurnIds(
   records: readonly unknown[],
   initial: ReadonlySet<string> = new Set<string>()
@@ -596,6 +617,17 @@ function collectPhysicalTurnIds(
     const turnId = physicalLifecycleTurnId(record);
     if (turnId !== null) {
       turnIds.add(turnId);
+    }
+  }
+  if (turnIds.size > MAX_TRACKED_TURN_IDS) {
+    const excess = turnIds.size - MAX_TRACKED_TURN_IDS;
+    let dropped = 0;
+    for (const turnId of turnIds) {
+      if (dropped >= excess) {
+        break;
+      }
+      turnIds.delete(turnId);
+      dropped++;
     }
   }
   return turnIds;
@@ -674,6 +706,8 @@ export class AgentActivityCollector {
   private readonly inactivityTimeoutMs: number;
   private readonly resolveRollout: RolloutResolver;
   private readonly logError: TrackingErrorLogger;
+  private readonly trackingErrorRetryMinMs: number;
+  private readonly trackingErrorRetryMaxMs: number;
   private root: RootTracker | null = null;
   private readonly nodes = new Map<string, TrackedAgentNode>();
 
@@ -681,6 +715,10 @@ export class AgentActivityCollector {
     this.inactivityTimeoutMs = options.inactivityTimeoutMs;
     this.resolveRollout = options.resolveRollout ?? findRolloutByThreadId;
     this.logError = options.logError ?? defaultTrackingErrorLogger;
+    this.trackingErrorRetryMinMs =
+      options.trackingErrorRetryMinMs ?? MIN_TRACKING_RETRY_MS;
+    this.trackingErrorRetryMaxMs =
+      options.trackingErrorRetryMaxMs ?? MAX_TRACKING_RETRY_MS;
   }
 
   setRootSession(session: SessionFile | null): void {
@@ -732,7 +770,7 @@ export class AgentActivityCollector {
     const queue = [...this.nodes.keys()];
     const queued = new Set(queue);
     for (let index = 0; index < queue.length; index++) {
-      await this.collectNode(queue[index]);
+      await this.collectNode(queue[index], nowMs);
       for (const threadId of this.nodes.keys()) {
         if (!queued.has(threadId)) {
           queued.add(threadId);
@@ -869,10 +907,17 @@ export class AgentActivityCollector {
     };
   }
 
-  private async collectNode(threadId: string): Promise<void> {
+  private async collectNode(threadId: string, nowMs: number): Promise<void> {
     const current = this.nodes.get(threadId);
     const root = this.root;
     if (!current || root === null) {
+      return;
+    }
+
+    // Failing nodes retry on a backoff instead of rescanning every cycle.
+    // (Idle nodes still get their cheap per-cycle stat: a later task_started
+    // can land in an existing subagent rollout and must be noticed.)
+    if (current.trackingError !== null && current.nextRetryAtMs > nowMs) {
       return;
     }
 
@@ -883,7 +928,8 @@ export class AgentActivityCollector {
     if (!parent) {
       this.setNodeTrackingError(
         current,
-        `expected parent ${current.parentThreadId} is not tracked.`
+        `expected parent ${current.parentThreadId} is not tracked.`,
+        nowMs
       );
       return;
     }
@@ -891,13 +937,20 @@ export class AgentActivityCollector {
       return;
     }
 
+    // Spawn time bounds the rollout search window; rollout files are created
+    // lazily but never predate their thread by more than the slack.
+    const resolveSinceMs =
+      current.startedAtMs !== null
+        ? current.startedAtMs - ROLLOUT_RESOLVE_SLACK_MS
+        : undefined;
+
     try {
       let rolloutPath = current.rolloutPath;
       let resolvedSessionId: string | null = null;
       let readOffset = current.offset;
       let relocated = false;
       if (rolloutPath === null) {
-        const resolved = this.resolveRollout(current.threadId);
+        const resolved = this.resolveRollout(current.threadId, resolveSinceMs);
         if (resolved === null) {
           throw new Error('exact active/archive rollout is unavailable.');
         }
@@ -931,7 +984,7 @@ export class AgentActivityCollector {
           throw error;
         }
 
-        const resolved = this.resolveRollout(current.threadId);
+        const resolved = this.resolveRollout(current.threadId, resolveSinceMs);
         if (resolved === null) {
           throw new Error('exact active/archive rollout is unavailable.');
         }
@@ -1010,7 +1063,7 @@ export class AgentActivityCollector {
       candidate.trackingError = null;
       this.commitNodeSuccess(current, candidate, stagedNodes);
     } catch (error) {
-      this.setNodeTrackingError(current, errorMessage(error));
+      this.setNodeTrackingError(current, errorMessage(error), nowMs);
     }
   }
 
@@ -1036,6 +1089,8 @@ export class AgentActivityCollector {
         canonicalValidated: false,
         localBoundaryFound: false,
         lastObservedSize: null,
+        nextRetryAtMs: 0,
+        retryBackoffMs: 0,
       });
       stagedThreadIds.add(seed.childThreadId);
     }
@@ -1050,16 +1105,23 @@ export class AgentActivityCollector {
 
   private setNodeTrackingError(
     node: TrackedAgentNode,
-    concreteCause: string
+    concreteCause: string,
+    nowMs: number = Date.now()
   ): void {
-    if (node.trackingError === concreteCause) {
-      return;
-    }
-
+    const retryBackoffMs = Math.min(
+      Math.max(node.retryBackoffMs * 2, this.trackingErrorRetryMinMs),
+      this.trackingErrorRetryMaxMs
+    );
     this.nodes.set(node.threadId, {
       ...node,
       trackingError: concreteCause,
+      retryBackoffMs,
+      nextRetryAtMs: nowMs + retryBackoffMs,
     });
+    if (node.trackingError === concreteCause) {
+      // Same cause again: the backoff advanced, but do not re-log it.
+      return;
+    }
     this.logError(
       `Agent ${node.threadId} tracking error: ${concreteCause}`
     );
@@ -1070,6 +1132,8 @@ export class AgentActivityCollector {
     candidate: TrackedAgentNode,
     stagedNodes: readonly TrackedAgentNode[] = []
   ): void {
+    candidate.retryBackoffMs = 0;
+    candidate.nextRetryAtMs = 0;
     this.nodes.set(candidate.threadId, candidate);
     this.applyStagedNodes(stagedNodes);
     if (previous.trackingError !== null) {

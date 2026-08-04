@@ -91,7 +91,7 @@ codex
 [FULL ACCESS] | Approval: full access | Sandbox: off | Fast: on | MCP configured: 3 | Codex skills: 5
 Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
 ◐ Thinking 42s · event 8s ago
-◐ exec_command @my-project 1.4s | ✓ read_file ×3
+◐ exec_command: npm test @my-project 1.4s | ✓ read_file ×3
 ```
 
 | 行 | 内容 |
@@ -101,15 +101,15 @@ Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in
 | **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、compact 次数；限额使用达到 70% 后显示 reset 信息 |
 | **健康** | Git、rollout、agent、环境/配置和概览采集的 stale/error；未知协议事件计数 |
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent |
-| **Session** | 工作目录、Session ID、CLI 版本；排在计划和已完成工具历史之前 |
+| **Session** | 工作目录、Session ID、CLI 版本；排在计划和工具历史之后，小 pane 优先保留动态信息 |
 
-工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具不显示命令正文，文件类工具只显示脱敏后的目标；`full` 才显示已脱敏、限长后的命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
+工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具只显示保护隐私的**命令头部**——程序名加一个已知子命令或脚本名（如 `npm test`、`sed && rg`），不含任何参数、路径或标志；文件类工具只显示脱敏后的目标。`full` 才显示已脱敏、限长后的完整命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
 
 HUD 会按终端单元格宽度处理中文、emoji、组合字符和 ANSI。默认 pane 高度取终端高度的六分之一，并限制在 5–12 行；窄终端最多再增加 3 行。显式设置 `CODEX_HUD_HEIGHT` 时保持固定，除非同时设置 `CODEX_HUD_HEIGHT_AUTO=1`。已有 Session 会在下次 attach 或执行 `codex-hud --reload` 时采用新策略。输出不会超过 pane 高度；信息过多时最后一行显示 `+N hidden`。设置 `NO_COLOR=1` 或 `TERM=dumb` 可禁用颜色，`CODEX_HUD_ASCII=1` 可使用 ASCII 状态符号。
 
 ### Subagent 活动
 
-展开模式为每个可见的直接子节点显示一行 icon-first 状态，例如 `◐ codex_cli_explore 2m14s ↳2`。名称取自 typed agent path 的最后一段；`↳N` 表示任意深度下可见的活跃后代数量。turn 完成或 abort 后会立即消失；只有仍有活跃后代时，直接子节点的聚合行才会继续保留。权威 rollout 或 metadata 跟踪失败会显示为 `✗ <name> tracking error`，并持续重试同一条 typed child path，直到恢复。
+展开模式为每个可见的直接子节点显示一行 icon-first 状态，例如 `◐ codex_cli_explore 2m14s ↳2`。名称取自 typed agent path 的最后一段；`↳N` 表示任意深度下可见的活跃后代数量。turn 完成或 abort 后会立即消失；只有仍有活跃后代时，直接子节点的聚合行才会继续保留。权威 rollout 或 metadata 跟踪失败会显示为 `✗ <name> tracking error`，并持续重试同一条 typed child path，直到恢复（重试间隔从 1s 退避到最多 10s）。
 
 紧凑模式显示 `Agents: N`；`N` 统计 root 所拥有整棵树中的所有可见 agent 节点，而不只是展开模式中的直接子节点行。多 Session 概览会排除 typed subagent session，因为它们的活动已经归入所属 root session。
 
@@ -168,7 +168,7 @@ codex-hud --hud-version      # 显示版本与 revision
 | `CODEX_HUD_BIND_TOGGLE` | `0` | 安装作用于整个 tmux server 的 `Prefix+H` HUD 切换键 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | 仅 HUD pane 使用的 scrollback 行数；主 pane 保留继承值 |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行命令默认隐藏；`full` 显示脱敏摘要，`off` 隐藏工具行 |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏工具行 |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | 额外显示 `.agents` 的 skill 数；Codex skill 权威目录仍是 `CODEX_HOME/skills` |
 | `CODEX_HUD_ASCII` | `0` | 使用 ASCII 进度条和状态符号 |
 | `NO_COLOR` | （未设置） | 设置任意值后禁用 ANSI 颜色 |
@@ -219,6 +219,7 @@ npm run test:render            # 运行渲染示例
 
 | 日期 | 变更 |
 |------|------|
+| 2026-08-04 | targets 模式显示执行命令头部、parse-queue/坏行永久冻结修复、chokidar 5 watcher 修复（跨午夜安全）、会话探测异步化、tracking-error 退避、OSC 8 超链接、概览列对齐 |
 | 2026-07-30 | 增量协议解析、异步采集缓存、健康/限流/turn 状态、Unicode 宽度、隐私和 HUD 控制命令 |
 | 2026-07-12 | 记录权威 subagent 活动、timeout 语义与概览过滤行为 |
 | 2026-04-09 | 新增快速安装/同步/升级/卸载命令 |

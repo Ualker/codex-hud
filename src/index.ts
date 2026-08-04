@@ -76,6 +76,7 @@ let gitRefreshTimer: NodeJS.Timeout | null = null;
 let projectRefreshTimer: NodeJS.Timeout | null = null;
 let overviewRefreshTimer: NodeJS.Timeout | null = null;
 let agentRefreshTimer: NodeJS.Timeout | null = null;
+let rolloutFallbackTimer: NodeJS.Timeout | null = null;
 
 // Display mode (single vs overview)
 let displayMode: HudDisplayMode =
@@ -360,25 +361,34 @@ const overviewCache = new AsyncSnapshotCache<SessionOverview>(
 );
 
 /**
- * Parse watcher-driven rollout and agent updates outside the render clock.
+ * Parse rollout updates outside the render clock. Returns false when there is
+ * no bound rollout or the parse failed.
  */
-async function refreshRolloutAndAgents(): Promise<void> {
+async function refreshRolloutOnly(): Promise<boolean> {
   const session = sessionFinder.getCurrentSession();
   if (!session || !fs.existsSync(session.path)) {
     cachedAgentActivity = undefined;
-    return;
+    return false;
   }
 
   recordCollectorAttempt('rollout');
   try {
     await parseRolloutSafely();
     recordCollectorSuccess('rollout');
+    return true;
   } catch (error) {
     recordCollectorError('rollout', error);
-    return;
+    return false;
   }
+}
 
-  await refreshAgents();
+/**
+ * Parse watcher-driven rollout and agent updates outside the render clock.
+ */
+async function refreshRolloutAndAgents(): Promise<void> {
+  if (await refreshRolloutOnly()) {
+    await refreshAgents();
+  }
 }
 
 function refreshAgents(): Promise<void> {
@@ -532,6 +542,9 @@ async function shutdown(): Promise<void> {
   if (agentRefreshTimer) {
     clearInterval(agentRefreshTimer);
   }
+  if (rolloutFallbackTimer) {
+    clearInterval(rolloutFallbackTimer);
+  }
   sessionFinder.stop();
   await Promise.allSettled([
     hudFileWatcher.stop(),
@@ -581,6 +594,11 @@ function startCollectorTimers(): void {
   agentRefreshTimer = setInterval(() => {
     void refreshAgents();
   }, 1000);
+  // Watcher events can be lost (editor moves, network mounts, chokidar
+  // hiccups); a slow stat-based sweep keeps the rollout data from freezing.
+  rolloutFallbackTimer = setInterval(() => {
+    void refreshRolloutOnly();
+  }, 2000);
 }
 
 function setupKeyListener(): void {
@@ -625,11 +643,13 @@ async function main(): Promise<void> {
   hudFileWatcher.onRolloutChange(async (rolloutPath) => {
     // A new rollout file may establish a freshly created (/new) session;
     // let the finder re-rank it immediately instead of waiting out the poll.
-    sessionFinder.noteRolloutAppeared(rolloutPath);
-    sessionFinder.check();
+    await sessionFinder.noteRolloutAppeared(rolloutPath);
+    void sessionFinder.check();
     await refreshRolloutAndAgents();
     if (displayMode === 'overview') {
-      void overviewCache.refresh(true).catch(() => {
+      // Respect the snapshot TTL: with a working session watcher these
+      // events can arrive in bursts across every active session.
+      void overviewCache.refresh().catch(() => {
         // Keep the previous overview snapshot.
       });
     }

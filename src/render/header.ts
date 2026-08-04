@@ -23,6 +23,7 @@ import {
   theme,
   icons,
   coloredBar,
+  padEnd,
   sanitizeTerminalText,
   truncate,
   truncateAnsi,
@@ -239,19 +240,19 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   }
 
   lines.push(...agentLines);
-  // Keep project identity visible before plan and completed-tool history. Live
-  // turn/tool/agent state still outranks it.
-  const sessionLine = renderSessionDetailLine(data, width);
-  if (sessionLine) {
-    lines.push(sessionLine);
-  }
   if (planLine) {
     lines.push(planLine);
   }
   if (!hasRunningTool && toolsLine) {
     lines.push(toolsLine);
   }
-  
+  // Static identity (Dir/Session/CLI) never changes mid-session; keep it
+  // last so small panes hide it before live plan/tool state.
+  const sessionLine = renderSessionDetailLine(data, width);
+  if (sessionLine) {
+    lines.push(sessionLine);
+  }
+
   return lines;
 }
 
@@ -303,19 +304,32 @@ function renderOverviewLayout(
     }
   };
 
-  return overview.sessions.map((session) => {
+  // Pad the leading columns to shared widths so the overview scans as a table.
+  const projectNames = overview.sessions.map((session) => {
+    const shortId = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
+    const project =
+      sanitizeTerminalText(
+        session.projectName ?? session.cwd ?? shortId
+      ) || shortId;
+    return truncate(project, 24);
+  });
+  const projectColumnWidth = Math.max(
+    ...projectNames.map((name) => visualLength(name))
+  );
+  const phaseLabels = overview.sessions.map((session) => phaseLabel(session));
+  const phaseColumnWidth = Math.max(
+    ...phaseLabels.map((label) => visualLength(label))
+  );
+
+  return overview.sessions.map((session, index) => {
     const shortId = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
     const ctx = session.contextUsage;
     const ctxDisplay = ctx
       ? `${coloredBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
       : colors.dim('ctx --');
-    const project =
-      sanitizeTerminalText(
-        session.projectName ?? session.cwd ?? shortId
-      ) || shortId;
     const parts = [
-      theme.projectName(truncate(project, 24)),
-      phaseLabel(session),
+      padEnd(theme.projectName(projectNames[index]), projectColumnWidth),
+      padEnd(phaseLabels[index], phaseColumnWidth),
       ctxDisplay,
       colors.dim(`${formatAge(session.lastActivityAt)} ago`),
       colors.dim(shortId),

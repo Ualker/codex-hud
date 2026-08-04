@@ -401,6 +401,7 @@ export interface ProtocolHealth {
   unknownTopLevelTypes: Record<string, number>;
   unknownResponseTypes: Record<string, number>;
   unknownEventTypes: Record<string, number>;
+  malformedLines: number;
 }
 
 export type CollectorHealthStatus = 'fresh' | 'stale' | 'error';

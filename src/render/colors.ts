@@ -148,8 +148,13 @@ export const icons = {
  * Strip ANSI codes to get visual length
  */
 export function stripAnsi(text: string): string {
+  // CSI sequences plus OSC sequences (BEL- or ST-terminated, e.g. OSC 8
+  // hyperlinks) — both occupy zero terminal cells.
   // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  return text.replace(
+    /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,
+    ''
+  );
 }
 
 /**
@@ -215,12 +220,15 @@ function graphemeWidth(grapheme: string): number {
   return width;
 }
 
+// Constructing a Segmenter is costly and this runs dozens of times per frame.
+const graphemeSegmenter =
+  typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
+
 function segmentGraphemes(text: string): string[] {
-  if (typeof Intl.Segmenter === 'function') {
-    const segmenter = new Intl.Segmenter(undefined, {
-      granularity: 'grapheme',
-    });
-    return [...segmenter.segment(text)].map((part) => part.segment);
+  if (graphemeSegmenter) {
+    return [...graphemeSegmenter.segment(text)].map((part) => part.segment);
   }
   return Array.from(text);
 }
@@ -297,6 +305,8 @@ export function truncateStart(text: string, maxWidth: number, ellipsis = '…'):
 /**
  * Truncate text to a visual width while preserving ANSI sequences.
  */
+const OSC8_CLOSE = '\x1b]8;;\x1b\\';
+
 export function truncateAnsi(text: string, maxWidth: number, ellipsis = '…'): string {
   if (maxWidth <= 0) return '';
   if (visualLength(text) <= maxWidth) return text;
@@ -306,6 +316,7 @@ export function truncateAnsi(text: string, maxWidth: number, ellipsis = '…'): 
   let visible = 0;
   let i = 0;
   let sawAnsi = false;
+  let openHyperlink = false;
 
   while (i < text.length && visible < limit) {
     if (text[i] === '\x1b' && text[i + 1] === '[') {
@@ -316,9 +327,23 @@ export function truncateAnsi(text: string, maxWidth: number, ellipsis = '…'): 
       i += match[0].length;
       continue;
     }
+    if (text[i] === '\x1b' && text[i + 1] === ']') {
+      // eslint-disable-next-line no-control-regex
+      const match = /^\x1b\]([^\x07\x1b]*)(?:\x07|\x1b\\)/.exec(text.slice(i));
+      if (!match) break;
+      out += match[0];
+      sawAnsi = true;
+      if (match[1].startsWith('8;')) {
+        // OSC 8 with a URI opens a hyperlink; an empty URI closes it.
+        openHyperlink = !/^8;[^;]*;$/.test(match[1]);
+      }
+      i += match[0].length;
+      continue;
+    }
 
-    const nextAnsi = text.indexOf('\x1b[', i);
-    const segmentEnd = nextAnsi === -1 ? text.length : nextAnsi;
+    const nextEscape = text.indexOf('\x1b', i);
+    const segmentEnd =
+      nextEscape === -1 ? text.length : Math.max(nextEscape, i + 1);
     const segment = text.slice(i, segmentEnd);
     for (const grapheme of segmentGraphemes(segment)) {
       const width = graphemeWidth(grapheme);
@@ -335,7 +360,8 @@ export function truncateAnsi(text: string, maxWidth: number, ellipsis = '…'): 
     }
   }
 
-  const truncated = out + ellipsis;
+  // Never leave the terminal inside an unterminated hyperlink.
+  const truncated = out + (openHyperlink ? OSC8_CLOSE : '') + ellipsis;
   if (!sawAnsi) return truncated;
   return truncated + RESET;
 }
