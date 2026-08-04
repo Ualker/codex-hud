@@ -50,11 +50,11 @@ export function formatAgentElapsed(startedAt: Date, nowMs: number = Date.now()):
   if (!Number.isFinite(nowMs)) {
     throw new Error('Agent elapsed nowMs must be finite');
   }
-  if (nowMs < startedAtMs) {
-    throw new Error('Agent elapsed nowMs cannot be before startedAt');
-  }
 
-  const elapsedSeconds = Math.floor((nowMs - startedAtMs) / 1000);
+  // startedAt comes from rollout events written by another process; clock
+  // skew can put it slightly in the future. Render "just started" instead of
+  // failing the whole frame.
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
   if (elapsedSeconds < 60) {
     return `${elapsedSeconds}s`;
   }
@@ -89,11 +89,15 @@ function renderAgentActivityRow(row: AgentActivityRow, width: number, nowMs: num
   if (row.status === 'tracking-error') {
     return renderAgentRow(icons.cross, safeLabel, ' tracking error', theme.error, width);
   }
-  if (row.status !== 'starting' && row.status !== 'running') {
-    throw new Error(`Unknown agent display status: ${String(row.status)}`);
-  }
-  if (!row.elapsedStartedAt) {
-    throw new Error(`Agent ${row.threadId} ${row.status} row requires elapsedStartedAt`);
+  // Unknown upstream statuses or a missing/invalid timer degrade to a visible
+  // error row. Throwing here would fail renderHud every frame and blank the
+  // whole HUD over one bad rollout record.
+  if (
+    (row.status !== 'starting' && row.status !== 'running') ||
+    !row.elapsedStartedAt ||
+    !Number.isFinite(row.elapsedStartedAt.getTime())
+  ) {
+    return renderAgentRow(icons.cross, safeLabel, ' display error', theme.error, width);
   }
 
   const spinnerIndex = Math.floor(nowMs / 100) % icons.spinner.length;

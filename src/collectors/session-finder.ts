@@ -50,6 +50,12 @@ const execFileAsync = promisify(execFile);
 // Full pane->thread resolution is expensive (subprocess spawns); throttle it so
 // the 1s render loop reuses the cached binding.
 const FULL_RESOLVE_INTERVAL_MS = 4000;
+// While consecutive resolves keep returning the same session, the cadence
+// backs off toward this cap; any change, force, or probe failure restores the
+// base cadence. Bounded so a same-pane /new or /resume switch (no watcher
+// event guaranteed) is still noticed promptly.
+const FULL_RESOLVE_INTERVAL_MAX_MS = 12_000;
+const FULL_RESOLVE_BACKOFF_FACTOR = 1.5;
 // How far back to look for log rows tying a process to a thread.
 const THREAD_CANDIDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 // Candidates older than this relative to the newest one are ignored (guards
@@ -136,19 +142,54 @@ function readFirstLine(filePath: string, maxBytes: number = 1024 * 1024): string
   }
 }
 
+interface RolloutCwdCacheEntry {
+  cwd: string | null;
+  size: number;
+}
+
+// A rollout's first line (session_meta) is written once and never rewritten,
+// so a resolved cwd is cached permanently by path. Unresolved entries are
+// re-read only after the file has grown, which covers a first line that was
+// still being written. Without this cache every fallback scan re-opens every
+// rollout file in the lookback window.
+const rolloutCwdCache = new Map<string, RolloutCwdCacheEntry>();
+const ROLLOUT_CWD_CACHE_LIMIT = 8192;
+
 function peekRolloutCwd(filePath: string): string | null {
+  const cached = rolloutCwdCache.get(filePath);
+  if (cached && cached.cwd !== null) {
+    return cached.cwd;
+  }
+
+  let size: number;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    rolloutCwdCache.delete(filePath);
+    return null;
+  }
+  if (cached && cached.size === size) {
+    return null;
+  }
+
+  let cwd: string | null = null;
   try {
     const firstLine = readFirstLine(filePath);
-    if (!firstLine) return null;
-
-    const entry = JSON.parse(firstLine.trim());
-    if (entry.type === 'session_meta' && entry.payload) {
-      return normalizePath(entry.payload.cwd);
+    if (firstLine) {
+      const entry = JSON.parse(firstLine.trim());
+      if (entry.type === 'session_meta' && entry.payload) {
+        cwd = normalizePath(entry.payload.cwd);
+      }
     }
   } catch {
     // Ignore errors or malformed files
   }
-  return null;
+
+  if (rolloutCwdCache.size >= ROLLOUT_CWD_CACHE_LIMIT) {
+    rolloutCwdCache.clear();
+  }
+  rolloutCwdCache.set(filePath, { cwd, size });
+  return cwd;
 }
 
 /**
@@ -916,7 +957,29 @@ async function findThreadCandidatesForProcesses(
     .map((processId) => `process_uuid LIKE '${escapeSqlString(`pid:${processId}:%`)}'`)
     .join(' OR ');
   const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
+  // Materializing the ts window first pins the plan to the ts index. On the
+  // flat query SQLite instead scans the whole thread_id index to avoid the
+  // GROUP BY sort, which walks every logged row ever written (measured
+  // ~40-140ms per probe on a 273MB logs db vs ~14ms materialized). This
+  // probe runs continuously, so the difference is real CPU.
   const sql = `
+WITH recent_logs AS MATERIALIZED (
+  SELECT thread_id, ts, ts_nanos
+  FROM logs
+  WHERE ts >= ${sinceSeconds}
+    AND (${processFilter})
+)
+SELECT thread_id, max(ts) AS last_ts
+FROM recent_logs
+WHERE thread_id IS NOT NULL
+  AND thread_id != ''
+GROUP BY thread_id
+ORDER BY max(ts) DESC, max(ts_nanos) DESC
+LIMIT ${MAX_THREAD_CANDIDATES}
+`.trim();
+  // AS MATERIALIZED needs sqlite >= 3.35; an older sqlite3 CLI fallback
+  // rejects it as a syntax error, so keep the flat query as a second try.
+  const legacySql = `
 SELECT thread_id, max(ts) AS last_ts
 FROM logs
 WHERE ts >= ${sinceSeconds}
@@ -930,7 +993,9 @@ LIMIT ${MAX_THREAD_CANDIDATES}
 
   let sawSuccessfulQuery = false;
   for (const dbPath of getLogDatabaseCandidates()) {
-    const output = await querySqlite(dbPath, [sql]);
+    const output =
+      (await querySqlite(dbPath, [sql])) ??
+      (await querySqlite(dbPath, [legacySql]));
     if (output === null) {
       continue;
     }
@@ -1073,6 +1138,7 @@ export class SessionFinder {
   private currentThreadId: string | null = null;
   private targetStartTime: Date | null = null;
   private lastFullResolveAt = 0;
+  private fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
   private boundViaProcess = false;
   private cachedPanePid: string | null = null;
   private runtimeHookOverrides: string[] = [];
@@ -1148,36 +1214,51 @@ export class SessionFinder {
 
     // Full resolution spawns subprocesses (tmux/ps/sqlite3); between resolves
     // just refresh the cached binding.
-    if (!force && now - this.lastFullResolveAt < FULL_RESOLVE_INTERVAL_MS) {
+    if (!force && now - this.lastFullResolveAt < this.fullResolveIntervalMs) {
       return this.currentSession;
     }
     this.lastFullResolveAt = now;
+
+    const previousPath = current && currentExists ? current.path : null;
 
     const mainPaneId = process.env.CODEX_HUD_MAIN_PANE;
     if (!mainPaneId) {
       this.currentThreadId = null;
       this.runtimeHookOverrides = [];
       this.runtimeHooksEnabled = null;
-      return this.resolveNextSession(this.findFallbackSession(), currentExists);
+      return this.applyResolveBackoff(
+        this.resolveNextSession(this.findFallbackSession(), currentExists),
+        previousPath
+      );
     }
 
     const binding = await this.resolvePaneThreadBinding(mainPaneId, now);
     if (binding.threadId) {
       this.boundViaProcess = true;
-      return this.bindThread(binding.threadId, currentExists);
+      return this.applyResolveBackoff(
+        await this.bindThread(binding.threadId, currentExists),
+        previousPath
+      );
     }
 
     // The pane process is known to be bound but this probe failed or came back
     // empty (sqlite hiccup, codex exited, idle beyond the log window): keep the
-    // current binding instead of guessing by file mtime.
-    if (binding.keepCurrent && current && currentExists) {
-      return current;
+    // current binding instead of guessing by file mtime, and retry at the base
+    // cadence so recovery is prompt.
+    if (binding.keepCurrent) {
+      this.fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
+      if (current && currentExists) {
+        return current;
+      }
     }
 
     const paneSnapshot = findSnapshotForPane(mainPaneId);
     if (!paneSnapshot || !this.isFreshPaneSnapshot(paneSnapshot)) {
       this.currentThreadId = null;
-      return this.resolveNextSession(this.findPaneLaunchSession(), currentExists);
+      return this.applyResolveBackoff(
+        this.resolveNextSession(this.findPaneLaunchSession(), currentExists),
+        previousPath
+      );
     }
 
     const threadId = paneSnapshot.threadId;
@@ -1187,7 +1268,7 @@ export class SessionFinder {
       (fs.existsSync(this.currentSession.path) || isLogBackedSession(this.currentSession))
     ) {
       this.currentThreadId = threadId;
-      return this.currentSession;
+      return this.applyResolveBackoff(this.currentSession, previousPath);
     }
 
     const previousThreadId = this.currentThreadId;
@@ -1195,10 +1276,36 @@ export class SessionFinder {
     const next = await findSessionByThreadId(threadId, this.targetCwd);
 
     if (!next) {
-      return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
+      return this.applyResolveBackoff(
+        this.resolveNextSession(null, previousThreadId === threadId && currentExists),
+        previousPath
+      );
     }
 
-    return this.resolveNextSession(next, currentExists);
+    return this.applyResolveBackoff(
+      this.resolveNextSession(next, currentExists),
+      previousPath
+    );
+  }
+
+  /**
+   * Back the full-resolve cadence off while consecutive resolves keep
+   * returning the same session; a change or an unbound result restores the
+   * base cadence.
+   */
+  private applyResolveBackoff(
+    result: SessionFile | null,
+    previousPath: string | null
+  ): SessionFile | null {
+    if (result !== null && previousPath !== null && result.path === previousPath) {
+      this.fullResolveIntervalMs = Math.min(
+        FULL_RESOLVE_INTERVAL_MAX_MS,
+        Math.round(this.fullResolveIntervalMs * FULL_RESOLVE_BACKOFF_FACTOR)
+      );
+    } else {
+      this.fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
+    }
+    return result;
   }
 
   /**

@@ -24,7 +24,11 @@ import {
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import { HudFileWatcher } from './collectors/file-watcher.js';
-import { renderToStdout, cleanupRenderer } from './render/index.js';
+import {
+  renderToStdout,
+  cleanupRenderer,
+  invalidateRenderedFrame,
+} from './render/index.js';
 import { calculateContextUsage } from './context-usage.js';
 import type {
   HudData,
@@ -634,6 +638,18 @@ async function main(): Promise<void> {
   process.stdin.on('close', () => void shutdown());
   process.stdin.resume();
   setupKeyListener();
+
+  // Repaint immediately on pane resize instead of waiting out the current
+  // refresh interval; the invalidation forces a full-screen clear so no
+  // artifacts of the old geometry survive.
+  process.stdout.on('resize', () => {
+    invalidateRenderedFrame();
+    try {
+      renderToStdout(collectData());
+    } catch {
+      // The regular render loop repaints on its next tick.
+    }
+  });
 
   // Set up file watchers
   hudFileWatcher.onConfigChange(() => {
