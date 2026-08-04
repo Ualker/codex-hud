@@ -145,28 +145,44 @@ assert.throws(
   /nowMs/,
   'invalid current timestamps must fail fast'
 );
-assert.throws(
-  () => formatAgentElapsed(new Date(135000), 134000),
-  /before/,
-  'negative elapsed durations must fail fast'
+// Rollout events come from another process; clock skew must render as
+// "just started" instead of failing the whole frame.
+assert.equal(
+  formatAgentElapsed(new Date(135000), 134000),
+  '0s',
+  'future start timestamps clamp to zero elapsed'
 );
-assert.throws(
-  () => renderAgentLines(
-    makeAgentActivity({ rows: [makeRow({ elapsedStartedAt: undefined })] }),
-    80,
-    134000
-  ),
-  /elapsedStartedAt/,
-  'normal rows without a timer must fail fast'
+// Bad upstream data degrades to a visible error row: throwing inside the
+// render path would blank the entire HUD every frame.
+const [missingTimerRow] = renderAgentLines(
+  makeAgentActivity({ rows: [makeRow({ elapsedStartedAt: undefined })] }),
+  80,
+  134000
 );
-assert.throws(
-  () => renderAgentLines(
-    makeAgentActivity({ rows: [makeRow({ status: 'completed' })] }),
-    80,
-    134000
-  ),
-  { message: 'Unknown agent display status: completed' },
-  'unknown runtime statuses must fail fast with the offending value'
+assert.equal(
+  stripAnsi(missingTimerRow),
+  '✗ codex_cli_explore display error',
+  'normal rows without a timer degrade to a display-error row'
+);
+const [invalidTimerRow] = renderAgentLines(
+  makeAgentActivity({ rows: [makeRow({ elapsedStartedAt: new Date(Number.NaN) })] }),
+  80,
+  134000
+);
+assert.equal(
+  stripAnsi(invalidTimerRow),
+  '✗ codex_cli_explore display error',
+  'rows with an invalid timer degrade to a display-error row'
+);
+const [unknownStatusRow] = renderAgentLines(
+  makeAgentActivity({ rows: [makeRow({ status: 'completed' })] }),
+  80,
+  134000
+);
+assert.equal(
+  stripAnsi(unknownStatusRow),
+  '✗ codex_cli_explore display error',
+  'unknown runtime statuses degrade to a display-error row'
 );
 
 const spinnerCases = [

@@ -4,7 +4,6 @@
  */
 
 import type { HudData, RenderOptions, LayoutConfig, LayoutMode } from '../types.js';
-import { DEFAULT_LAYOUT } from '../types.js';
 import { renderHud } from './header.js';
 import { colors, padEnd, visualLength, truncateAnsi } from './colors.js';
 
@@ -17,7 +16,17 @@ const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
 
 let lastStdoutFrame: string | null = null;
+let hasEverRendered = false;
 const STATUS_HINT = 'Click HUD, Ctrl+T • Drag to resize';
+
+/**
+ * Drop the cached frame so the next renderToStdout call repaints from a clean
+ * screen (used after a terminal resize). Scrollback clearing remains a
+ * first-render-only behavior.
+ */
+export function invalidateRenderedFrame(): void {
+  lastStdoutFrame = null;
+}
 
 function applyStatusHint(lines: string[], width: number): string[] {
   if (lines.length === 0 || width <= 0) {
@@ -129,95 +138,15 @@ function createDefaultLayout(width: number, height: number): LayoutConfig {
 }
 
 /**
- * Clear the current line and write text
- */
-function writeLine(text: string): void {
-  process.stdout.write(CLEAR_LINE + text + '\n');
-}
-
-/**
- * Render the HUD to stdout
- * This is called in a loop to update the display
- */
-export function render(data: HudData): void {
-  const width = getTerminalWidth();
-  const height = getTerminalHeight();
-  
-  const layout = createDefaultLayout(width, height);
-  const options: RenderOptions = {
-    width,
-    showDetails: height >= 2,
-    layout,
-  };
-  
-  const maxLines = Math.max(1, height);
-  const lines = truncateLines(
-    applyStatusHint(
-      fitLinesToViewport(renderHud(data, options), maxLines, width),
-      width
-    ),
-    width
-  );
-  
-  // Move cursor to home position and render
-  process.stdout.write(CURSOR_HOME);
-  
-  for (const line of lines) {
-    writeLine(line);
-  }
-  
-  // Clear any remaining lines from previous render
-  const remainingLines = maxLines - lines.length;
-  for (let i = 0; i < remainingLines; i++) {
-    writeLine('');
-  }
-}
-
-/**
- * Initialize the renderer
- * Sets up the terminal for rendering
- */
-export function initRenderer(): void {
-  // Hide cursor
-  process.stdout.write(HIDE_CURSOR);
-  
-  // Clear screen
-  process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
-  
-  // Handle resize
-  process.stdout.on('resize', () => {
-    process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
-  });
-}
-
-/**
  * Cleanup the renderer
  * Restores terminal state
  */
 export function cleanupRenderer(): void {
   // Show cursor
   process.stdout.write(SHOW_CURSOR);
-  
+
   // Clear screen
   process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
-}
-
-/**
- * Simple single-line render mode
- * Used for tmux status bar integration
- */
-export function renderSingleLine(data: HudData): string {
-  const width = getTerminalWidth();
-  const layout = createDefaultLayout(width, 1);
-  
-  const options: RenderOptions = {
-    width,
-    showDetails: false,
-    layout,
-  };
-  
-  const lines = renderHud(data, options);
-  return truncateAnsi(lines[0] || '', width);
 }
 
 /**
@@ -250,12 +179,16 @@ export function renderToStdout(data: HudData): void {
     return;
   }
 
-  const isFirstRender = lastStdoutFrame === null;
+  const needsFullClear = lastStdoutFrame === null;
+  const isFirstRender = !hasEverRendered;
+  hasEverRendered = true;
   lastStdoutFrame = frame;
 
-  // Clear once on first render so the top line reliably appears in new panes;
-  // hide the cursor at the same time (cleanupRenderer restores it).
-  const clearPrefix = (isFirstRender && clearScrollback ? CLEAR_SCROLLBACK : '') + (isFirstRender ? HIDE_CURSOR + CLEAR_SCREEN : '') + CURSOR_HOME;
+  // Clear the screen on the first render so the top line reliably appears in
+  // new panes, and again after an invalidation (resize) to drop artifacts;
+  // hide the cursor at the same time (cleanupRenderer restores it). The
+  // scrollback wipe stays strictly first-render-only.
+  const clearPrefix = (isFirstRender && clearScrollback ? CLEAR_SCROLLBACK : '') + (needsFullClear ? HIDE_CURSOR + CLEAR_SCREEN : '') + CURSOR_HOME;
   process.stdout.write(clearPrefix);
 
   const totalLines = Math.max(lines.length, maxLines);

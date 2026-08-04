@@ -7,8 +7,7 @@ export { renderIdentityLine } from './identity-line.js';
 export { renderProjectLine } from './project-line.js';
 export { renderEnvironmentLine } from './environment-line.js';
 export { renderUsageLine } from './usage-line.js';
-export { renderSessionLine } from './session-line.js';
-export { 
+export {
   renderToolsLine, 
   renderTodosLine, 
   renderTokenLine,

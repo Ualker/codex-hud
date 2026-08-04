@@ -357,34 +357,3 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   
   return renderExpandedLayout(data, layout, options.width);
 }
-
-// ============================================================================
-// Legacy exports for backward compatibility
-// ============================================================================
-
-/**
- * Render the main header line (legacy)
- * @deprecated Use renderHud instead
- */
-export function renderHeader(data: HudData, options: RenderOptions): string {
-  const lines = renderHud(data, options);
-  return lines[0] || '';
-}
-
-/**
- * Render the second line with detailed info (legacy)
- * @deprecated Use renderHud instead
- */
-export function renderDetails(data: HudData, options: RenderOptions): string {
-  const lines = renderHud(data, options);
-  return lines[1] || '';
-}
-
-/**
- * Render the third line with tool activity (legacy)
- * @deprecated Use renderHud instead
- */
-export function renderActivityLine(data: HudData, _options: RenderOptions): string | null {
-  const lines = renderHud(data, _options);
-  return lines[2] || null;
-}
