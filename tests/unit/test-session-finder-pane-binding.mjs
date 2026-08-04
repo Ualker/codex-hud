@@ -248,7 +248,7 @@ try {
     });
 
     const finder = new SessionFinder(cwd, undefined, new Date());
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(
       resolved,
       'fresh launch without a bound shell snapshot should fall back to a recent cwd rollout'
@@ -284,7 +284,7 @@ try {
     });
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(resolved, 'expected fallback to resolve the launch-scoped rollout');
     assert.equal(
       resolved.path,
@@ -318,7 +318,7 @@ try {
     writeSnapshot(home, staleBoundThread, '%70', 1775743639864947215n);
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(resolved, 'expected a fresh rollout to resolve when pane binding is stale');
     assert.equal(
       resolved.path,
@@ -359,7 +359,7 @@ try {
     writeSnapshot(home, staleBoundThread, '%70', 1775743639864947216n);
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(resolved, 'expected a launch-scoped rollout to resolve when pane binding is stale');
     assert.equal(
       resolved.path,
@@ -386,7 +386,7 @@ try {
     });
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.equal(
       resolved,
       null,
@@ -417,7 +417,7 @@ try {
     });
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.equal(
       resolved,
       null,
@@ -450,7 +450,7 @@ try {
     writeSnapshot(home, boundThread, '%70', snapshotNonce(targetStartTime));
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(resolved, 'expected fresh pane snapshot to resolve its bound rollout');
     assert.equal(
       resolved.path,
@@ -483,7 +483,7 @@ try {
     writeSnapshot(home, boundThread, '%70', 1775743876858615370n);
 
     const finder = new SessionFinder(cwd);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(resolved, 'expected a pane-bound session to resolve');
     assert.equal(
       resolved.path,
@@ -518,7 +518,7 @@ try {
 
     process.env.CODEX_HUD_MAIN_PANE = '%70';
     const finderOne = new SessionFinder(cwd);
-    const resultOne = finderOne.check();
+    const resultOne = await finderOne.check();
     assert.ok(resultOne, 'expected pane one to resolve');
     assert.equal(
       resultOne.path,
@@ -528,7 +528,7 @@ try {
 
     process.env.CODEX_HUD_MAIN_PANE = '%72';
     const finderTwo = new SessionFinder(cwd);
-    const resultTwo = finderTwo.check();
+    const resultTwo = await finderTwo.check();
     assert.ok(resultTwo, 'expected pane two to resolve');
     assert.equal(
       resultTwo.path,
@@ -561,7 +561,7 @@ try {
     });
     writeSnapshot(home, threadId, '%70', 1775743876858615370n, assignment);
 
-    const resolved = new SessionFinder(cwd).check();
+    const resolved = await new SessionFinder(cwd).check();
     assert.ok(resolved, `expected snapshot form to resolve: ${assignment}`);
     assert.equal(
       resolved.path,
@@ -591,7 +591,7 @@ try {
     writeSnapshot(home, threadId, '%70', snapshotNonce(targetStartTime), assignment);
 
     assert.equal(
-      new SessionFinder(cwd, undefined, targetStartTime).check(),
+      await new SessionFinder(cwd, undefined, targetStartTime).check(),
       null,
       `non-exported or decoy snapshot must not bind: ${assignment}`
     );
@@ -619,7 +619,7 @@ try {
     ]);
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
-    const resolved = finder.check();
+    const resolved = await finder.check();
     assert.ok(
       resolved,
       'fresh pane snapshot should resolve sqlite-backed Codex threads even when no rollout exists'
@@ -663,7 +663,7 @@ try {
 
     process.env.CODEX_HUD_MAIN_PANE = '%70';
     const finderOne = new SessionFinder(cwd, undefined, now);
-    const resultOne = finderOne.check();
+    const resultOne = await finderOne.check();
     assert.ok(resultOne, 'expected sqlite-backed pane one to resolve');
     assert.equal(
       resultOne.sessionId,
@@ -674,7 +674,7 @@ try {
 
     process.env.CODEX_HUD_MAIN_PANE = '%72';
     const finderTwo = new SessionFinder(cwd, undefined, now);
-    const resultTwo = finderTwo.check();
+    const resultTwo = await finderTwo.check();
     assert.ok(resultTwo, 'expected sqlite-backed pane two to resolve');
     assert.equal(
       resultTwo.sessionId,
@@ -713,7 +713,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const resolved = finder.check();
+      const resolved = await finder.check();
       assert.ok(
         resolved,
         'missing shell snapshot should resolve the latest sqlite thread for the bound pane process'
@@ -760,7 +760,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const resolved = finder.check();
+      const resolved = await finder.check();
       assert.ok(resolved, 'expected current pane process to resolve a session');
       assert.equal(
         resolved.sessionId,
@@ -806,7 +806,7 @@ try {
 
       process.env.CODEX_HUD_MAIN_PANE = '%70';
       const finderOne = new SessionFinder(cwd, undefined, now);
-      const resultOne = finderOne.check();
+      const resultOne = await finderOne.check();
       assert.ok(resultOne, 'expected pane one process to resolve');
       assert.equal(
         resultOne.sessionId,
@@ -816,7 +816,7 @@ try {
 
       process.env.CODEX_HUD_MAIN_PANE = '%72';
       const finderTwo = new SessionFinder(cwd, undefined, now);
-      const resultTwo = finderTwo.check();
+      const resultTwo = await finderTwo.check();
       assert.ok(resultTwo, 'expected pane two process to resolve');
       assert.equal(
         resultTwo.sessionId,
@@ -857,7 +857,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const resolved = finder.check();
+      const resolved = await finder.check();
       assert.ok(
         resolved,
         'pane process fallback should inspect child processes because Codex logs use the Rust child pid'
@@ -891,7 +891,7 @@ try {
       process.env.CODEX_HUD_MAIN_PANE = '%70';
 
       const finder = new SessionFinder(cwd, undefined, new Date());
-      finder.check();
+      await finder.check();
       assert.deepEqual(
         finder.getRuntimeHookOverrides(),
         [sessionStartHook, stopHook].sort(),
@@ -942,7 +942,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const bound = finder.check();
+      const bound = await finder.check();
       assert.ok(bound, 'expected the user session to bind first');
       assert.equal(bound.sessionId, userThread);
 
@@ -953,7 +953,7 @@ try {
         body: 'memories{}:flush',
       }, 1);
 
-      const resolved = finder.check(true);
+      const resolved = await finder.check(true);
       assert.ok(resolved, 'expected the binding to survive internal thread activity');
       assert.equal(
         resolved.sessionId,
@@ -1010,7 +1010,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const bound = finder.check();
+      const bound = await finder.check();
       assert.ok(bound, 'expected the main session to bind first');
       assert.equal(bound.sessionId, mainThread);
 
@@ -1021,7 +1021,7 @@ try {
         body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
       }, 1);
 
-      const resolved = finder.check(true);
+      const resolved = await finder.check(true);
       assert.ok(resolved, 'expected the binding to survive subagent activity');
       assert.equal(
         resolved.sessionId,
@@ -1077,7 +1077,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const bound = finder.check();
+      const bound = await finder.check();
       assert.ok(bound, 'expected the first session to bind');
       assert.equal(bound.sessionId, firstThread);
 
@@ -1088,7 +1088,7 @@ try {
         body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
       }, 1);
 
-      const resolved = finder.check(true);
+      const resolved = await finder.check(true);
       assert.ok(resolved, 'expected the resumed session to resolve');
       assert.equal(
         resolved.sessionId,
@@ -1140,7 +1140,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const bound = finder.check();
+      const bound = await finder.check();
       assert.ok(bound, 'expected the session to bind');
       assert.equal(bound.sessionId, boundThread);
 
@@ -1153,7 +1153,7 @@ try {
         modifiedAt: new Date(),
       });
 
-      const resolved = finder.check(true);
+      const resolved = await finder.check(true);
       assert.ok(resolved, 'expected the binding to survive an empty candidate probe');
       assert.equal(
         resolved.sessionId,
@@ -1201,7 +1201,7 @@ try {
       ]);
 
       const finder = new SessionFinder(cwd, undefined, now);
-      const bound = finder.check();
+      const bound = await finder.check();
       assert.ok(bound, 'expected the old session to bind first');
       assert.equal(bound.sessionId, oldThread);
 
@@ -1212,7 +1212,7 @@ try {
         ts: nowTs,
         body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
       }, 1);
-      const beforeRollout = finder.check(true);
+      const beforeRollout = await finder.check(true);
       assert.equal(
         beforeRollout.sessionId,
         oldThread,
@@ -1225,7 +1225,7 @@ try {
         cwd,
         modifiedAt: now,
       });
-      finder.noteRolloutAppeared(newRollout);
+      await finder.noteRolloutAppeared(newRollout);
 
       const resolved = finder.getCurrentSession();
       assert.ok(resolved, 'expected the new session to resolve after its rollout appeared');

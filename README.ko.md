@@ -196,6 +196,7 @@ node dist/index.js             # HUD 직접 실행
 
 | 날짜 | 변경 사항 |
 |------|-----------|
+| 2026-08-04 | targets 모드에서 실행 명령 헤드 표시, parse-queue/손상 라인 프리즈 수정, chokidar 5 watcher 복구, 세션 프로브 비동기화, OSC 8 하이퍼링크 |
 | 2026-07-12 | authoritative subagent activity, timeout 의미, 개요 필터링을 문서화 |
 | 2026-04-09 | 빠른 설치/동기화/업그레이드/제거 명령어 추가 |
 | 2026-04-09 | HUD 세션을 tmux 패인에 바인딩; reasoning effort 표시 |

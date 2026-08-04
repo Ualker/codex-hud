@@ -88,7 +88,7 @@ After the first install, these are available in your shell:
 [FULL ACCESS] | Approval: full access | Sandbox: off | Fast: on | MCP configured: 3 | Codex skills: 5
 Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
 ◐ Thinking 42s · event 8s ago
-◐ exec_command @my-project 1.4s | ✓ read_file ×3
+◐ exec_command: npm test @my-project 1.4s | ✓ read_file ×3
 ```
 
 | Line | Shows |
@@ -98,13 +98,15 @@ Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in
 | **Capacity** | Context percent/tokens remaining, input/cache/output, compact count; rate-limit reset details appear at 70% usage |
 | **Health** | Stale/error state for Git, rollout, agents, environment/config, and overview; unknown protocol-event count |
 | **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |
-| **Session** | Working directory, session ID, and CLI version; shown before plan and completed-tool history |
+| **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible |
 
 Tool activity stays on one physical line by default. With the default
-`CODEX_HUD_TOOL_DETAILS=targets`, execution tools hide command text while file
-tools show only sanitized targets. `full` enables sanitized, bounded command
-summaries; `off` hides the tool line. Raw stdout/stderr and raw tool arguments
-are never retained or displayed.
+`CODEX_HUD_TOOL_DETAILS=targets`, execution tools show only a privacy-preserving
+command head — the program name plus one known subcommand or script basename,
+such as `npm test` or `sed && rg` — never flags, paths, or argument values.
+File tools show only sanitized targets. `full` enables sanitized, bounded
+command summaries; `off` hides the tool line. Raw stdout/stderr and raw tool
+arguments are never retained or displayed.
 
 The renderer measures terminal cells for CJK text, emoji, combining characters,
 and ANSI. By default, the pane uses one sixth of the terminal height (bounded to
@@ -117,7 +119,7 @@ disable color, and set `CODEX_HUD_ASCII=1` for ASCII status glyphs.
 
 ### Subagent activity
 
-Expanded mode shows one icon-first row per visible direct child, such as `◐ codex_cli_explore 2m14s ↳2`. The name is the leaf of the typed agent path, and `↳N` is the number of visible active descendants at any depth. A completed or aborted turn disappears immediately unless an active descendant keeps its direct-child aggregate visible. Authoritative rollout or metadata failures remain visible as `✗ <name> tracking error` and retry the same typed child path until it recovers.
+Expanded mode shows one icon-first row per visible direct child, such as `◐ codex_cli_explore 2m14s ↳2`. The name is the leaf of the typed agent path, and `↳N` is the number of visible active descendants at any depth. A completed or aborted turn disappears immediately unless an active descendant keeps its direct-child aggregate visible. Authoritative rollout or metadata failures remain visible as `✗ <name> tracking error` and retry the same typed child path until it recovers (retries back off from 1s to at most 10s between attempts).
 
 Compact mode shows `Agents: N`, where `N` counts all visible tracked agent nodes in the root-owned tree rather than only the displayed direct-child rows. Multi-session overview excludes typed subagent sessions because their activity is already represented by the owning root session.
 
@@ -176,7 +178,7 @@ codex-hud --hud-version      # Print version and revision
 | `CODEX_HUD_BIND_TOGGLE` | `0` | Install the server-wide `Prefix+H` HUD toggle |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | Hide execution commands by default; `full` shows sanitized summaries and `off` hides the tool row |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | Also show `.agents` skill count; `CODEX_HOME/skills` remains authoritative for Codex |
 | `CODEX_HUD_ASCII` | `0` | Use ASCII progress and status glyphs |
 | `NO_COLOR` | (unset) | Disable ANSI colors when set |
@@ -228,6 +230,7 @@ npm run test:render            # Run the render examples
 
 | Date | Change |
 |------|--------|
+| 2026-08-04 | Command heads for execution tools in `targets` mode, parse-queue/malformed-line freeze fixes, chokidar 5 watcher repair (midnight-safe), async session probes, tracking-error backoff, OSC 8 hyperlinks, aligned overview columns |
 | 2026-07-30 | Incremental protocol parsing, async collector caches, health/rate/turn state, Unicode width, privacy, and HUD controls |
 | 2026-07-12 | Document authoritative subagent activity, timeout semantics, and overview filtering |
 | 2026-04-09 | Add quick install/sync/upgrade/uninstall commands |

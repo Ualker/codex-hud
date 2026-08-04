@@ -22,8 +22,10 @@ const toolActivity = {
 
 delete process.env.CODEX_HUD_TOOL_DETAILS;
 const defaultLine = stripAnsi(renderToolsLine(toolActivity, 120) ?? '');
-assert.match(defaultLine, /exec_command/);
-assert.doesNotMatch(defaultLine, /Authorization|internal\.test|secret/);
+// targets mode shows the command head (program name), never arguments —
+// even when a raw command leaks into `target`, only the head may render.
+assert.match(defaultLine, /exec_command: curl/);
+assert.doesNotMatch(defaultLine, /Authorization|internal\.test|secret|-H/);
 
 process.env.CODEX_HUD_TOOL_DETAILS = 'full';
 const fullLine = stripAnsi(renderToolsLine(toolActivity, 120) ?? '');

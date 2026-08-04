@@ -106,10 +106,11 @@ const expanded = renderHud(hudData, {
 });
 const responsiveViewport = fitLinesToViewport(expanded, 5, 90).map(stripAnsi);
 assert.equal(expanded.length, 6);
-assert.match(responsiveViewport[4], /Dir:/);
-assert.match(responsiveViewport[4], /codex-hud/);
+// Live tool history outranks the static Dir/Session line: a small pane hides
+// the identity line first.
+assert.match(responsiveViewport[4], /read_file/);
 assert.match(responsiveViewport[4], /\+1 hidden$/);
-assert.doesNotMatch(responsiveViewport.join('\n'), /read_file/);
+assert.doesNotMatch(responsiveViewport.join('\n'), /Dir:/);
 
 const narrowSession = renderSessionDetailLine(hudData, 36);
 assert.ok(narrowSession);

@@ -6,6 +6,7 @@
 
 import type { HudData, GitStatus } from '../../types.js';
 import { theme, icons, colors, sanitizeTerminalText, visualLength, truncate } from '../colors.js';
+import { osc8Link, fileUrl } from '../../utils/hyperlinks.js';
 
 /**
  * Render git sync status (ahead/behind)
@@ -59,10 +60,14 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
   const includeFileStats = options.includeFileStats !== false;
   const maxWidth = options.maxWidth;
   
-  // Project name (yellow like claude-hud)
+  // Project name (yellow like claude-hud), clickable via OSC 8 when a cwd
+  // is known.
   const projectName =
     sanitizeTerminalText(data.project.projectName) || 'project';
-  const projectLabel = theme.projectName(projectName);
+  const projectCwd = data.project.cwd;
+  const linkProject = (label: string): string =>
+    projectCwd ? osc8Link(label, fileUrl(projectCwd)) : label;
+  const projectLabel = linkProject(theme.projectName(projectName));
   const parts: string[] = [projectLabel];
   let gitDisplay = '';
   let fileStats = '';
@@ -120,9 +125,9 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
       return gitDisplay;
     }
     const truncatedName = truncate(projectName, availableForProject);
-    return [theme.projectName(truncatedName), gitDisplay].join(' ');
+    return [linkProject(theme.projectName(truncatedName)), gitDisplay].join(' ');
   }
 
   const truncatedName = truncate(projectName, maxWidth);
-  return theme.projectName(truncatedName);
+  return linkProject(theme.projectName(truncatedName));
 }

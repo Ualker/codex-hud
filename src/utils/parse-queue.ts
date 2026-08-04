@@ -20,8 +20,14 @@ export function createParseQueue<T>(parseFn: () => Promise<T>): () => Promise<T>
       return result;
     })();
 
-    const result = await parseInFlight;
-    parseInFlight = null;
+    let result: T;
+    try {
+      result = await parseInFlight;
+    } finally {
+      // Reset even when parseFn rejects; otherwise every later call would
+      // return the same rejected promise and parsing would never recover.
+      parseInFlight = null;
+    }
 
     if (parseQueued) {
       parseQueued = false;

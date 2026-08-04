@@ -26,4 +26,20 @@ assert.equal(
   'safe red txt'
 );
 
+// OSC 8 hyperlinks occupy zero cells and truncation must close open links.
+const linked = ']8;;file://host/tmp/repo\\repo-name]8;;\\';
+assert.equal(visualLength(linked), 9, 'hyperlink wrapper adds no visual width');
+assert.equal(truncateAnsi(linked, 100), linked, 'short linked text passes through');
+const truncatedLink = truncateAnsi(`${linked} tail-content`, 12);
+assert.equal(visualLength(truncatedLink), 12);
+assert.ok(
+  truncatedLink.includes(']8;;file://host/tmp/repo\\'),
+  'link opener survives truncation'
+);
+const openerCount = truncatedLink.split(']8;;').length - 1;
+assert.ok(
+  openerCount % 2 === 0,
+  'every OSC 8 opener is matched by a closer after truncation'
+);
+
 console.log('test-terminal-width: PASS');

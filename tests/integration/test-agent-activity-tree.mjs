@@ -302,6 +302,8 @@ try {
     const resolverCalls = [];
     const logs = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 2_000,
       resolveRollout: createResolver(files, resolverCalls),
       logError: (message) => logs.push(message),
@@ -757,6 +759,8 @@ try {
     const files = new Map([[VALID_CHILD, { path: validChildPath }]]);
     const calls = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 1_000,
       resolveRollout: createResolver(files, calls),
       logError: () => {},
@@ -981,6 +985,8 @@ try {
     const calls = [];
     const logs = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 2_000,
       resolveRollout: createResolver(files, calls),
       logError: (message) => logs.push(message),
@@ -1097,6 +1103,8 @@ try {
     });
     const calls = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 1_000,
       resolveRollout: createResolver(new Map([[CHILD, { path: childPath }]]), calls),
       logError: () => {},
@@ -1163,6 +1171,8 @@ try {
     const calls = [];
     const logs = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 1_000,
       resolveRollout: createResolver(files, calls),
       logError: (message) => logs.push(message),
@@ -1416,6 +1426,8 @@ try {
     const calls = [];
     const logs = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 1_000,
       resolveRollout: createResolver(files, calls),
       logError: (message) => logs.push(message),
@@ -1611,6 +1623,8 @@ try {
     const calls = [];
     const logs = [];
     const collector = new AgentActivityCollector({
+      trackingErrorRetryMinMs: 0,
+      trackingErrorRetryMaxMs: 0,
       inactivityTimeoutMs: 1_000,
       resolveRollout: createResolver(files, calls),
       logError: (message) => logs.push(message),

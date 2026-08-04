@@ -104,16 +104,27 @@ try {
 
   {
     const filePath = path.join(testRoot, 'malformed.jsonl');
-    const validLine = `${JSON.stringify({ value: 'before-error' })}\n`;
-    writeBytes(filePath, `${validLine}{not-json}\n`);
-    const committedOffset = 0;
+    const before = { value: 'before-error' };
+    const after = { value: 'after-error' };
+    const contents = `${JSON.stringify(before)}\n{not-json}\n${JSON.stringify(after)}\n`;
+    const byteLength = writeBytes(filePath, contents);
 
+    // Default (agent tracking): a malformed committed line is a hard error.
     await assert.rejects(
-      readCompleteJsonl(filePath, committedOffset),
+      readCompleteJsonl(filePath, 0),
       SyntaxError,
-      'a complete malformed line must fail the whole batch'
+      'strict mode fails the batch on a malformed line'
     );
-    assert.equal(committedOffset, 0, 'the caller retains its prior committed cursor after failure');
+
+    // skipMalformed (HUD rollout parser): skip, count, and keep advancing.
+    const batch = await readCompleteJsonl(filePath, 0, { skipMalformed: true });
+    assert.deepEqual(
+      batch.records,
+      [before, after],
+      'a committed malformed line is skipped instead of failing the batch forever'
+    );
+    assert.equal(batch.malformedLines, 1, 'skipped lines are counted for protocol health');
+    assert.equal(batch.nextOffset, byteLength, 'the cursor advances past skipped lines');
   }
 
   {

@@ -24,7 +24,14 @@ export class FileWatcher {
   private watcher: FSWatcher | null = null;
   private callbacks: FileChangeCallback[] = [];
 
-  constructor(private paths: string[], private options: { usePolling?: boolean } = {}) {}
+  constructor(
+    private paths: string[],
+    private options: {
+      usePolling?: boolean;
+      /** Only notify callbacks for paths accepted by this predicate. */
+      filter?: (filePath: string) => boolean;
+    } = {}
+  ) {}
 
   /**
    * Start watching files
@@ -89,6 +96,9 @@ export class FileWatcher {
   }
 
   private notifyCallbacks(filePath: string, event: 'add' | 'change' | 'unlink'): void {
+    if (this.options.filter && !this.options.filter(filePath)) {
+      return;
+    }
     for (const callback of this.callbacks) {
       try {
         void Promise.resolve(callback(filePath, event)).catch((error) => {
@@ -109,27 +119,31 @@ export function createConfigWatcher(): FileWatcher {
   return new FileWatcher([configPath]);
 }
 
+const ROLLOUT_FILE_PATTERN = /^rollout-.*\.jsonl$/;
+
 /**
- * Create a watcher for today's session rollout files
+ * Create a watcher for session rollout files.
+ *
+ * chokidar 4+ removed glob support, so globs are treated as literal paths and
+ * never match. Watch the sessions root directory and filter rollout files by
+ * name instead. Watching the root (not today's dir, which the previous
+ * implementation froze at construction time) also keeps the watcher valid
+ * across midnight.
  */
 export function createSessionWatcher(): FileWatcher {
-  const now = new Date();
-  const year = now.getFullYear().toString();
-  const month = (now.getMonth() + 1).toString().padStart(2, '0');
-  const day = now.getDate().toString().padStart(2, '0');
-
-  const todayDir = path.join(getSessionsDir(), year, month, day);
-  const globPattern = path.join(todayDir, 'rollout-*.jsonl');
-
-  return new FileWatcher([globPattern], { usePolling: true });
+  return new FileWatcher([getSessionsDir()], {
+    filter: (filePath) => ROLLOUT_FILE_PATTERN.test(path.basename(filePath)),
+  });
 }
 
 /**
  * Create a watcher for shell snapshots.
  */
 export function createShellSnapshotWatcher(): FileWatcher {
-  const snapshotsDir = path.join(getCodexHome(), 'shell_snapshots', '*.sh');
-  return new FileWatcher([snapshotsDir], { usePolling: true });
+  const snapshotsDir = path.join(getCodexHome(), 'shell_snapshots');
+  return new FileWatcher([snapshotsDir], {
+    filter: (filePath) => filePath.endsWith('.sh'),
+  });
 }
 
 /**

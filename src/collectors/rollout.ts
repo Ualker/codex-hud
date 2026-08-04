@@ -22,6 +22,8 @@ import type {
   TurnActivity,
 } from '../types.js';
 import { readCompleteJsonl } from '../utils/jsonl-tail.js';
+import { extractCommandHead } from '../utils/command-head.js';
+import { EXECUTION_TOOL_NAMES } from '../utils/tool-names.js';
 
 /**
  * Result of parsing a rollout file
@@ -59,15 +61,10 @@ export function computeNextOffset(
 }
 
 const MAX_TOOL_SUMMARY_LENGTH = 240;
+const MAX_TOOL_TARGET_LENGTH = 80;
 const MAX_WORKDIR_LENGTH = 512;
 const MAX_TOOL_NAME_COMPONENT_LENGTH = 80;
 const MAX_TOOL_CALL_ID_LENGTH = 512;
-const EXECUTION_TOOL_NAMES = new Set([
-  'bash',
-  'exec_command',
-  'run_terminal_command',
-  'write_stdin',
-]);
 
 interface ToolDisplayDetails {
   summary?: string;
@@ -479,7 +476,13 @@ function summarizeToolArguments(
       const summary = command
         ? sanitizeDisplayText(command, MAX_TOOL_SUMMARY_LENGTH)
         : undefined;
-      return { summary, workdir, target: summary };
+      // The target is the privacy-preserving command head (`npm test`,
+      // `sed && rg`). The full summary stays reserved for `full` mode.
+      const head = command ? extractCommandHead(command) : undefined;
+      const target = head
+        ? sanitizeDisplayText(head, MAX_TOOL_TARGET_LENGTH)
+        : undefined;
+      return { summary, workdir, target };
     }
     case 'write_stdin': {
       const sessionId = args.session_id;
@@ -493,7 +496,9 @@ function summarizeToolArguments(
       const summary = chars.length === 0
         ? `poll session ${sessionLabel}`
         : `send ${chars.length} chars to session ${sessionLabel}`;
-      return { summary };
+      // The synthetic summary contains no command content, so it can double
+      // as the target shown in the default `targets` mode.
+      return { summary, target: summary };
     }
     case 'wait': {
       const cellId = args.cell_id;
@@ -949,6 +954,7 @@ export async function parseRolloutFile(
     unknownTopLevelTypes: {},
     unknownResponseTypes: {},
     unknownEventTypes: {},
+    malformedLines: 0,
   };
 
   const buildResult = (): RolloutParseResult => ({
@@ -979,7 +985,10 @@ export async function parseRolloutFile(
   // Commit only bytes through the final newline. A JSON object that is still
   // being written remains unread until a later pass, instead of being skipped
   // permanently by advancing the cursor to EOF.
-  const batch = await readCompleteJsonl<RolloutLine>(rolloutPath, fromOffset);
+  const batch = await readCompleteJsonl<RolloutLine>(rolloutPath, fromOffset, {
+    skipMalformed: true,
+  });
+  protocolHealth.malformedLines += batch.malformedLines;
   if (batch.truncated) {
     runningCalls.clear();
     session = null;
@@ -1041,6 +1050,29 @@ export async function parseRolloutFile(
       toolActivity.recentCalls.push(runningCall);
       if (toolActivity.recentCalls.length > maxRecentCalls) {
         toolActivity.recentCalls.shift();
+      }
+    }
+  };
+
+  const abortRunningCalls = (timestamp: Date): void => {
+    for (const [callId, runningCall] of runningCalls) {
+      runningCall.status = 'error';
+      runningCall.duration = Math.max(
+        0,
+        timestamp.getTime() - runningCall.timestamp.getTime()
+      );
+      runningCalls.delete(callId);
+
+      const index = toolActivity.recentCalls.findIndex(
+        (call) => call.id === callId
+      );
+      if (index >= 0) {
+        toolActivity.recentCalls[index] = runningCall;
+      } else {
+        toolActivity.recentCalls.push(runningCall);
+        if (toolActivity.recentCalls.length > maxRecentCalls) {
+          toolActivity.recentCalls.shift();
+        }
       }
     }
   };
@@ -1261,6 +1293,9 @@ export async function parseRolloutFile(
         timestamp,
         { turnId: payload.turn_id }
       );
+      // Tools do not survive an aborted turn: without this, interrupted
+      // calls would spin as "running" forever and hold the current-tool slot.
+      abortRunningCalls(timestamp);
     } else if (payload.type === 'agent_reasoning') {
       turnActivity = transitionTurn(
         turnActivity,
@@ -1571,6 +1606,8 @@ export class RolloutParser {
         result.protocolHealth.unknownEventTypes,
         this.cachedResult.protocolHealth.unknownEventTypes
       );
+      result.protocolHealth.malformedLines +=
+        this.cachedResult.protocolHealth.malformedLines;
     }
 
     this.cachedResult = result;
