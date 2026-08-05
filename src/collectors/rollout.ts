@@ -36,8 +36,14 @@ export interface RolloutParseResult {
   rateLimits: RateLimitSnapshot | null;
   turnActivity: TurnActivity | null;
   protocolHealth: ProtocolHealth;
-  // Compact event tracking
+  // Compact tracking. Codex writes each compaction BOTH as a top-level
+  // `compacted` record and a `context_compacted` event (verified 1:1 across
+  // 38 real rollouts), so the displayed count is the max of the two totals —
+  // never their sum — which also stays correct for versions that write only
+  // one of the record kinds.
   compactCount: number;
+  compactTopLevelCount: number;
+  compactEventCount: number;
   lastCompactTime: Date | null;
   // Activity timestamps
   lastToolActivityTime: Date | null;
@@ -945,7 +951,8 @@ export async function parseRolloutFile(
   let turnActivity: TurnActivity | null = existingTurnActivity
     ? { ...existingTurnActivity }
     : null;
-  let compactCount = 0;
+  let compactTopLevelCount = 0;
+  let compactEventCount = 0;
   let lastCompactTime: Date | null = null;
   let lastToolActivityTime: Date | null = null;
   let lastAssistantMessageTime: Date | null = null;
@@ -965,7 +972,9 @@ export async function parseRolloutFile(
     rateLimits,
     turnActivity,
     protocolHealth,
-    compactCount,
+    compactCount: Math.max(compactTopLevelCount, compactEventCount),
+    compactTopLevelCount,
+    compactEventCount,
     lastCompactTime,
     lastToolActivityTime,
     lastAssistantMessageTime,
@@ -1155,7 +1164,7 @@ export async function parseRolloutFile(
     }
 
     if (entry.type === 'compacted') {
-      compactCount++;
+      compactTopLevelCount++;
       lastCompactTime = timestamp;
       continue;
     }
@@ -1245,7 +1254,7 @@ export async function parseRolloutFile(
     } else if (payload.type === 'rate_limit' && payload.rate_limits) {
       rateLimits = payload.rate_limits;
     } else if (payload.type === 'context_compacted') {
-      compactCount++;
+      compactEventCount++;
       lastCompactTime = timestamp;
     } else if (
       payload.type === 'turn_started' ||
@@ -1564,8 +1573,15 @@ export class RolloutParser {
           this.cachedResult.toolActivity.lastUpdateTime;
       }
 
-      // Merge compact tracking
-      result.compactCount += this.cachedResult.compactCount;
+      // Merge compact tracking: accumulate each record kind separately, then
+      // derive the displayed count as their max (paired records would double
+      // the count if summed).
+      result.compactTopLevelCount += this.cachedResult.compactTopLevelCount;
+      result.compactEventCount += this.cachedResult.compactEventCount;
+      result.compactCount = Math.max(
+        result.compactTopLevelCount,
+        result.compactEventCount
+      );
       if (!result.lastCompactTime && this.cachedResult.lastCompactTime) {
         result.lastCompactTime = this.cachedResult.lastCompactTime;
       }

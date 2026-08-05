@@ -4,8 +4,6 @@
  * sequences and show the plain text.
  */
 
-import * as os from 'os';
-
 const ALLOWED_PROTOCOLS = /^(?:https:|file:)/;
 
 function hyperlinksEnabled(): boolean {
@@ -20,11 +18,16 @@ export function osc8Link(text: string, url: string): string {
   return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
 }
 
-/** file:// URL for an absolute local path, usable in OSC 8 links. */
+/**
+ * file:// URL for an absolute local path, usable in OSC 8 links.
+ * The empty authority (file:///path) is the portable local form; embedding
+ * os.hostname() makes some terminals (e.g. iTerm2) treat the link as remote
+ * and refuse to open it.
+ */
 export function fileUrl(absolutePath: string): string {
   const encoded = absolutePath
     .split('/')
     .map((part) => encodeURIComponent(part))
     .join('/');
-  return `file://${os.hostname()}${encoded}`;
+  return `file://${encoded}`;
 }

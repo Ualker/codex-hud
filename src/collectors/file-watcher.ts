@@ -6,10 +6,11 @@
 import { watch, type FSWatcher } from 'chokidar';
 import * as path from 'path';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
+import { logHudError } from '../utils/hud-log.js';
 
 function reportWatcherError(scope: string, error: unknown): void {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  console.error(`[codex-hud] ${scope}: ${message}`);
+  // Never console.error: stderr lands inside the rendered HUD frame.
+  logHudError(scope, error);
 }
 
 export type FileChangeCallback = (

@@ -195,7 +195,7 @@ enabled = true
 
 ## 系统支持
 
-运行时要求 Node.js `>=20.19.0`（与 Chokidar 5 的 engine 契约一致）和 tmux。
+运行时要求 Node.js `>=20.19.0`（与 Chokidar 5 的 engine 契约一致）和 tmux。推荐 Node.js `>=22.5`：会话绑定将使用内置 `node:sqlite`，无需额外安装 `sqlite3` CLI（20.x 上需要单独安装）。
 
 | 平台 | 状态 |
 |------|------|

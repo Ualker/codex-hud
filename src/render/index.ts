@@ -17,7 +17,15 @@ const SHOW_CURSOR = '\x1b[?25h';
 
 let lastStdoutFrame: string | null = null;
 let hasEverRendered = false;
-const STATUS_HINT = 'Click HUD, Ctrl+T • Drag to resize';
+const STATUS_HINT = 'Click HUD: Ctrl+T view • t details • drag resize';
+// The hint is for discoverability; after a few minutes it has served its
+// purpose and the first line gets its full width back.
+const STATUS_HINT_VISIBLE_MS = 5 * 60_000;
+const RENDERER_LOADED_AT = Date.now();
+
+function statusHintVisible(): boolean {
+  return Date.now() - RENDERER_LOADED_AT < STATUS_HINT_VISIBLE_MS;
+}
 
 /**
  * Drop the cached frame so the next renderToStdout call repaints from a clean
@@ -166,11 +174,9 @@ export function renderToStdout(data: HudData): void {
   };
   
   const maxLines = Math.max(1, height);
+  const fitted = fitLinesToViewport(renderHud(data, options), maxLines, width);
   const lines = truncateLines(
-    applyStatusHint(
-      fitLinesToViewport(renderHud(data, options), maxLines, width),
-      width
-    ),
+    statusHintVisible() ? applyStatusHint(fitted, width) : fitted,
     width
   );
 

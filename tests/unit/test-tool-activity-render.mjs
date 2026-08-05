@@ -127,4 +127,34 @@ const detailedWide = stripAnsi(
 assert.match(detailedWide, /exit 1/, 'wide output should retain the latest exit code');
 assert.match(detailedWide, /\(42 total\)/, 'wide output should retain the total count');
 
-console.log('test-tool-activity-render: PASS (8 cases)');
+// A failed call is more actionable than a running one: its detail must
+// survive widths below the 100-column threshold that gates successful
+// details while a tool is running.
+const narrowWithRunning = stripAnsi(
+  renderToolsLine(activity([detailedError, running], 42), 80, 2_500) ?? ''
+);
+assert.match(
+  narrowWithRunning,
+  /exit 1/,
+  'failed-call details must stay visible on narrow panes while a tool runs'
+);
+
+// Path details truncate from the start so the file name tail survives.
+const editCall = call('edit-1', 'edit', 'completed', {
+  summary: '/Users/zyb/projects/deeply/nested/module/feature-flags.ts',
+  duration: 12,
+});
+const editLine = stripAnsi(renderToolsLine(activity([editCall]), 46, 2_500) ?? '');
+assert.match(editLine, /feature-flags\.ts/, 'path details keep the file name tail');
+assert.match(editLine, /…/, 'long paths are truncated');
+assert.doesNotMatch(editLine, /Users\/zyb/, 'the path head is dropped, not the tail');
+
+// Command details keep their head (the program name), unchanged behavior.
+const execTail = call('exec-tail', 'exec_command', 'completed', {
+  summary: 'npm run build -- --watch --preserve-symlinks --verbose',
+  duration: 12,
+});
+const execLine = stripAnsi(renderToolsLine(activity([execTail]), 40, 2_500) ?? '');
+assert.match(execLine, /npm run/, 'command details keep their head');
+
+console.log('test-tool-activity-render: PASS (10 cases)');

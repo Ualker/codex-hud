@@ -29,6 +29,8 @@ import {
   cleanupRenderer,
   invalidateRenderedFrame,
 } from './render/index.js';
+import { cycleToolDetailsMode } from './render/lines/activity-line.js';
+import { logHudError } from './utils/hud-log.js';
 import { calculateContextUsage } from './context-usage.js';
 import type {
   HudData,
@@ -265,6 +267,11 @@ interface OverviewParserEntry {
   parser: RolloutParser;
 }
 
+// Sessions drop out of the 60s active window and come back (long tool runs,
+// brief idles). Parsers are kept in a bounded LRU instead of being evicted
+// immediately, so re-entry resumes incrementally rather than re-reading the
+// whole rollout from offset 0.
+const OVERVIEW_PARSER_LIMIT = 20;
 const overviewParsers = new Map<string, OverviewParserEntry>();
 
 async function refreshOverviewData(): Promise<SessionOverview> {
@@ -276,7 +283,11 @@ async function refreshOverviewData(): Promise<SessionOverview> {
 
   for (const sessionFile of activeSessions) {
     let cached = overviewParsers.get(sessionFile.path);
-    if (!cached) {
+    if (cached) {
+      // Move to the tail so LRU eviction removes the least recently active.
+      overviewParsers.delete(sessionFile.path);
+      overviewParsers.set(sessionFile.path, cached);
+    } else {
       const parser = new RolloutParser(3);
       parser.setRolloutPath(sessionFile.path);
       cached = { size: -1, parser };
@@ -314,9 +325,14 @@ async function refreshOverviewData(): Promise<SessionOverview> {
     });
   }
 
-  for (const cachedPath of overviewParsers.keys()) {
-    if (!activePaths.has(cachedPath)) {
-      overviewParsers.delete(cachedPath);
+  if (overviewParsers.size > OVERVIEW_PARSER_LIMIT) {
+    for (const cachedPath of overviewParsers.keys()) {
+      if (overviewParsers.size <= OVERVIEW_PARSER_LIMIT) {
+        break;
+      }
+      if (!activePaths.has(cachedPath)) {
+        overviewParsers.delete(cachedPath);
+      }
     }
   }
 
@@ -519,7 +535,9 @@ async function mainLoop(): Promise<void> {
           : UNBOUND_REFRESH_INTERVAL;
     setTimeout(mainLoop, nextRefreshMs);
   } catch (error) {
-    console.error('Render error:', error);
+    // stderr would land inside the rendered frame; diagnostics go to the
+    // optional CODEX_HUD_LOG_FILE instead.
+    logHudError('render', error);
     setTimeout(mainLoop, IDLE_REFRESH_INTERVAL);
   }
 }
@@ -605,6 +623,14 @@ function startCollectorTimers(): void {
   }, 2000);
 }
 
+function renderNow(): void {
+  try {
+    renderToStdout(collectData());
+  } catch {
+    // The regular render loop repaints on its next tick.
+  }
+}
+
 function setupKeyListener(): void {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') {
     return;
@@ -615,6 +641,14 @@ function setupKeyListener(): void {
     const input = data.toString('utf8');
     if (TOGGLE_KEYS.some((key) => input.includes(key))) {
       toggleDisplayMode();
+      renderNow();
+      return;
+    }
+    // `t` cycles tool details targets -> full -> off at runtime; the
+    // environment variable only seeds the initial mode.
+    if (input.includes('t') || input.includes('T')) {
+      cycleToolDetailsMode();
+      renderNow();
     }
   });
 }
@@ -644,11 +678,7 @@ async function main(): Promise<void> {
   // artifacts of the old geometry survive.
   process.stdout.on('resize', () => {
     invalidateRenderedFrame();
-    try {
-      renderToStdout(collectData());
-    } catch {
-      // The regular render loop repaints on its next tick.
-    }
+    renderNow();
   });
 
   // Set up file watchers

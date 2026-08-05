@@ -12,10 +12,10 @@
 | 008 | CRLF 换行导致增量解析 offset 可能偏小 | 低 | 已失效（jsonl-tail 重写后不复现，2026-08-04 复核） | docs/issues/issue-008-rollout-crlf-offset.md |
 | 009 | 增量解析在末行无换行时 offset 可能偏大并误判截断 | 中 | 已失效（现实现 offset 只推进到最后换行，2026-08-04 复核） | docs/issues/issue-009-rollout-offset-no-trailing-newline.md |
 | 010 | rollout 读取流错误未处理导致进程崩溃 | 中 | 已修复（文档与表格状态曾不一致，2026-08-04 对齐） | docs/issues/issue-010-rollout-filestream-error-unhandled.md |
-| 011 | Session Timer 使用 HUD 启动时间导致 resume 显示不准 | 低 | 待修复 | docs/issues/issue-011-session-timer-uses-hud-start.md |
+| 011 | Session Timer 使用 HUD 启动时间导致 resume 显示不准 | 低 | 已修复（2026-01-30 修复，索引 2026-08-04 对齐） | docs/issues/issue-011-session-timer-uses-hud-start.md |
 | 012 | macOS `md5` 输出解析错误导致 session hash 恒定 | 中 | 已修复 | docs/issues/issue-012-macos-md5-parse-wrong.md |
 | 013 | 工作目录包含单引号时启动命令失败 | 中 | 已修复 | docs/issues/issue-013-cwd-quote-breaks-command.md |
-| 014 | HUD 切换快捷键以全局方式绑定 | 中 | 待修复 | docs/issues/issue-014-tmux-bind-key-global.md |
+| 014 | HUD 切换快捷键以全局方式绑定 | 中 | 已缓解（默认 CODEX_HUD_BIND_TOGGLE=0 不安装全局绑定，2026-08-04 标注） | docs/issues/issue-014-tmux-bind-key-global.md |
 | 015 | tmux 选项使用 -g 全局设置导致副作用 | 中 | 已修复 | docs/issues/issue-015-tmux-options-global-side-effects.md |
 | 016 | HUD 宽度自适应增高无效且扰乱固定高度预期 | 低 | 已修复 | docs/issues/issue-016-hud-auto-height-width-expansion.md |
 | 017 | parse-queue 一次 reject 后永久卡死 | 高 | 已修复 | docs/issues/issue-017-parse-queue-rejection-wedge.md |

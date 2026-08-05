@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ const rootDir = fileURLToPath(new URL('../..', import.meta.url));
 const watcherModule = join(rootDir, 'dist', 'collectors', 'file-watcher.js');
 const fixtureRoot = mkdtempSync(join(tmpdir(), 'codex-hud-watcher-rejection-'));
 const watchedFile = join(fixtureRoot, 'rollout.jsonl');
+const errorLogFile = join(fixtureRoot, 'hud-errors.log');
 
 const childSource = `
   import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -55,6 +56,7 @@ try {
     cwd: rootDir,
     encoding: 'utf8',
     timeout: 5000,
+    env: { ...process.env, CODEX_HUD_LOG_FILE: errorLogFile },
   });
 
   assert.equal(
@@ -63,8 +65,13 @@ try {
     `watcher child exited unexpectedly: status=${result.status} signal=${result.signal}\nstdout=${result.stdout}\nstderr=${result.stderr}`
   );
   assert.match(result.stdout, /watcher-alive/);
-  assert.match(result.stderr, /File watcher callback failed/);
-  assert.match(result.stderr, /HUD rollout watcher callback failed/);
+  // Watcher failures must never reach stderr: the HUD owns its terminal and
+  // stderr output lands inside the rendered frame. Diagnostics go to the
+  // CODEX_HUD_LOG_FILE instead.
+  assert.doesNotMatch(result.stderr, /watcher callback failed/i);
+  const loggedErrors = readFileSync(errorLogFile, 'utf8');
+  assert.match(loggedErrors, /File watcher callback failed/);
+  assert.match(loggedErrors, /HUD rollout watcher callback failed/);
   const callbackCounts = result.stdout.match(/direct=(\d+) hud=(\d+)/);
   assert.ok(callbackCounts, `watcher callback counts missing: ${result.stdout}`);
   assert.ok(Number(callbackCounts[1]) > 0, `direct callback did not run: ${result.stdout}`);
