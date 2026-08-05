@@ -1474,6 +1474,21 @@ export class RolloutParser {
       return null;
     }
 
+    // Fallback polling calls parse every couple of seconds; when the file has
+    // not grown past the committed offset there is nothing to read and the
+    // merge below would only churn allocations. A size below the offset means
+    // truncation and must take the full path.
+    if (this.cachedResult) {
+      try {
+        const { size } = await fs.promises.stat(this.rolloutPath);
+        if (size === this.lastOffset) {
+          return this.cachedResult;
+        }
+      } catch {
+        // Missing file and other stat errors follow the full parse path.
+      }
+    }
+
     const previousRunningCalls = new Map(
       Array.from(this.runningCalls.entries()).map(([id, call]) => [
         id,

@@ -3,6 +3,12 @@ import type { CollectorHealth } from '../types.js';
 export interface AsyncSnapshotCacheOptions {
   ttlMs: number;
   staleAfterMs?: number;
+  /**
+   * Minimum delay between attempts while the last refresh failed. Defaults
+   * to min(ttlMs, 15s): persistent failures stop retrying on every caller
+   * tick, without stretching recovery to a long success TTL.
+   */
+  errorRetryMs?: number;
   now?: () => number;
 }
 
@@ -23,6 +29,7 @@ export class AsyncSnapshotCache<T> {
   private inFlight: Promise<T> | null = null;
   private readonly now: () => number;
   private readonly staleAfterMs: number;
+  private readonly errorRetryMs: number;
 
   constructor(
     initialValue: T,
@@ -35,6 +42,7 @@ export class AsyncSnapshotCache<T> {
     this.value = initialValue;
     this.now = options.now ?? Date.now;
     this.staleAfterMs = options.staleAfterMs ?? Math.max(options.ttlMs * 2, 1);
+    this.errorRetryMs = options.errorRetryMs ?? Math.min(options.ttlMs, 15_000);
   }
 
   get(): T {
@@ -43,13 +51,19 @@ export class AsyncSnapshotCache<T> {
 
   refresh(force: boolean = false): Promise<T> {
     const now = this.now();
-    if (
-      !force &&
-      this.lastError === undefined &&
-      this.lastSuccessAtMs > 0 &&
-      now - this.lastSuccessAtMs < this.options.ttlMs
-    ) {
-      return Promise.resolve(this.value);
+    if (!force) {
+      if (this.lastError === undefined) {
+        if (
+          this.lastSuccessAtMs > 0 &&
+          now - this.lastSuccessAtMs < this.options.ttlMs
+        ) {
+          return Promise.resolve(this.value);
+        }
+      } else if (now - this.lastAttemptAtMs < this.errorRetryMs) {
+        // Failed collectors retry on their own cadence instead of on every
+        // caller tick; the retained last-good snapshot keeps serving reads.
+        return Promise.resolve(this.value);
+      }
     }
     if (this.inFlight) {
       return this.inFlight;

@@ -33,7 +33,9 @@ Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu W
 **Q: 我同时跑多个 Codex session，能一起监控吗？**
 
 可以。先点击 HUD pane，再按 `Ctrl+T`；也可以在主 pane 执行
-`codex-hud --toggle-mode`。概览按项目、当前阶段、Context 剩余量和最近活动排序。
+`codex-hud --toggle-mode`。概览按项目、当前阶段、Context 剩余量和最近活动排序，
+并用 `▸` 标出当前 HUD 绑定的 session。HUD pane 处于焦点时，按 `t` 可循环切换
+工具详情级别（`targets` → `full` → `off`）。
 
 ![Codex HUD — 多 Session 概览](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -80,7 +82,8 @@ codex
 | `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
 | `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
 | `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias |
-| `codex-hud --reload` | 必要时先重建，再仅重启当前目录对应的 HUD pane |
+| `codex-hud --reload` | 必要时先重建，再重启当前目录最新会话的 HUD pane |
+| `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
 | `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
 | `codex-hud --hud-version` | 显示包版本和 checkout revision |
 
@@ -137,7 +140,8 @@ codex-hud --list             # 列出所有 HUD 会话
 codex-hud --attach           # 复用已有会话
 codex-hud --new-session      # 强制新建会话
 codex-hud --doctor           # 运行环境诊断（--self-check 的别名）
-codex-hud --reload           # 只重启当前目录的 HUD pane
+codex-hud --reload           # 重启当前目录最新会话的 HUD pane
+codex-hud --reload --all     # 重启当前目录所有会话的 HUD pane
 codex-hud --toggle-mode      # 切换单 Session/概览模式
 codex-hud --hud-version      # 显示版本与 revision
 ```
@@ -168,7 +172,10 @@ codex-hud --hud-version      # 显示版本与 revision
 | `CODEX_HUD_BIND_TOGGLE` | `0` | 安装作用于整个 tmux server 的 `Prefix+H` HUD 切换键 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | 仅 HUD pane 使用的 scrollback 行数；主 pane 保留继承值 |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏工具行 |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏工具行（运行时可按 `t` 循环切换） |
+| `CODEX_HUD_MODE` | `single` | 初始显示模式：`single` 或 `overview` |
+| `CODEX_HUD_LOG_FILE` | （未设置） | 将 HUD 诊断信息（watcher/渲染/追踪错误）追加写入该文件；未设置则静默 |
+| `CODEX_HUD_NO_ATTACH` | `0` | 已废弃：强制新建会话而不复用 |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | 额外显示 `.agents` 的 skill 数；Codex skill 权威目录仍是 `CODEX_HOME/skills` |
 | `CODEX_HUD_ASCII` | `0` | 使用 ASCII 进度条和状态符号 |
 | `NO_COLOR` | （未设置） | 设置任意值后禁用 ANSI 颜色 |
@@ -176,6 +183,9 @@ codex-hud --hud-version      # 显示版本与 revision
 | `CODEX_HUD_CWD` | （未设置） | 覆盖工作目录 |
 | `CODEX_HOME` | `~/.codex` | Codex home 目录 |
 | `CODEX_SESSIONS_PATH` | （未设置） | 覆盖 sessions 目录 |
+
+`CODEX_HUD_SESSION_START`、`CODEX_HUD_MAIN_PANE`、`CODEX_HUD_TMUX_SESSION`
+属于 wrapper→HUD 的内部传参，不建议手动设置。
 
 </details>
 

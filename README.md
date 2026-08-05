@@ -30,7 +30,9 @@ Because you're flying blind without one. Codex HUD gives you a persistent dashbo
 
 Yes. Click the HUD pane and press `Ctrl+T`, or run
 `codex-hud --toggle-mode` from the main pane. Overview sorts sessions by
-project, live phase, context remaining, and recent activity.
+project, live phase, context remaining, and recent activity, and marks the
+session this HUD is bound to with `▸`. While the HUD pane is focused, `t`
+cycles the tool-detail level (`targets` → `full` → `off`).
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -77,7 +79,8 @@ After the first install, these are available in your shell:
 | `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
 | `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
 | `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases |
-| `codex-hud --reload` | Rebuild when needed, then restart only the current directory's HUD pane |
+| `codex-hud --reload` | Rebuild when needed, then restart the newest session's HUD pane in this directory |
+| `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
 | `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
 | `codex-hud --hud-version` | Print the package version and checkout revision |
 
@@ -148,7 +151,8 @@ codex-hud --list             # List all HUD sessions
 codex-hud --attach           # Attach to existing session
 codex-hud --new-session      # Force a new session
 codex-hud --doctor           # Run diagnostics (--self-check alias)
-codex-hud --reload           # Restart only this directory's HUD pane
+codex-hud --reload           # Restart the newest session's HUD pane here
+codex-hud --reload --all     # Restart the HUD pane of every session here
 codex-hud --toggle-mode      # Toggle single/overview mode
 codex-hud --hud-version      # Print version and revision
 ```
@@ -178,7 +182,10 @@ codex-hud --hud-version      # Print version and revision
 | `CODEX_HUD_BIND_TOGGLE` | `0` | Install the server-wide `Prefix+H` HUD toggle |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row (the `t` key cycles this at runtime) |
+| `CODEX_HUD_MODE` | `single` | Initial display mode: `single` or `overview` |
+| `CODEX_HUD_LOG_FILE` | (unset) | Append HUD diagnostics (watcher/render/tracking errors) to this file; silent otherwise |
+| `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | Also show `.agents` skill count; `CODEX_HOME/skills` remains authoritative for Codex |
 | `CODEX_HUD_ASCII` | `0` | Use ASCII progress and status glyphs |
 | `NO_COLOR` | (unset) | Disable ANSI colors when set |
@@ -186,6 +193,9 @@ codex-hud --hud-version      # Print version and revision
 | `CODEX_HUD_CWD` | (unset) | Override working directory |
 | `CODEX_HOME` | `~/.codex` | Codex home directory |
 | `CODEX_SESSIONS_PATH` | (unset) | Override sessions directory |
+
+`CODEX_HUD_SESSION_START`, `CODEX_HUD_MAIN_PANE`, and `CODEX_HUD_TMUX_SESSION`
+are internal wrapper→HUD plumbing and are not meant to be set manually.
 
 </details>
 
