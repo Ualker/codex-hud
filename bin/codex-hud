@@ -741,6 +741,11 @@ create_session() {
 
     if [[ -n "${hud_pane_id:-}" ]]; then
         set_fixed_hud_height "$SESSION_NAME" "$hud_pane_id" "$HUD_HEIGHT" "$main_pane_id"
+        # Keep the pane around when the HUD exits (Ctrl+C, crash) so
+        # `codex-hud --reload` can revive it with respawn-pane instead of the
+        # layout collapsing. Pane-scoped options need tmux >= 3.0; older
+        # releases keep the historical close-on-exit behavior.
+        tmux set-option -p -t "$hud_pane_id" remain-on-exit on 2>/dev/null || true
     fi
 
     # tmux key tables are server-wide. Preserve unrelated sessions unless the
@@ -857,11 +862,16 @@ Options:
   --doctor            Alias for --self-check
   --kill              Kill existing session for current directory
   --list              List all codex-hud sessions
-  --reload            Restart only the HUD pane for this directory
+  --reload [--all]    Restart the HUD pane (newest session; --all: every session in this directory)
   --toggle-mode       Toggle single/overview without focusing the HUD pane
   --hud-version       Show HUD package version and checkout revision
   --attach            Attach to latest existing session in this directory
   --new-session       Always create a new session for this launch
+
+HUD Pane Keys (click the HUD pane first):
+  Ctrl+T              Toggle single/overview display
+  t                   Cycle tool details: targets -> full -> off
+  Ctrl+C              Close the HUD pane process
 
 Environment Variables:
   CODEX_HUD_POSITION  HUD pane position: bottom (default), top
@@ -877,6 +887,7 @@ Environment Variables:
   CODEX_HUD_CLEAR_SCROLLBACK Clear terminal scrollback on first render (default: 0)
   CODEX_HUD_HISTORY_LIMIT HUD pane scrollback lines (default: 10000)
   CODEX_HUD_TOOL_DETAILS Tool details: off, targets (default), or full
+  CODEX_HUD_LOG_FILE  Append HUD diagnostics to this file (default: unset, silent)
   CODEX_HUD_SHOW_OTHER_AGENT_SKILLS Show non-Codex .agents skill count (default: 0)
   CODEX_HUD_ASCII      Use ASCII status glyphs (default: 0)
   NO_COLOR             Disable ANSI colors when set
@@ -891,7 +902,8 @@ Examples:
   codex-hud --model gpt-5      Start with specific model
   codex-hud "help me debug"    Start with initial prompt
   codex-hud --kill             Kill existing session
-  codex-hud --reload           Reload only the HUD pane
+  codex-hud --reload           Reload only the HUD pane (newest session)
+  codex-hud --reload --all     Reload the HUD pane of every session here
   codex-hud --toggle-mode      Toggle overview from the main shell
   codex-hud --attach            Reuse existing session intentionally
   codex-hud --new-session       Force a new session
@@ -1006,23 +1018,62 @@ list_sessions() {
     tmux list-sessions 2>/dev/null | grep "^codex-hud-" || echo "  (none)"
 }
 
-reload_hud() {
-    local session_name
+# Every codex-hud session for this directory, oldest first (current naming
+# scheme plus the legacy prefix). find_existing_session keeps returning only
+# the newest one.
+find_all_hud_sessions() {
+    tmux list-sessions -F "#{session_name}" 2>/dev/null \
+        | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" \
+        | sort
+}
+
+reload_hud_pane_for_session() {
+    local session_name="$1"
     local hud_pane
     local main_pane
-    session_name=$(find_existing_session)
-    if [[ -z "$session_name" ]]; then
-        error "No codex-hud session found for the current directory."
-    fi
     hud_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_pane)
     if ! pane_exists_in_session "$session_name" "$hud_pane"; then
-        error "HUD pane is unavailable in session: $session_name"
+        return 1
     fi
     main_pane=$(get_main_pane_id_for_session "$session_name")
     resolve_hud_height_for_tmux_target "$hud_pane"
     set_fixed_hud_height "$session_name" "$hud_pane" "$HUD_HEIGHT" "$main_pane"
     tmux respawn-pane -k -t "$hud_pane"
     info "Reloaded HUD pane in session: $session_name"
+}
+
+reload_hud() {
+    local session_name
+    session_name=$(find_existing_session)
+    if [[ -z "$session_name" ]]; then
+        error "No codex-hud session found for the current directory."
+    fi
+    if ! reload_hud_pane_for_session "$session_name"; then
+        error "HUD pane is unavailable in session: $session_name"
+    fi
+}
+
+# --reload only touches the newest session; older sessions in the same
+# directory previously required a manual respawn-pane.
+reload_hud_all() {
+    local session_name
+    local sessions
+    local reloaded=0
+    sessions=$(find_all_hud_sessions)
+    if [[ -z "$sessions" ]]; then
+        error "No codex-hud session found for the current directory."
+    fi
+    while IFS= read -r session_name; do
+        [[ -z "$session_name" ]] && continue
+        if reload_hud_pane_for_session "$session_name"; then
+            reloaded=$((reloaded + 1))
+        else
+            warn "HUD pane is unavailable in session: $session_name"
+        fi
+    done <<< "$sessions"
+    if [[ "$reloaded" -eq 0 ]]; then
+        error "No HUD pane could be reloaded."
+    fi
 }
 
 resolve_hud_node_pid() {
@@ -1139,7 +1190,11 @@ case "${1:-}" in
                 error "Node.js 20.19+ is required to rebuild and reload the HUD."
             fi
             build_hud
-            reload_hud
+            if [[ "${2:-}" == "--all" ]]; then
+                reload_hud_all
+            else
+                reload_hud
+            fi
         else
             error "tmux not installed"
         fi

@@ -478,6 +478,8 @@ function collectData(): HudData {
       ...baseData,
       displayMode,
       overview: overviewCache.get(),
+      // Lets the overview mark the row this HUD is bound to.
+      overviewSelfSessionId: sessionFinder.getCurrentSession()?.sessionId,
     };
   }
 
@@ -639,6 +641,12 @@ function setupKeyListener(): void {
   process.stdin.setRawMode(true);
   process.stdin.on('data', (data: Buffer) => {
     const input = data.toString('utf8');
+    // Raw mode suppresses the terminal's SIGINT; handle Ctrl+C explicitly so
+    // the pane stays killable and the cursor is restored on the way out.
+    if (input.includes('\u0003')) {
+      void shutdown();
+      return;
+    }
     if (TOGGLE_KEYS.some((key) => input.includes(key))) {
       toggleDisplayMode();
       renderNow();
@@ -703,6 +711,11 @@ async function main(): Promise<void> {
 
   hudFileWatcher.start();
   sessionFinder.start(5000); // Check for session changes every 5 seconds
+
+  // Paint a provisional frame immediately; the initial collector round used
+  // to gate the first frame (~940ms measured, longer under load) and the
+  // pane stayed blank for that whole time.
+  renderNow();
   await Promise.allSettled([
     gitCache.refresh(true),
     refreshSlowProject(true),
@@ -711,9 +724,6 @@ async function main(): Promise<void> {
   startCollectorTimers();
 
   // Start the render loop
-  console.log('Codex HUD starting...');
-
-  // Initial render
   await mainLoop();
 }
 

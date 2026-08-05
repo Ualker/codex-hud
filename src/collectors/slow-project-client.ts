@@ -14,6 +14,12 @@ export interface SlowProjectCollectOptions {
   forceAssetRefresh?: boolean;
 }
 
+export interface SlowProjectWorkerClientOptions {
+  /** Respawn backoff bounds; overridable for tests. */
+  respawnBackoffMinMs?: number;
+  respawnBackoffMaxMs?: number;
+}
+
 interface WorkerResponse {
   id: number;
   ok: boolean;
@@ -26,19 +32,40 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+// A crashed worker used to disable the collector for the rest of the HUD's
+// lifetime; instead it is respawned on demand behind a bounded backoff.
+const RESPAWN_BACKOFF_MIN_MS = 1000;
+const RESPAWN_BACKOFF_MAX_MS = 30_000;
+
 export class SlowProjectWorkerClient {
-  private readonly worker: Worker;
+  private worker: Worker | null = null;
   private readonly pending = new Map<number, PendingRequest>();
   private lastGoodConfig: CodexConfig = {};
   private workerFailure: Error | null = null;
   private nextRequestId = 1;
   private closed = false;
+  private respawnBackoffMs = 0;
+  private nextRespawnAtMs = 0;
+  private readonly respawnBackoffMinMs: number;
+  private readonly respawnBackoffMaxMs: number;
 
-  constructor() {
-    this.worker = new Worker(
+  constructor(options: SlowProjectWorkerClientOptions = {}) {
+    this.respawnBackoffMinMs =
+      options.respawnBackoffMinMs ?? RESPAWN_BACKOFF_MIN_MS;
+    this.respawnBackoffMaxMs =
+      options.respawnBackoffMaxMs ?? RESPAWN_BACKOFF_MAX_MS;
+    this.spawnWorker();
+  }
+
+  private spawnWorker(): void {
+    const worker = new Worker(
       new URL('./slow-project-worker.js', import.meta.url)
     );
-    this.worker.on('message', (response: WorkerResponse) => {
+    this.worker = worker;
+    worker.on('message', (response: WorkerResponse) => {
+      if (this.worker !== worker) {
+        return;
+      }
       const pending = this.pending.get(response.id);
       if (!pending) {
         return;
@@ -48,6 +75,9 @@ export class SlowProjectWorkerClient {
         if (!response.snapshot.configError) {
           this.lastGoodConfig = response.snapshot.config;
         }
+        // A served request proves the worker is healthy again.
+        this.workerFailure = null;
+        this.respawnBackoffMs = 0;
         pending.resolve(response.snapshot);
       } else {
         pending.reject(
@@ -55,19 +85,33 @@ export class SlowProjectWorkerClient {
         );
       }
     });
-    this.worker.on('error', (error) => {
-      this.workerFailure = error;
-      this.rejectAll(error);
+    worker.on('error', (error) => {
+      this.handleWorkerDown(worker, error);
     });
-    this.worker.on('exit', (code) => {
+    worker.on('exit', (code) => {
       if (!this.closed) {
-        const error =
-          this.workerFailure ??
-          new Error(`Slow project worker exited with code ${code}`);
-        this.workerFailure = error;
-        this.rejectAll(error);
+        this.handleWorkerDown(
+          worker,
+          new Error(`Slow project worker exited with code ${code}`)
+        );
       }
     });
+  }
+
+  /** A dead worker is replaced on the next collect once the backoff expires. */
+  private handleWorkerDown(worker: Worker, error: Error): void {
+    if (this.worker !== worker) {
+      // Stale event from an already-replaced worker.
+      return;
+    }
+    this.worker = null;
+    this.workerFailure = error;
+    this.respawnBackoffMs = Math.min(
+      Math.max(this.respawnBackoffMs * 2, this.respawnBackoffMinMs),
+      this.respawnBackoffMaxMs
+    );
+    this.nextRespawnAtMs = Date.now() + this.respawnBackoffMs;
+    this.rejectAll(error);
   }
 
   collect(
@@ -77,15 +121,20 @@ export class SlowProjectWorkerClient {
     if (this.closed) {
       return Promise.reject(new Error('Slow project worker is closed'));
     }
-    if (this.workerFailure) {
-      return Promise.reject(this.workerFailure);
+    if (this.worker === null) {
+      if (Date.now() < this.nextRespawnAtMs) {
+        return Promise.reject(
+          this.workerFailure ?? new Error('Slow project worker unavailable')
+        );
+      }
+      this.spawnWorker();
     }
 
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       try {
-        this.worker.postMessage({
+        this.worker?.postMessage({
           id,
           cwd,
           runtimeHookOverrides: [
@@ -112,7 +161,7 @@ export class SlowProjectWorkerClient {
     }
     this.closed = true;
     this.rejectAll(new Error('Slow project worker closed'));
-    await this.worker.terminate();
+    await this.worker?.terminate();
   }
 
   private rejectAll(error: Error): void {

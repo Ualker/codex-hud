@@ -194,13 +194,15 @@ export function renderToStdout(data: HudData): void {
   // new panes, and again after an invalidation (resize) to drop artifacts;
   // hide the cursor at the same time (cleanupRenderer restores it). The
   // scrollback wipe stays strictly first-render-only.
-  const clearPrefix = (isFirstRender && clearScrollback ? CLEAR_SCROLLBACK : '') + (needsFullClear ? HIDE_CURSOR + CLEAR_SCREEN : '') + CURSOR_HOME;
-  process.stdout.write(clearPrefix);
+  let frameOut = (isFirstRender && clearScrollback ? CLEAR_SCROLLBACK : '') + (needsFullClear ? HIDE_CURSOR + CLEAR_SCREEN : '') + CURSOR_HOME;
 
   const totalLines = Math.max(lines.length, maxLines);
   for (let i = 0; i < totalLines; i++) {
     const text = i < lines.length ? lines[i] : '';
     const suffix = i < totalLines - 1 ? '\n' : '';
-    process.stdout.write(CLEAR_LINE + text + suffix);
+    frameOut += CLEAR_LINE + text + suffix;
   }
+  // One write per frame: fewer syscalls and no partially painted frame when
+  // the terminal refreshes mid-update.
+  process.stdout.write(frameOut);
 }

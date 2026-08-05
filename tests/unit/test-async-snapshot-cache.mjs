@@ -68,6 +68,7 @@ assert.equal(cache.getHealth().errorSummary, 'fixture failure with details');
 
 let recoveryCalls = 0;
 let recoveryFails = false;
+let recoveryNow = 5000;
 const recoveryCache = new AsyncSnapshotCache(
   'initial',
   async () => {
@@ -77,18 +78,31 @@ const recoveryCache = new AsyncSnapshotCache(
   },
   {
     ttlMs: 10_000,
-    now: () => 5000,
+    errorRetryMs: 1000,
+    now: () => recoveryNow,
   }
 );
 await recoveryCache.refresh();
 recoveryFails = true;
 await assert.rejects(recoveryCache.refresh(true), /temporary/);
 recoveryFails = false;
+
+// Inside the error-retry window the cache serves the last-good value instead
+// of hammering the loader on every caller tick.
+await recoveryCache.refresh();
+assert.equal(
+  recoveryCalls,
+  2,
+  'failed refreshes retry on the error cadence, not on every tick'
+);
+assert.equal(recoveryCache.getHealth().status, 'error');
+
+recoveryNow += 1000;
 await recoveryCache.refresh();
 assert.equal(
   recoveryCalls,
   3,
-  'an error must retry even when the retained last-good value is still inside its TTL'
+  'an error must retry after errorRetryMs even when the last-good value is inside its success TTL'
 );
 assert.equal(recoveryCache.get(), 'good-3');
 assert.equal(recoveryCache.getHealth().status, 'fresh');

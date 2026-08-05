@@ -558,6 +558,8 @@ export interface HudData {
   // Display mode and overview data
   displayMode?: HudDisplayMode;
   overview?: SessionOverview;
+  /** Session id this HUD is bound to, for marking the own row in overview. */
+  overviewSelfSessionId?: string;
 }
 
 // ============================================================================

@@ -83,6 +83,56 @@ try {
     await client.close();
   }
 
+  // A crashed worker must not disable the collector for the rest of the HUD
+  // lifetime: the next collect after the backoff respawns a fresh worker.
+  fs.writeFileSync(
+    path.join(codexHome, 'config.toml'),
+    'model = "gpt-fixture"\n[mcp_servers.fixture]\ncommand = ["fixture"]\n',
+    'utf8'
+  );
+  const respawnClient = new SlowProjectWorkerClient({
+    respawnBackoffMinMs: 500,
+    respawnBackoffMaxMs: 1000,
+  });
+  try {
+    const beforeCrash = await respawnClient.collect(projectRoot, {
+      forceAssetRefresh: true,
+    });
+    assert.equal(beforeCrash.config.model, 'gpt-fixture');
+
+    // Simulate a crash by terminating the thread out from under the client
+    // (fires the same 'exit' the client sees on a real crash).
+    const dyingWorker = respawnClient.worker;
+    assert.ok(dyingWorker, 'client must hold a live worker before the crash');
+    await dyingWorker.terminate();
+    for (let i = 0; i < 200 && respawnClient.worker !== null; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(
+      respawnClient.worker,
+      null,
+      'the crashed worker must be dropped'
+    );
+
+    await assert.rejects(
+      respawnClient.collect(projectRoot, {}),
+      /exited with code/,
+      'collects inside the respawn backoff reject with the crash cause'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    const afterRespawn = await respawnClient.collect(projectRoot, {
+      forceAssetRefresh: true,
+    });
+    assert.equal(
+      afterRespawn.config.model,
+      'gpt-fixture',
+      'a collect after the backoff respawns the worker and succeeds'
+    );
+  } finally {
+    await respawnClient.close();
+  }
+
   console.log('test-slow-project-worker: PASS');
 } finally {
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;

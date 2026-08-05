@@ -33,7 +33,6 @@ assert.equal(
 );
 
 const {
-  collectActivityLines,
   formatAgentElapsed,
   renderAgentLines,
 } = activityRender;
@@ -319,7 +318,8 @@ const compactRootErrorRow = renderHud(
 assert.match(stripAnsi(compactRootErrorRow), /Agents: tracking error/);
 assert.doesNotMatch(stripAnsi(compactRootErrorRow), /Agents: 99/);
 
-// Expanded activity ordering remains tools, agents, then todos, with no agent heading.
+// Expanded activity ordering (production renderExpandedLayout): with no
+// running tool the agent rows come first, then todos, then finished tools.
 const orderedData = {
   ...baseData,
   toolActivity: {
@@ -345,14 +345,17 @@ const orderedData = {
   },
 };
 
-const orderedLines = collectActivityLines(orderedData, 80).map(stripAnsi);
+const orderedLines = renderHud(orderedData, {
+  width: 80,
+  showDetails: true,
+  layout: expandedLayout,
+}).map(stripAnsi);
 const toolsIndex = orderedLines.findIndex((line) => line.includes('✓ Read'));
 const agentIndex = orderedLines.findIndex((line) => line.includes('✗ codex_cli_explore tracking error'));
 const todosIndex = orderedLines.findIndex((line) => line.includes('📝 1/1'));
-assert.ok(toolsIndex >= 0 && toolsIndex < agentIndex, 'tools must precede agent rows');
-assert.ok(agentIndex < todosIndex, 'agent rows must precede todos');
+assert.ok(agentIndex >= 0 && agentIndex < todosIndex, 'agent rows must precede todos');
+assert.ok(todosIndex < toolsIndex, 'finished tools trail the plan when nothing is running');
 assert.equal(orderedLines.some((line) => /^Agents:?$/i.test(line)), false, 'agent rows have no heading');
-assert.doesNotThrow(() => collectActivityLines(orderedData), 'the optional width preserves existing callers');
 
 const expandedWidth20 = renderHud(
   {

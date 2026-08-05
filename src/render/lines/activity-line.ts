@@ -7,8 +7,8 @@
 import {
   theme,
   colors,
+  coloredBar,
   icons,
-  progressChars,
   getSpinnerFrame,
   sanitizeTerminalText,
   truncate,
@@ -740,40 +740,52 @@ export function renderToolsLine(
  * Render the todos/plan progress line
  * Format: 📝 3/7 steps | ✓ Task 1 | ◐ Task 2
  */
-export function renderTodosLine(planProgress: PlanProgress | undefined): string | null {
+export function renderTodosLine(
+  planProgress: PlanProgress | undefined,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
   if (!planProgress) {
     return null;
   }
-  
+
   const parts: string[] = [];
-  
+
   // Overall progress (if steps exist)
   if (planProgress.totalSteps > 0) {
     const { completedSteps, totalSteps } = planProgress;
     parts.push(theme.planProgress(`${icons.plan} ${completedSteps}/${totalSteps}`));
   }
-  
+
+  // Wide panes show more of each step instead of a fixed 30/20-char cut;
+  // narrow panes fall back to the historical minimums.
+  const currentStepCap = Number.isFinite(width)
+    ? Math.max(30, Math.min(64, Math.floor(width * 0.4)))
+    : 30;
+  const completedStepCap = Number.isFinite(width)
+    ? Math.max(20, Math.min(40, Math.floor(width * 0.2)))
+    : 20;
+
   // Current step (if in progress)
   const inProgressSteps = planProgress.steps.filter(s => s.status === 'in_progress');
   if (inProgressSteps.length > 0) {
     const current = inProgressSteps[0];
     const spinner = getSpinnerFrame();
-    const stepText = truncate(current.step, 30);
+    const stepText = truncate(current.step, currentStepCap);
     parts.push(theme.planStepInProgress(`${spinner} ${stepText}`));
   }
-  
+
   // Recent completed steps (last 2)
   const completedSteps = planProgress.steps.filter(s => s.status === 'completed').slice(-2);
   for (const step of completedSteps) {
-    const stepText = truncate(step.step, 20);
+    const stepText = truncate(step.step, completedStepCap);
     parts.push(theme.planStepCompleted(`${icons.check} ${stepText}`));
   }
-  
+
   if (parts.length === 0) {
     return null;
   }
-  
-  return parts.join(` ${colors.dim(icons.pipe)} `);
+
+  return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
 }
 
 /**
@@ -789,32 +801,6 @@ function formatTokenCount(value: number): string {
   return value.toString();
 }
 
-/**
- * Render a colored progress bar for context usage
- */
-function renderContextProgressBar(percent: number, width: number = 10): string {
-  const clamped = Math.max(0, Math.min(100, percent));
-  const filled = Math.round((clamped / 100) * width);
-  const empty = width - filled;
-  
-  const filledChar = progressChars.filled;
-  const emptyChar = progressChars.empty;
-  
-  let colorFn: (s: string) => string;
-  if (clamped >= 85) {
-    colorFn = theme.error;
-  } else if (clamped >= 70) {
-    colorFn = theme.warning;
-  } else {
-    colorFn = theme.success;
-  }
-  
-  const filledStr = filledChar.repeat(filled);
-  const emptyStr = emptyChar.repeat(empty);
-  
-  return colorFn(filledStr) + colors.dim(emptyStr);
-}
-
 function formatSessionId(sessionId: string): string {
   if (sessionId.length <= 8) {
     return sessionId;
@@ -825,7 +811,10 @@ function formatSessionId(sessionId: string): string {
   return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
 }
 
-export function renderTokenLine(data: HudData): string | null {
+export function renderTokenLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
   const usage = data.tokenUsage?.last_token_usage ?? data.tokenUsage?.total_token_usage;
   // Always show token line if we have any token or context data
   if (!usage && !data.contextUsage) {
@@ -833,11 +822,12 @@ export function renderTokenLine(data: HudData): string | null {
   }
 
   const parts: string[] = [];
+  let breakdownPart: string | null = null;
 
   // Context leads the row so the capacity signal survives narrow terminals.
   const ctx = data.contextUsage;
   if (ctx) {
-    const bar = renderContextProgressBar(ctx.percent, 12);
+    const bar = coloredBar(ctx.percent, 12);
     const remainingPercent = Math.max(0, 100 - ctx.percent);
     const remainingTokens = Math.max(0, ctx.total - ctx.used);
     const percentDisplay = ctx.percent >= 85
@@ -854,7 +844,7 @@ export function renderTokenLine(data: HudData): string | null {
     const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
     const remainingPercent = Math.max(0, 100 - percent);
     const remainingTokens = Math.max(0, total - totalTokens);
-    const bar = renderContextProgressBar(percent, 12);
+    const bar = coloredBar(percent, 12);
     const percentDisplay = percent >= 85
       ? theme.error(`${remainingPercent}% left`)
       : percent >= 70
@@ -884,7 +874,8 @@ export function renderTokenLine(data: HudData): string | null {
     }
 
     if (breakdown.length > 0) {
-      parts.push(colors.dim(`(${breakdown.join(', ')})`));
+      breakdownPart = colors.dim(`(${breakdown.join(', ')})`);
+      parts.push(breakdownPart);
     }
   }
 
@@ -892,7 +883,21 @@ export function renderTokenLine(data: HudData): string | null {
     parts.push(colors.dim(`${icons.refresh}${ctx.compactCount}`));
   }
 
-  return parts.length > 0 ? parts.join(' | ') : null;
+  if (parts.length === 0) {
+    return null;
+  }
+
+  let line = parts.join(' | ');
+  // On narrow panes drop the in/cache/out breakdown before the outer
+  // truncation slices through it mid-parenthesis.
+  if (
+    breakdownPart !== null &&
+    Number.isFinite(width) &&
+    visualLength(line) > width
+  ) {
+    line = parts.filter((part) => part !== breakdownPart).join(' | ');
+  }
+  return line;
 }
 
 export function renderSessionDetailLine(
@@ -976,38 +981,3 @@ export function renderSessionDetailLine(
   );
 }
 
-export function collectActivityLines(data: HudData, width?: number): string[] {
-  const lines: string[] = [];
-
-  const tokenLine = renderTokenLine(data);
-  if (tokenLine) {
-    lines.push(tokenLine);
-  }
-
-  const sessionLine = renderSessionDetailLine(
-    data,
-    width ?? Number.POSITIVE_INFINITY
-  );
-  if (sessionLine) {
-    lines.push(sessionLine);
-  }
-
-  // Tools line
-  const toolsLine = renderToolsLine(
-    data.toolActivity,
-    width ?? Number.POSITIVE_INFINITY
-  );
-  if (toolsLine) {
-    lines.push(toolsLine);
-  }
-
-  lines.push(...renderAgentLines(data.agentActivity, width ?? Number.MAX_SAFE_INTEGER));
-  
-  // Todos/plan line
-  const todosLine = renderTodosLine(data.planProgress);
-  if (todosLine) {
-    lines.push(todosLine);
-  }
-  
-  return lines;
-}

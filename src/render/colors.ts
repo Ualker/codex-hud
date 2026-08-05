@@ -179,6 +179,14 @@ function graphemeWidth(grapheme: string): number {
   if (!grapheme) {
     return 0;
   }
+  // Single printable-ASCII characters dominate HUD strings; classify them
+  // without the pictographic/mark regex machinery below.
+  if (grapheme.length === 1) {
+    const code = grapheme.charCodeAt(0);
+    if (code >= 0x20 && code < 0x7f) {
+      return 1;
+    }
+  }
   if (
     grapheme.includes('\u200d') ||
     /\p{Extended_Pictographic}/u.test(grapheme)
@@ -240,11 +248,27 @@ function plainVisualLength(text: string): number {
   );
 }
 
+// Frames repaint at up to 2Hz with mostly identical strings, and one
+// measurement costs ~20µs (Segmenter + per-grapheme classification). Repeat
+// widths are served from a bounded cache; elapsed-timer churn refills it, so
+// clear-on-full keeps it from growing without bound.
+const visualLengthCache = new Map<string, number>();
+const VISUAL_LENGTH_CACHE_LIMIT = 2048;
+
 /**
  * Get visual length of text (excluding ANSI codes).
  */
 export function visualLength(text: string): number {
-  return plainVisualLength(stripAnsi(text));
+  const cached = visualLengthCache.get(text);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const width = plainVisualLength(stripAnsi(text));
+  if (visualLengthCache.size >= VISUAL_LENGTH_CACHE_LIMIT) {
+    visualLengthCache.clear();
+  }
+  visualLengthCache.set(text, width);
+  return width;
 }
 
 /**
@@ -261,7 +285,9 @@ export function padEnd(text: string, width: number): string {
  */
 export function truncate(text: string, maxWidth: number, ellipsis = '…'): string {
   const stripped = stripAnsi(text);
-  if (plainVisualLength(stripped) <= maxWidth) return text;
+  // stripAnsi is idempotent, so the memoized visualLength gives the same
+  // width as plainVisualLength here and shares its cache.
+  if (visualLength(stripped) <= maxWidth) return text;
   const limit = Math.max(0, maxWidth - plainVisualLength(ellipsis));
   let output = '';
   let width = 0;
@@ -282,7 +308,7 @@ export function truncate(text: string, maxWidth: number, ellipsis = '…'): stri
  */
 export function truncateStart(text: string, maxWidth: number, ellipsis = '…'): string {
   const stripped = stripAnsi(text);
-  if (plainVisualLength(stripped) <= maxWidth) return text;
+  if (visualLength(stripped) <= maxWidth) return text;
   if (maxWidth <= 0) return '';
 
   const ellipsisWidth = plainVisualLength(ellipsis);

@@ -205,7 +205,7 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   }
 
   // Context capacity is actionable and remains ahead of activity history.
-  const tokenLine = renderTokenLine(data);
+  const tokenLine = renderTokenLine(data, width);
   const rateLimitLine = renderRateLimitLine(data, width);
   if (tokenLine) {
     const combined = rateLimitLine
@@ -231,7 +231,7 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   );
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
   const agentLines = renderAgentLines(data.agentActivity, width);
-  const planLine = renderTodosLine(data.planProgress);
+  const planLine = renderTodosLine(data.planProgress, width);
 
   if (hasRunningTool && toolsLine) {
     lines.push(toolsLine);
@@ -334,8 +334,15 @@ function renderOverviewLayout(
       colors.dim(`${formatAge(session.lastActivityAt)} ago`),
       colors.dim(shortId),
     ];
+    // Mark the row this HUD is bound to; without it the only clue is the
+    // 8-char session id.
+    const marker =
+      data.overviewSelfSessionId !== undefined &&
+      session.id === data.overviewSelfSessionId
+        ? theme.info(`${icons.bullet} `)
+        : '  ';
     return truncateAnsi(
-      parts.join(` ${colors.dim('│')} `),
+      marker + parts.join(` ${colors.dim('│')} `),
       width
     );
   });
