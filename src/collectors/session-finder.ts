@@ -710,6 +710,50 @@ function getLogDatabaseCandidates(): string[] {
     });
 }
 
+interface ReadOnlyDatabase {
+  prepare(sql: string): { all(): Record<string, unknown>[] };
+  close(): void;
+}
+
+// Probes run every few seconds; keep read-only handles open instead of
+// paying open/close on each query. Rotated databases (logs_2 -> logs_3)
+// leave stale entries behind, so a tiny cap closes everything before a new
+// path is opened; query errors also drop the handle so the next probe
+// reopens a fresh connection.
+const openReadOnlyDatabases = new Map<string, ReadOnlyDatabase>();
+const MAX_OPEN_DATABASES = 4;
+
+function closeReadOnlyDatabase(dbPath: string): void {
+  const cached = openReadOnlyDatabases.get(dbPath);
+  if (!cached) {
+    return;
+  }
+  openReadOnlyDatabases.delete(dbPath);
+  try {
+    cached.close();
+  } catch {
+    // Closing a broken handle must not break the probe.
+  }
+}
+
+function getReadOnlyDatabase(dbPath: string): ReadOnlyDatabase | null {
+  if (!nodeSqlite) {
+    return null;
+  }
+  const cached = openReadOnlyDatabases.get(dbPath);
+  if (cached) {
+    return cached;
+  }
+  if (openReadOnlyDatabases.size >= MAX_OPEN_DATABASES) {
+    for (const key of [...openReadOnlyDatabases.keys()]) {
+      closeReadOnlyDatabase(key);
+    }
+  }
+  const db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+  openReadOnlyDatabases.set(dbPath, db);
+  return db;
+}
+
 /**
  * Run read-only SQL statements and return rows in sqlite3-CLI text form:
  * one row per line, columns joined with \x1f, NULL as empty string.
@@ -721,23 +765,23 @@ async function querySqlite(
 ): Promise<string | null> {
   if (nodeSqlite) {
     try {
-      const db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
-      try {
-        const lines: string[] = [];
-        for (const statement of statements) {
-          for (const row of db.prepare(statement).all()) {
-            lines.push(
-              Object.values(row)
-                .map((value) => (value === null || value === undefined ? '' : String(value)))
-                .join('\x1f')
-            );
-          }
-        }
-        return lines.join('\n');
-      } finally {
-        db.close();
+      const db = getReadOnlyDatabase(dbPath);
+      if (!db) {
+        return null;
       }
+      const lines: string[] = [];
+      for (const statement of statements) {
+        for (const row of db.prepare(statement).all()) {
+          lines.push(
+            Object.values(row)
+              .map((value) => (value === null || value === undefined ? '' : String(value)))
+              .join('\x1f')
+          );
+        }
+      }
+      return lines.join('\n');
     } catch {
+      closeReadOnlyDatabase(dbPath);
       return null;
     }
   }

@@ -32,7 +32,9 @@ export async function readCompleteJsonl<T>(
     const { size: fileSize } = await handle.stat();
     const truncated = fileSize < fromOffset;
     const startOffset = truncated ? 0 : fromOffset;
-    const bytes = Buffer.alloc(fileSize - startOffset);
+    // allocUnsafe skips zero-filling; the read loop below either fills every
+    // byte or throws, so uninitialized memory is never observed.
+    const bytes = Buffer.allocUnsafe(fileSize - startOffset);
 
     let totalBytesRead = 0;
     while (totalBytesRead < bytes.byteLength) {

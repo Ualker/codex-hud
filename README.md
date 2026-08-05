@@ -206,7 +206,9 @@ enabled = true
 ## System Support
 
 Runtime requires Node.js `>=20.19.0` (matching Chokidar 5's engine contract) and
-tmux.
+tmux. Node.js `>=22.5` is recommended: session binding then uses the built-in
+`node:sqlite` instead of spawning the `sqlite3` CLI (which must be installed
+separately on 20.x).
 
 | Platform | Status |
 |----------|--------|

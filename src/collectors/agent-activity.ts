@@ -12,6 +12,7 @@ import {
   readCompleteJsonl,
   type JsonlTailBatch,
 } from '../utils/jsonl-tail.js';
+import { logHudError } from '../utils/hud-log.js';
 import { stat } from 'node:fs/promises';
 
 export const AGENT_INACTIVITY_TIMEOUT_ENV =
@@ -699,7 +700,10 @@ function cloneNode(node: TrackedAgentNode): TrackedAgentNode {
 }
 
 function defaultTrackingErrorLogger(message: string): void {
-  console.error(message);
+  // Tracking failures already surface on the agent rows ("tracking error");
+  // stderr would land inside the rendered HUD frame, so diagnostics go to
+  // the optional log file instead.
+  logHudError('agent-activity', message);
 }
 
 export class AgentActivityCollector {

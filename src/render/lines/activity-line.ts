@@ -34,12 +34,49 @@ const DESCENDANT_PREFIX = '↳';
 
 type ToolDetailsMode = 'off' | 'targets' | 'full';
 
+// Runtime override set by the `t` hotkey; the environment variable only
+// provides the initial mode.
+let toolDetailsModeOverride: ToolDetailsMode | null = null;
+
 function toolDetailsMode(): ToolDetailsMode {
+  if (toolDetailsModeOverride !== null) {
+    return toolDetailsModeOverride;
+  }
   const value = process.env.CODEX_HUD_TOOL_DETAILS;
   if (value === 'off' || value === 'full' || value === 'targets') {
     return value;
   }
   return 'targets';
+}
+
+const TOOL_DETAILS_MODE_ORDER: readonly ToolDetailsMode[] = [
+  'targets',
+  'full',
+  'off',
+];
+
+/**
+ * Cycle targets -> full -> off -> targets at runtime. Returns the new mode.
+ */
+export function cycleToolDetailsMode(): ToolDetailsMode {
+  const current = toolDetailsMode();
+  const next =
+    TOOL_DETAILS_MODE_ORDER[
+      (TOOL_DETAILS_MODE_ORDER.indexOf(current) + 1) %
+        TOOL_DETAILS_MODE_ORDER.length
+    ];
+  toolDetailsModeOverride = next;
+  return next;
+}
+
+/**
+ * Tools whose display detail is a filesystem path. Paths carry their most
+ * specific information at the end, so they truncate from the start.
+ */
+const PATH_DETAIL_TOOLS = new Set(['read', 'write', 'edit']);
+
+function isPathDetailTool(toolName: string): boolean {
+  return PATH_DETAIL_TOOLS.has(toolName.toLowerCase());
 }
 
 export function formatAgentElapsed(startedAt: Date, nowMs: number = Date.now()): string {
@@ -493,8 +530,11 @@ function renderToolCallDetail(
   if (detail) {
     const fixedWidth = visualLength(buildPlain(undefined));
     const availableForDetail = Math.max(0, maxWidth - fixedWidth - 2);
+    // Paths keep their tail (the file name); other details keep their head.
     const shortened = availableForDetail >= 4
-      ? truncate(detail, availableForDetail)
+      ? isPathDetailTool(call.name)
+        ? truncateStart(detail, availableForDetail)
+        : truncate(detail, availableForDetail)
       : undefined;
     plain = buildPlain(shortened);
   }
@@ -632,9 +672,15 @@ export function renderToolsLine(
       (call) => call.status === 'error' && toolCallHasDetail(call)
     ) ??
     reversedFinished.find((call) => toolCallHasDetail(call));
+  // A failed call is more actionable than a running one, so its detail is
+  // never dropped for width; successful details still yield to the running
+  // tool on narrow panes.
   const showDetailedFinished = Boolean(
     detailedFinished &&
-    (!current || !Number.isFinite(width) || width >= 100)
+    (!current ||
+      detailedFinished.status === 'error' ||
+      !Number.isFinite(width) ||
+      width >= 100)
   );
   const totalPart =
     toolActivity.totalCalls > toolActivity.recentCalls.length
