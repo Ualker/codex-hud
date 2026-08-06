@@ -44,7 +44,12 @@ const RENDER_UNBOUND_MS = 2500;
 const RENDER_DEEP_IDLE_MS = 3000;
 
 const GIT_BASE_MS = 5_000;
-const GIT_SLOW_MS = 60_000;
+/**
+ * Exported: the git snapshot's staleness threshold must cover this slowest
+ * planned cadence, or the health line reports "git stale" between perfectly
+ * scheduled refreshes.
+ */
+export const GIT_SLOW_MS = 60_000;
 const AGENTS_BASE_MS = 1_000;
 const AGENTS_DEEP_IDLE_MS = 5_000;
 const ROLLOUT_FALLBACK_BASE_MS = 2_000;

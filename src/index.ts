@@ -23,7 +23,11 @@ import {
 } from './collectors/slow-project-client.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
-import { planCadence, type CadencePlan } from './utils/idle-policy.js';
+import {
+  GIT_SLOW_MS,
+  planCadence,
+  type CadencePlan,
+} from './utils/idle-policy.js';
 import { HudFileWatcher } from './collectors/file-watcher.js';
 import {
   renderToStdout,
@@ -265,7 +269,11 @@ const gitCache = new AsyncSnapshotCache(
   () => collectGitStatusAsync(HUD_CWD),
   {
     ttlMs: GIT_CACHE_TTL_MS,
-    staleAfterMs: GIT_CACHE_TTL_MS * 3,
+    // The cadence policy legitimately stretches git refreshes to GIT_SLOW_MS
+    // (deep idle / non-repo cwd); "stale" must mean a refresh actually missed
+    // its schedule, not that the slow schedule is in effect. Real failures
+    // still surface immediately through the error status.
+    staleAfterMs: GIT_SLOW_MS * 1.5,
   }
 );
 
