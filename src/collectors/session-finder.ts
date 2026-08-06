@@ -55,6 +55,11 @@ const FULL_RESOLVE_INTERVAL_MS = 4000;
 // base cadence. Bounded so a same-pane /new or /resume switch (no watcher
 // event guaranteed) is still noticed promptly.
 const FULL_RESOLVE_INTERVAL_MAX_MS = 12_000;
+// Cap while the HUD is in deep idle: full resolves spawn ps/tmux and query
+// sqlite, and a session quiet for 10+ minutes does not need them every 12s.
+// Watcher-driven wake signals restore the base cap before anything new must
+// be noticed.
+const FULL_RESOLVE_INTERVAL_DEEP_IDLE_MAX_MS = 60_000;
 const FULL_RESOLVE_BACKOFF_FACTOR = 1.5;
 // How far back to look for log rows tying a process to a thread.
 const THREAD_CANDIDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -377,20 +382,6 @@ export function findActiveRollouts(
       return true;
     })
     .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
-}
-
-/**
- * Find an active session (convenience wrapper)
- * Returns the path to the most recently modified rollout file
- */
-export async function findActiveSession(targetCwd?: string): Promise<string | null> {
-  const active = findActiveRollouts(60, targetCwd, DEFAULT_LOOKBACK_DAYS);
-  if (active.length > 0) {
-    return active[0].path;
-  }
-  
-  const recent = findMostRecentRollout(DEFAULT_LOOKBACK_DAYS, targetCwd);
-  return recent?.path ?? null;
 }
 
 /**
@@ -1183,6 +1174,7 @@ export class SessionFinder {
   private targetStartTime: Date | null = null;
   private lastFullResolveAt = 0;
   private fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
+  private fullResolveIntervalMaxMs = FULL_RESOLVE_INTERVAL_MAX_MS;
   private boundViaProcess = false;
   private cachedPanePid: string | null = null;
   private runtimeHookOverrides: string[] = [];
@@ -1343,13 +1335,26 @@ export class SessionFinder {
   ): SessionFile | null {
     if (result !== null && previousPath !== null && result.path === previousPath) {
       this.fullResolveIntervalMs = Math.min(
-        FULL_RESOLVE_INTERVAL_MAX_MS,
+        this.fullResolveIntervalMaxMs,
         Math.round(this.fullResolveIntervalMs * FULL_RESOLVE_BACKOFF_FACTOR)
       );
     } else {
       this.fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
     }
     return result;
+  }
+
+  /**
+   * Deep idle stretches the full-resolve backoff cap; leaving deep idle
+   * clamps an already-stretched interval back so recovery is prompt.
+   */
+  setDeepIdle(deepIdle: boolean): void {
+    this.fullResolveIntervalMaxMs = deepIdle
+      ? FULL_RESOLVE_INTERVAL_DEEP_IDLE_MAX_MS
+      : FULL_RESOLVE_INTERVAL_MAX_MS;
+    if (this.fullResolveIntervalMs > this.fullResolveIntervalMaxMs) {
+      this.fullResolveIntervalMs = this.fullResolveIntervalMaxMs;
+    }
   }
 
   /**

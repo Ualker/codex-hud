@@ -10,6 +10,10 @@
 
 import * as fs from 'fs';
 
+// A repeating failure must not grow the log without bound; the file restarts
+// once it reaches this size (old contents are diagnostic, not precious).
+const LOG_SIZE_LIMIT_BYTES = 5 * 1024 * 1024;
+
 function logFilePath(): string | null {
   return process.env.CODEX_HUD_LOG_FILE || null;
 }
@@ -23,6 +27,16 @@ export function logHudError(scope: string, error: unknown): void {
   const message =
     error instanceof Error ? error.stack ?? error.message : String(error);
   try {
+    try {
+      if (fs.statSync(target).size >= LOG_SIZE_LIMIT_BYTES) {
+        fs.writeFileSync(
+          target,
+          `${new Date().toISOString()} [hud-log] previous contents truncated at ${LOG_SIZE_LIMIT_BYTES} bytes\n`
+        );
+      }
+    } catch {
+      // A missing file is created by the append below.
+    }
     fs.appendFileSync(
       target,
       `${new Date().toISOString()} [${scope}] ${message}\n`

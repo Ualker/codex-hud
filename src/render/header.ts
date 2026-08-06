@@ -3,7 +3,7 @@
  * Phase 3: Redesigned to match claude-hud layout
  * 
  * Layout:
- * Row 1: [Model] | project-name git:(branch *) | ⏱️ 10m
+ * Row 1: [Model] | project-name git:(branch *) | up 10m
  * Row 2: [FULL ACCESS] | Approval | Sandbox | Fast | inventory
  * Row 3: collector/protocol health warnings when needed
  * Row 4: context remaining, token counts and rate-limit pressure
@@ -22,7 +22,7 @@ import {
   colors,
   theme,
   icons,
-  coloredBar,
+  remainingBar,
   padEnd,
   sanitizeTerminalText,
   truncate,
@@ -209,7 +209,7 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   const rateLimitLine = renderRateLimitLine(data, width);
   if (tokenLine) {
     const combined = rateLimitLine
-      ? `${tokenLine} ${colors.dim('│')} ${rateLimitLine}`
+      ? `${tokenLine} ${colors.dim(icons.pipe)} ${rateLimitLine}`
       : tokenLine;
     if (visualLength(combined) <= width) {
       lines.push(combined);
@@ -325,7 +325,7 @@ function renderOverviewLayout(
     const shortId = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
     const ctx = session.contextUsage;
     const ctxDisplay = ctx
-      ? `${coloredBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
+      ? `${remainingBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
       : colors.dim('ctx --');
     const parts = [
       padEnd(theme.projectName(projectNames[index]), projectColumnWidth),

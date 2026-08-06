@@ -87,17 +87,20 @@ After the first install, these are available in your shell:
 ## What's on the HUD?
 
 ```text
-[gpt-5.6-sol high] my-project git:(main *) | 12m
-[FULL ACCESS] | Approval: full access | Sandbox: off | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
+[gpt-5.6-sol high] my-project git:(main *) up 12m
+[FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
+Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
 ◐ Thinking 42s · event 8s ago
 ◐ exec_command: npm test @my-project 1.4s | ✓ read_file ×3
 ```
 
+The context gauge is a fuel bar: filled cells show what remains, matching the
+`% left` label, and the color reflects pressure (green → yellow → red).
+
 | Line | Shows |
 |------|-------|
 | **Header** | Model + effort, project, git branch, and session duration |
-| **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first; then MCP, Codex skills, hooks, AGENTS.md, and config sources |
+| **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources |
 | **Capacity** | Context percent/tokens remaining, input/cache/output, compact count; rate-limit reset details appear at 70% usage |
 | **Health** | Stale/error state for Git, rollout, agents, environment/config, and overview; unknown protocol-event count |
 | **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |

@@ -28,6 +28,19 @@ try {
   // Logging must never throw, even when the target is unwritable.
   process.env.CODEX_HUD_LOG_FILE = path.join(dir, 'missing', 'nested', 'x.log');
   assert.doesNotThrow(() => logHudError('scope', 'unwritable target'));
+
+  // A file at the size limit restarts instead of growing without bound.
+  const rotatingFile = path.join(dir, 'rotating.log');
+  fs.writeFileSync(rotatingFile, 'x'.repeat(5 * 1024 * 1024));
+  process.env.CODEX_HUD_LOG_FILE = rotatingFile;
+  logHudError('scope', 'after rotation');
+  const rotated = fs.readFileSync(rotatingFile, 'utf8');
+  assert.ok(
+    rotated.length < 1024,
+    `an oversized log restarts from scratch (${rotated.length} bytes)`
+  );
+  assert.match(rotated, /previous contents truncated/);
+  assert.match(rotated, /\[scope\] after rotation/);
 } finally {
   if (originalLogFile === undefined) {
     delete process.env.CODEX_HUD_LOG_FILE;

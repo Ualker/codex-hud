@@ -106,8 +106,13 @@ const data = {
 
 const environment = stripAnsi(renderEnvironmentLine(data, 90));
 assert.match(environment, /^\[FULL ACCESS\]/);
+assert.doesNotMatch(
+  environment,
+  /Approval: |Sandbox: /,
+  'the badge already states the whole permission mode'
+);
 assert.ok(
-  environment.indexOf('Approval:') < environment.indexOf('MCP configured:'),
+  environment.indexOf('[FULL ACCESS]') < environment.indexOf('MCP configured:'),
   'security state must precede inventory counts'
 );
 assert.doesNotMatch(environment, /Other-agent skills/);

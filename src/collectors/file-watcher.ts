@@ -19,6 +19,65 @@ export type FileChangeCallback = (
 ) => void | Promise<void>;
 
 /**
+ * Chokidar 4+ has no FSEvents backend, so on macOS every watched file and
+ * directory holds one kqueue file descriptor. Watching the sessions root
+ * unscoped therefore scales with the entire rollout history (measured ~1400
+ * fds on a months-old install) and grows by one fd per new rollout forever.
+ * New rollouts only ever appear under the current date directory, so date
+ * directories that ended before this window are pruned from the watch tree
+ * (an ignored directory is never descended into). The window covers today
+ * and yesterday including timezone slack; the predicate re-evaluates against
+ * the current clock, so the directory of a new day is admitted when it
+ * appears.
+ */
+const SESSION_DATE_ACTIVE_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/** Latest instant covered by a YYYY[/MM[/DD]] prefix, in local time. */
+function latestMsForDatePrefix(parts: readonly number[]): number {
+  const [year, month, day] = parts;
+  if (parts.length === 1) {
+    return new Date(year + 1, 0, 1).getTime();
+  }
+  if (parts.length === 2) {
+    return new Date(year, month, 1).getTime();
+  }
+  return new Date(year, month - 1, day + 1).getTime();
+}
+
+/**
+ * True when targetPath is a date directory (relative to rootDir) whose whole
+ * range ended before the active window. Files and unrecognized names are
+ * never stale: their parent directory already made the decision.
+ */
+export function isStaleSessionDatePath(
+  rootDir: string,
+  targetPath: string,
+  nowMs: number = Date.now()
+): boolean {
+  const relative = path.relative(rootDir, targetPath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return false;
+  }
+
+  const segments = relative.split(path.sep);
+  if (segments.length > 3) {
+    return false;
+  }
+
+  const dateParts: number[] = [];
+  for (const segment of segments) {
+    if (!/^\d{1,4}$/.test(segment)) {
+      return false;
+    }
+    dateParts.push(Number(segment));
+  }
+
+  return (
+    latestMsForDatePrefix(dateParts) < nowMs - SESSION_DATE_ACTIVE_WINDOW_MS
+  );
+}
+
+/**
  * File watcher with cleanup support
  */
 export class FileWatcher {
@@ -31,6 +90,17 @@ export class FileWatcher {
       usePolling?: boolean;
       /** Only notify callbacks for paths accepted by this predicate. */
       filter?: (filePath: string) => boolean;
+      /** Paths (including directories) chokidar must not watch or descend into. */
+      ignored?: (filePath: string) => boolean;
+      /**
+       * Debounce events until the file stops growing. Rollout JSONL is
+       * appended continuously and every consumer tolerates a partial last
+       * line via committed-offset reads, so for those the debounce only
+       * delayed events and stat-polled every growing file at 50ms. A
+       * half-written config.toml, in contrast, parses as an error frame,
+       * so the config watcher opts in.
+       */
+      awaitWriteFinish?: boolean;
     } = {}
   ) {}
 
@@ -47,10 +117,15 @@ export class FileWatcher {
       ignoreInitial: true,
       usePolling: this.options.usePolling ?? false,
       interval: 1000,
-      awaitWriteFinish: {
-        stabilityThreshold: 100,
-        pollInterval: 50,
-      },
+      ...(this.options.ignored ? { ignored: this.options.ignored } : {}),
+      ...(this.options.awaitWriteFinish
+        ? {
+            awaitWriteFinish: {
+              stabilityThreshold: 100,
+              pollInterval: 50,
+            },
+          }
+        : {}),
     });
 
     this.watcher.on('error', (error) => {
@@ -117,7 +192,7 @@ export class FileWatcher {
  */
 export function createConfigWatcher(): FileWatcher {
   const configPath = path.join(getCodexHome(), 'config.toml');
-  return new FileWatcher([configPath]);
+  return new FileWatcher([configPath], { awaitWriteFinish: true });
 }
 
 const ROLLOUT_FILE_PATTERN = /^rollout-.*\.jsonl$/;
@@ -132,8 +207,10 @@ const ROLLOUT_FILE_PATTERN = /^rollout-.*\.jsonl$/;
  * across midnight.
  */
 export function createSessionWatcher(): FileWatcher {
-  return new FileWatcher([getSessionsDir()], {
+  const sessionsDir = getSessionsDir();
+  return new FileWatcher([sessionsDir], {
     filter: (filePath) => ROLLOUT_FILE_PATTERN.test(path.basename(filePath)),
+    ignored: (filePath) => isStaleSessionDatePath(sessionsDir, filePath),
   });
 }
 

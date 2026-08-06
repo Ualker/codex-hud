@@ -524,6 +524,11 @@ const MAX_TRACKING_RETRY_MS = 10_000;
 // (covers timezone-vs-UTC drift in date directories plus clock skew).
 const ROLLOUT_RESOLVE_SLACK_MS = 48 * 60 * 60 * 1000;
 
+// Rollout reads are materialized in memory; a pathological file becomes a
+// tracking error (with retry backoff) instead of ballooning the process.
+const MAX_ROLLOUT_READ_BYTES = 64 * 1024 * 1024;
+const ROLLOUT_READ_OPTIONS = { maxBytes: MAX_ROLLOUT_READ_BYTES } as const;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -808,7 +813,8 @@ export class AgentActivityCollector {
 
     const batch = await readCompleteJsonl<unknown>(
       root.session.path,
-      root.offset
+      root.offset,
+      ROLLOUT_READ_OPTIONS
     );
     if (batch.truncated && root.offset > 0) {
       throw new Error(
@@ -894,7 +900,11 @@ export class AgentActivityCollector {
       );
     }
 
-    const sourceBatch = await readCompleteJsonl<unknown>(source.path, 0);
+    const sourceBatch = await readCompleteJsonl<unknown>(
+      source.path,
+      0,
+      ROLLOUT_READ_OPTIONS
+    );
     requireCanonicalSessionMeta(
       sourceBatch.records,
       sourceThreadId,
@@ -982,7 +992,11 @@ export class AgentActivityCollector {
 
       let batch: JsonlTailBatch<unknown>;
       try {
-        batch = await readCompleteJsonl<unknown>(rolloutPath, readOffset);
+        batch = await readCompleteJsonl<unknown>(
+          rolloutPath,
+          readOffset,
+          ROLLOUT_READ_OPTIONS
+        );
       } catch (error) {
         if (current.rolloutPath === null || !isMissingFileError(error)) {
           throw error;
@@ -1001,13 +1015,21 @@ export class AgentActivityCollector {
         rolloutPath = resolved.path;
         resolvedSessionId = resolved.sessionId;
         observedSize = (await stat(rolloutPath)).size;
-        const canonicalBatch = await readCompleteJsonl<unknown>(rolloutPath, 0);
+        const canonicalBatch = await readCompleteJsonl<unknown>(
+          rolloutPath,
+          0,
+          ROLLOUT_READ_OPTIONS
+        );
         validateChildCanonicalMeta(
           canonicalBatch.records,
           resolvedSessionId,
           current
         );
-        batch = await readCompleteJsonl<unknown>(rolloutPath, readOffset);
+        batch = await readCompleteJsonl<unknown>(
+          rolloutPath,
+          readOffset,
+          ROLLOUT_READ_OPTIONS
+        );
         relocated = true;
       }
       if (batch.truncated && readOffset > 0) {

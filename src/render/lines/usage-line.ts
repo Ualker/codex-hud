@@ -1,10 +1,10 @@
 /**
  * Usage Line Renderer
- * Renders: ⏱️ 10m (session duration and other usage info)
+ * Renders: up 10m (session duration and other usage info)
  */
 
 import type { HudData, LayoutConfig } from '../../types.js';
-import { colors, icons } from '../colors.js';
+import { colors } from '../colors.js';
 
 /**
  * Format duration in human-readable form
@@ -15,7 +15,11 @@ function formatDuration(startTime: Date): string {
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
   const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
 
+  if (diffDay > 0) {
+    return `${diffDay}d${diffHour % 24}h`;
+  }
   if (diffHour > 0) {
     return `${diffHour}h${diffMin % 60}m`;
   }
@@ -27,7 +31,11 @@ function formatDuration(startTime: Date): string {
 
 /**
  * Render the usage line
- * Format: ⏱️ 10m
+ * Format: up 10m
+ *
+ * Plain dim text instead of the ⏱️ emoji: it was the only emoji in the HUD
+ * (every other glyph is a text-style character) and its VS16 width is
+ * ambiguous in some terminals.
  */
 export function renderUsageLine(data: HudData, layout: LayoutConfig): string | null {
   if (!layout.showDuration) {
@@ -36,5 +44,5 @@ export function renderUsageLine(data: HudData, layout: LayoutConfig): string | n
 
   const startTime = data.session?.startTime ?? data.sessionStart;
   const duration = formatDuration(startTime);
-  return colors.dim(`${icons.clock} ${duration}`);
+  return colors.dim(`up ${duration}`);
 }

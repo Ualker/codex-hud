@@ -154,6 +154,22 @@ try {
     await assert.rejects(readCompleteJsonl(filePath, Number.NaN), /offset/i);
   }
 
+  {
+    // maxBytes bounds the batch measured from the read offset, so a large
+    // file read incrementally stays fine while a pathological span errors.
+    const filePath = path.join(testRoot, 'bounded.jsonl');
+    writeBytes(filePath, '{"a":1}\n{"b":2}\n');
+
+    await assert.rejects(
+      readCompleteJsonl(filePath, 0, { maxBytes: 8 }),
+      /exceeds the 8-byte limit/
+    );
+    const bounded = await readCompleteJsonl(filePath, 8, { maxBytes: 8 });
+    assert.deepEqual(bounded.records, [{ b: 2 }]);
+    const unbounded = await readCompleteJsonl(filePath, 0);
+    assert.equal(unbounded.records.length, 2, 'no limit without maxBytes');
+  }
+
   console.log('test-agent-jsonl-tail: PASS');
 } finally {
   removeTestRoot(testRoot);

@@ -74,4 +74,26 @@ assert.doesNotMatch(
 assert.match(narrowToken, /Ctx:/, 'the capacity signal survives');
 assert.match(narrowToken, /Tokens:/, 'the total stays visible');
 
+// The context gauge is a fuel bar: filled cells are what REMAINS, matching
+// the "% left" label — nearly exhausted context shows a nearly empty bar.
+const countGlyph = (line, glyph) => line.split(glyph).length - 1;
+const roomy = stripAnsi(renderTokenLine(data) ?? '');
+assert.equal(
+  countGlyph(roomy, '█'),
+  7,
+  '39% used leaves a mostly full 12-cell gauge'
+);
+const nearlyOut = stripAnsi(
+  renderTokenLine({
+    contextUsage: { ...data.contextUsage, percent: 88 },
+  }) ?? ''
+);
+assert.equal(
+  countGlyph(nearlyOut, '█'),
+  1,
+  '88% used leaves a sliver (12% of 12 cells)'
+);
+assert.equal(countGlyph(nearlyOut, '░'), 11);
+assert.match(nearlyOut, /12% left/);
+
 console.log('test-plan-token-width: PASS');
