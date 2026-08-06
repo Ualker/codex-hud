@@ -90,17 +90,19 @@ codex
 ## HUD 显示了什么？
 
 ```text
-[gpt-5.6-sol high] my-project git:(main *) | 12m
-[FULL ACCESS] | Approval: full access | Sandbox: off | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: █████░░░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
+[gpt-5.6-sol high] my-project git:(main *) up 12m
+[FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
+Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
 ◐ Thinking 42s · event 8s ago
 ◐ exec_command: npm test @my-project 1.4s | ✓ read_file ×3
 ```
 
+上下文进度条是"油量表"语义：实心格表示剩余量，与旁边的 `% left` 文字一致；颜色反映压力（绿 → 黄 → 红）。
+
 | 行 | 内容 |
 |----|------|
 | **标题** | 模型 + effort、项目名、git 分支、会话时长 |
-| **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先；随后是 MCP、Codex skill、hook、AGENTS.md 和配置来源 |
+| **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先（徽章已蕴含的单元不再重复显示，默认态 `Fast: off` 弱化为 dim）；随后是 MCP、Codex skill、hook、AGENTS.md 和配置来源 |
 | **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、compact 次数；限额使用达到 70% 后显示 reset 信息 |
 | **健康** | Git、rollout、agent、环境/配置和概览采集的 stale/error；未知协议事件计数 |
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent |

@@ -42,7 +42,44 @@ fs.mkdirSync(sessionsDir, { recursive: true });
 process.env.CODEX_SESSIONS_PATH = sessionsDir;
 
 // Import after the env override so createSessionWatcher resolves the temp dir.
-const { createSessionWatcher } = await import('../../dist/collectors/file-watcher.js');
+const { createSessionWatcher, isStaleSessionDatePath } = await import(
+  '../../dist/collectors/file-watcher.js'
+);
+
+// Deterministic predicate checks with a pinned clock: date directories whose
+// whole range ended before the 48h window are stale; structure, files, and
+// non-date names never are.
+{
+  const root = '/sessions';
+  const nowMs = Date.parse('2026-08-06T12:00:00');
+  assert.equal(isStaleSessionDatePath(root, root, nowMs), false, 'root is kept');
+  assert.equal(isStaleSessionDatePath(root, '/sessions/2025', nowMs), true);
+  assert.equal(isStaleSessionDatePath(root, '/sessions/2026/07', nowMs), true);
+  assert.equal(isStaleSessionDatePath(root, '/sessions/2026/08/03', nowMs), true);
+  assert.equal(
+    isStaleSessionDatePath(root, '/sessions/2026/08/05', nowMs),
+    false,
+    'yesterday stays inside the active window'
+  );
+  assert.equal(isStaleSessionDatePath(root, '/sessions/2026/08/06', nowMs), false);
+  assert.equal(isStaleSessionDatePath(root, '/sessions/2026/08', nowMs), false);
+  assert.equal(
+    isStaleSessionDatePath(root, '/sessions/2026/08/03/rollout-x.jsonl', nowMs),
+    false,
+    'files defer to their directory'
+  );
+  assert.equal(
+    isStaleSessionDatePath(root, '/sessions/archive', nowMs),
+    false,
+    'non-date names are never pruned'
+  );
+  assert.equal(isStaleSessionDatePath(root, '/elsewhere/2020', nowMs), false);
+}
+
+// A conclusively old date directory exists before the watcher arms: it must
+// be pruned from the watch tree, so files appearing inside it stay silent.
+const staleDayDir = path.join(sessionsDir, '2020', '01', '01');
+fs.mkdirSync(staleDayDir, { recursive: true });
 
 const watcher = createSessionWatcher();
 const seen = [];
@@ -56,11 +93,18 @@ try {
   await delay(400);
 
   // The day directory is created after the watcher starts, as happens at
-  // midnight rollover or on the first session of a new day. Build paths from
+  // midnight rollover or on the first session of a new day. Today's real
+  // date keeps the directory inside the pruning window. Build paths from
   // the resolved root: getSessionsDir() realpaths the override, so watcher
   // events carry resolved paths (on macOS /var/... resolves to /private/var).
   const watchRoot = fs.realpathSync(sessionsDir);
-  const dayDir = path.join(watchRoot, '2026', '08', '05');
+  const today = new Date();
+  const dayDir = path.join(
+    watchRoot,
+    String(today.getFullYear()),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0')
+  );
   fs.mkdirSync(dayDir, { recursive: true });
   const rolloutPath = path.join(
     dayDir,
@@ -69,6 +113,11 @@ try {
   fs.writeFileSync(rolloutPath, '{"type":"session_meta"}\n');
   const ignoredPath = path.join(dayDir, 'notes.txt');
   fs.writeFileSync(ignoredPath, 'ignored');
+  const staleRolloutPath = path.join(
+    fs.realpathSync(staleDayDir),
+    'rollout-2020-01-01T00-00-01-0123abcd.jsonl'
+  );
+  fs.writeFileSync(staleRolloutPath, '{"type":"session_meta"}\n');
 
   await waitFor(
     () => seen.some((e) => e.filePath === rolloutPath && e.event === 'add'),
@@ -79,6 +128,10 @@ try {
   assert.ok(
     !seen.some((e) => e.filePath === ignoredPath),
     'non-rollout files must be filtered out'
+  );
+  assert.ok(
+    !seen.some((e) => e.filePath === staleRolloutPath),
+    'stale date directories are pruned from the watch tree'
   );
 
   console.log('test-file-watcher: PASS');

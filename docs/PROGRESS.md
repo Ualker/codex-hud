@@ -42,3 +42,16 @@
 - 清理：删除死代码 collectActivityLines（相关测试改走 renderHud 生产路径断言真实顺序）与重复的 renderContextProgressBar（统一 coloredBar）；docs/TODO.md 016 条目移除（已有集成测试覆盖）。
 - 文档：README（en/zh）补 CODEX_HUD_LOG_FILE / MODE / NO_ATTACH 与内部变量说明、`t` 热键、`--reload --all`。
 - 验证：typecheck+build 通过；unit 38 PASS、integration 28 项 rc=0（含新增 parse-skip、overview-self-marker、plan-token-width 单测与 worker 崩溃重建集成用例）。
+
+## 2026-08-06（第四轮）
+- fd 治理（P0）：chokidar 4+ 无 FSEvents，macOS 上 sessions 根 watcher 对整个 rollout 历史逐文件/目录建 kqueue watch（实测单 HUD ~1395 个 fd，且每新增 rollout 永久 +1，容器 ulimit 1024 场景会随历史打爆）。新增 `isStaleSessionDatePath` 谓词接入 chokidar `ignored`：结束早于 48h 窗口的日期目录整棵剪掉、不再下钻，谓词按当前时钟评估，跨午夜新目录自动纳入。实测 scratch 实例 fd 总数 1427 → 26（sessions 相关仅 5）。
+- watcher 事件时延：三个 watcher 全带 awaitWriteFinish（100ms 静默阈值 + 50ms stat 轮询），而 rollout 解析本就按 committed-offset 容忍半行——活跃期事件被压到写入出现静默才发，且对每个正在写的 rollout 高频轮询。改为默认关闭，仅 config watcher 保留（半写 config.toml 会解析成错误帧）。
+- 深度空闲退避（P2）：新增纯函数 `utils/idle-policy.ts`（planCadence），按"距最后活动时间 ≥10min 且无活跃 turn/tool/agent 且非 overview"进入 deep idle：render 1.5s→3s、git 5s→60s、agents 1s→5s、rollout 兜底 2s→10s、SessionFinder full-resolve 上限 12s→60s（setDeepIdle，退出时立即收缩）。非 git 目录任何状态下 git spawn 都降为 60s 一次。唤醒信号（按键/SIGUSR1/resize/config 或 rollout watcher 事件/绑定 rollout mtime/turn 活动）即刻恢复基础节奏。绑定会话空闲 30h 的实测背景：旧实现每 HUD 消耗 2.1-2.5% CPU（sample 顶栈为 __posix_spawn）；修后 scratch 实例基础节奏 20s 增量 0.07s ≈ 0.35%（无 pane 探测路径，非严格同条件，深闲档更低待线上复核）。
+- 进程兜底：process 级 uncaughtException/unhandledRejection 记录到 CODEX_HUD_LOG_FILE 并继续运行；hud-log 增加 5MB 上限（超限重开并写截断标记）；jsonl-tail 新增 maxBytes 选项，agent-activity 全部 5 处读取按 64MB 上限，超限走 tracking-error + 退避而非撑爆内存。
+- 环境行去冗余（UI）：`[FULL ACCESS]` 徽章蕴含的 `Approval: full access`/`Sandbox: off` 单元不再重复渲染（审批策略与徽章不一致时仍显示）；默认态 `Fast: off` 弱化为 dim。
+- 主题与字形（UI）：theme.value 不再硬编码白色（SGR 37 在浅色终端不可见），改用终端默认前景；token 行分隔符与其他行统一为 dim 管道；⏱️/📝 两个 emoji 换成文本字形（`up 12m` dim 文本、`≡`，VS16 宽度歧义 + 全 HUD 其余字形均为文本系）；时长新增天数折算（`1d6h`）。
+- 进度条语义（UI）：Ctx 条从"实心=已用"改为油量表——实心格=剩余量，与 `% left` 文字一致，颜色仍按已用压力（≥85% 红）；renderTokenLine、identity、overview 三处统一（coloredBar/progressBar 删除，新 remainingBar）。
+- 启动：wrapper 启动命令注入 NODE_COMPILE_CACHE（Node 22+ 持久化 V8 编译缓存，老版本忽略；.cache/ 入 .gitignore）。
+- 死代码清理：formatProjectPath、detectWorkMode/workMode、countInstructionsMdFiles/instructionsMdCount、hasCodexDir、collectGitStatus（同步族）、findActiveSession、getModelDisplayName 冗余 if 链、icons.clock/folder/file/tokens/arrow；tests/ 根目录 8 个确证腐化的 TS 脚本删除（引用 parseRolloutFile/getModelWithReasoning/mcp-status 等已不存在的 API；test-install.sh/test-e2e.sh 等近期仍被运行的 .sh 保留）；version 0.1.0 → 0.2.0。
+- 文档：README（en/zh）示例帧同步新环境行/油量表语义并补说明。
+- 验证：typecheck+build 通过；unit 39 文件 rc=0（新增 idle-policy 用例；file-watcher 增补剪枝谓词与旧目录不触发断言，并将原硬编码日期改为动态今日以防测试自然腐化；hud-log 轮转、jsonl-tail maxBytes、油量表方向断言）；integration 26 项 rc=0；scratch 实例实测 fd 26、帧内容确认徽章去冗余与 dim 分隔符生效、stderr 无输出。

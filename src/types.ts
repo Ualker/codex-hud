@@ -69,9 +69,7 @@ export interface ProjectInfo {
   cwd: string;
   projectName: string;
   agentsMdCount: number;
-  hasCodexDir: boolean;
   // Extended config counts
-  instructionsMdCount: number;  // .codex/INSTRUCTIONS.md
   rulesCount: number;           // .codex/rules/*.md
   mcpCount: number;             // From config
   // Codex-specific module status
@@ -81,7 +79,6 @@ export interface ProjectInfo {
   otherAgentSkillsCount?: number; // Non-Codex .agents copies, diagnostic only
   hooksCount: number;           // Effective enabled hooks
   globalConfigActive?: boolean;
-  workMode: 'development' | 'production' | 'unknown';  // Current work mode
 }
 
 // ============================================================================

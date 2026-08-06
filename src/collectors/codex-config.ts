@@ -107,17 +107,7 @@ function parseMcpServers(
  * Get a display-friendly model name
  */
 export function getModelDisplayName(config: CodexConfig): string {
-  if (config.model) {
-    // Shorten common model names
-    const model = config.model;
-    if (model.startsWith('gpt-5')) return model;
-    if (model.startsWith('gpt-4')) return model;
-    if (model.startsWith('o1')) return model;
-    if (model.startsWith('o3')) return model;
-    if (model.startsWith('codex')) return model;
-    return model;
-  }
-  return 'default';
+  return config.model || 'default';
 }
 
 /**

@@ -777,7 +777,10 @@ create_session() {
     session_start=$(date +%s)
     # exec makes pane_pid the Node renderer itself, so --toggle-mode can signal
     # one exact HUD process without walking or guessing the process tree.
-    local hud_cmd="cd ${cwd_escaped} && exec env LINES='$HUD_HEIGHT' COLUMNS='$term_width' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$SESSION_NAME' CODEX_HUD_CLEAR_SCROLLBACK='${CODEX_HUD_CLEAR_SCROLLBACK:-}' node '$HUD_DIR/dist/index.js'"
+    # NODE_COMPILE_CACHE persists V8 code caches across HUD restarts (Node 22+;
+    # older releases ignore the variable), shaving module compilation off the
+    # time to first frame.
+    local hud_cmd="cd ${cwd_escaped} && exec env LINES='$HUD_HEIGHT' COLUMNS='$term_width' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$SESSION_NAME' CODEX_HUD_CLEAR_SCROLLBACK='${CODEX_HUD_CLEAR_SCROLLBACK:-}' node '$HUD_DIR/dist/index.js'"
     
     if [[ "$HUD_POSITION" == "top" ]]; then
         # Split at top, then swap panes

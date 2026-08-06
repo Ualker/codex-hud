@@ -352,7 +352,7 @@ const orderedLines = renderHud(orderedData, {
 }).map(stripAnsi);
 const toolsIndex = orderedLines.findIndex((line) => line.includes('✓ Read'));
 const agentIndex = orderedLines.findIndex((line) => line.includes('✗ codex_cli_explore tracking error'));
-const todosIndex = orderedLines.findIndex((line) => line.includes('📝 1/1'));
+const todosIndex = orderedLines.findIndex((line) => line.includes('≡ 1/1'));
 assert.ok(agentIndex >= 0 && agentIndex < todosIndex, 'agent rows must precede todos');
 assert.ok(todosIndex < toolsIndex, 'finished tools trail the plan when nothing is running');
 assert.equal(orderedLines.some((line) => /^Agents:?$/i.test(line)), false, 'agent rows have no heading');
@@ -437,7 +437,7 @@ const fullCompact = renderHud(
 const fullCompactWidth = visualLength(fullCompact);
 assert.match(stripAnsi(fullCompact), /Agents: 3/);
 assert.match(stripAnsi(fullCompact), /7 MCPs/);
-assert.match(stripAnsi(fullCompact), /⏱️/);
+assert.match(stripAnsi(fullCompact), /up \d/);
 
 const withoutMcp = renderHud(
   compactData,
@@ -445,7 +445,7 @@ const withoutMcp = renderHud(
 )[0];
 assert.match(stripAnsi(withoutMcp), /Agents: 3/);
 assert.doesNotMatch(stripAnsi(withoutMcp), /7 MCPs/);
-assert.match(stripAnsi(withoutMcp), /⏱️/, 'duration remains after MCP is removed');
+assert.match(stripAnsi(withoutMcp), /up \d/, 'duration remains after MCP is removed');
 
 const withoutMcpWidth = visualLength(withoutMcp);
 const withoutDuration = renderHud(
@@ -453,7 +453,7 @@ const withoutDuration = renderHud(
   { width: withoutMcpWidth - 1, showDetails: false, layout: compactLayout }
 )[0];
 assert.match(stripAnsi(withoutDuration), /Agents: 3/);
-assert.doesNotMatch(stripAnsi(withoutDuration), /7 MCPs|⏱️/, 'duration is removed only after MCP');
+assert.doesNotMatch(stripAnsi(withoutDuration), /7 MCPs|up \d/, 'duration is removed only after MCP');
 
 const summaryWidth = visualLength(compactCount);
 const identityWidth = visualLength(renderIdentityLine(compactData, compactLayout, { maxWidth: 200 }));

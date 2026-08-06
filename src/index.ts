@@ -23,6 +23,7 @@ import {
 } from './collectors/slow-project-client.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
+import { planCadence, type CadencePlan } from './utils/idle-policy.js';
 import { HudFileWatcher } from './collectors/file-watcher.js';
 import {
   renderToStdout,
@@ -48,10 +49,9 @@ import type {
 // Session start time
 const SESSION_START = new Date();
 
-// Refresh interval in milliseconds
-const ACTIVE_REFRESH_INTERVAL = 500;
-const IDLE_REFRESH_INTERVAL = 1500;
-const UNBOUND_REFRESH_INTERVAL = 2500;
+// Refresh intervals come from the cadence policy (utils/idle-policy.ts);
+// this is only the fallback used when a render tick itself throws.
+const RENDER_ERROR_RETRY_INTERVAL = 1500;
 const GIT_CACHE_TTL_MS = 5000;
 const PROJECT_CACHE_TTL_MS = 60_000;
 const OVERVIEW_CACHE_TTL_MS = 5000;
@@ -90,7 +90,17 @@ let displayMode: HudDisplayMode =
 
 const TOGGLE_KEYS = ['\u0014']; // Ctrl+T
 
+// Local wake signals (keypresses, toggles, resizes, watcher events) count as
+// activity for the cadence policy, so an idle HUD being interacted with — or
+// a fresh rollout appearing anywhere — snaps back to the base cadence.
+let lastWakeSignalMs = Date.now();
+
+function noteWakeSignal(): void {
+  lastWakeSignalMs = Date.now();
+}
+
 function toggleDisplayMode(): void {
+  noteWakeSignal();
   displayMode = displayMode === 'single' ? 'overview' : 'single';
   if (displayMode === 'overview') {
     void overviewCache.refresh(true).catch(() => {
@@ -212,8 +222,6 @@ const initialProject: ProjectInfo = {
   cwd: HUD_CWD,
   projectName: path.basename(HUD_CWD),
   agentsMdCount: 0,
-  hasCodexDir: false,
-  instructionsMdCount: 0,
   rulesCount: 0,
   mcpCount: 0,
   configsCount: 0,
@@ -222,7 +230,6 @@ const initialProject: ProjectInfo = {
   otherAgentSkillsCount: 0,
   hooksCount: 0,
   globalConfigActive: false,
-  workMode: 'unknown',
 };
 const slowProjectClient = new SlowProjectWorkerClient();
 let forceNextAssetRefresh = false;
@@ -510,6 +517,38 @@ function collectData(): HudData {
 }
 
 /**
+ * Current cadence plan derived from live collector state. Cheap enough to
+ * evaluate on every render tick and timer tick.
+ */
+function computeCadence(nowMs: number = Date.now()): CadencePlan {
+  const rolloutData = rolloutParser.getCached();
+  const session = sessionFinder.getCurrentSession();
+  const hasRunningTool =
+    rolloutData?.toolActivity?.recentCalls.some(
+      (call) => call.status === 'running'
+    ) ?? false;
+  const phase = rolloutData?.turnActivity?.phase;
+  const hasActiveTurn =
+    phase !== undefined && phase !== 'idle' && phase !== 'aborted';
+  const hasActiveAgent = (cachedAgentActivity?.visibleAgentCount ?? 0) > 0;
+  const lastActivityMs = Math.max(
+    lastWakeSignalMs,
+    rolloutData?.lastEventTime?.getTime() ?? 0,
+    rolloutData?.turnActivity?.lastActivityAt.getTime() ?? 0,
+    session?.modifiedAt.getTime() ?? 0
+  );
+
+  return planCadence({
+    nowMs,
+    lastActivityMs,
+    hasActiveWork: hasRunningTool || hasActiveTurn || hasActiveAgent,
+    bound: session !== null,
+    overviewVisible: displayMode === 'overview',
+    gitIsRepo: gitCache.get().isGitRepo,
+  });
+}
+
+/**
  * Main render loop
  */
 async function mainLoop(): Promise<void> {
@@ -518,29 +557,15 @@ async function mainLoop(): Promise<void> {
   }
 
   try {
-    const data = collectData();
-    renderToStdout(data);
-    const hasRunningTool = data.toolActivity?.recentCalls.some(
-      (call) => call.status === 'running'
-    );
-    const hasActiveTurn =
-      data.turnActivity !== undefined &&
-      data.turnActivity.phase !== 'idle' &&
-      data.turnActivity.phase !== 'aborted';
-    const hasActiveAgent =
-      (data.agentActivity?.visibleAgentCount ?? 0) > 0;
-    const nextRefreshMs =
-      hasRunningTool || hasActiveTurn || hasActiveAgent
-        ? ACTIVE_REFRESH_INTERVAL
-        : data.session || data.displayMode === 'overview'
-          ? IDLE_REFRESH_INTERVAL
-          : UNBOUND_REFRESH_INTERVAL;
-    setTimeout(mainLoop, nextRefreshMs);
+    renderToStdout(collectData());
+    const plan = computeCadence();
+    sessionFinder.setDeepIdle(plan.deepIdle);
+    setTimeout(mainLoop, plan.renderMs);
   } catch (error) {
     // stderr would land inside the rendered frame; diagnostics go to the
     // optional CODEX_HUD_LOG_FILE instead.
     logHudError('render', error);
-    setTimeout(mainLoop, IDLE_REFRESH_INTERVAL);
+    setTimeout(mainLoop, RENDER_ERROR_RETRY_INTERVAL);
   }
 }
 
@@ -600,7 +625,20 @@ async function refreshSlowProject(force: boolean = false): Promise<void> {
 }
 
 function startCollectorTimers(): void {
+  // The 1s ticks below are schedulers, not workers: each one asks the
+  // cadence policy how long ago its collector may have run and skips the
+  // tick when the planned interval has not elapsed. This lets deep idle
+  // stretch spawn-heavy probes without re-arming timers.
+  let lastGitRefreshMs = 0;
+  let lastAgentsRefreshMs = 0;
+  let lastRolloutSweepMs = 0;
+
   gitRefreshTimer = setInterval(() => {
+    const now = Date.now();
+    if (now - lastGitRefreshMs < computeCadence(now).gitMs) {
+      return;
+    }
+    lastGitRefreshMs = now;
     void gitCache.refresh().catch(() => {
       // Cache health is rendered from the retained last-good snapshot.
     });
@@ -616,13 +654,23 @@ function startCollectorTimers(): void {
     }
   }, 1000);
   agentRefreshTimer = setInterval(() => {
+    const now = Date.now();
+    if (now - lastAgentsRefreshMs < computeCadence(now).agentsMs) {
+      return;
+    }
+    lastAgentsRefreshMs = now;
     void refreshAgents();
   }, 1000);
   // Watcher events can be lost (editor moves, network mounts, chokidar
   // hiccups); a slow stat-based sweep keeps the rollout data from freezing.
   rolloutFallbackTimer = setInterval(() => {
+    const now = Date.now();
+    if (now - lastRolloutSweepMs < computeCadence(now).rolloutFallbackMs) {
+      return;
+    }
+    lastRolloutSweepMs = now;
     void refreshRolloutOnly();
-  }, 2000);
+  }, 1000);
 }
 
 function renderNow(): void {
@@ -640,6 +688,7 @@ function setupKeyListener(): void {
 
   process.stdin.setRawMode(true);
   process.stdin.on('data', (data: Buffer) => {
+    noteWakeSignal();
     const input = data.toString('utf8');
     // Raw mode suppresses the terminal's SIGINT; handle Ctrl+C explicitly so
     // the pane stays killable and the cursor is restored on the way out.
@@ -676,6 +725,17 @@ async function main(): Promise<void> {
   process.on('SIGHUP', () => void shutdown());
   process.on('SIGUSR1', toggleDisplayMode);
 
+  // Last-resort diagnostics: a stray throw or rejection escaping a timer or
+  // watcher path must not kill the pane silently. remain-on-exit would leave
+  // a dead pane visible, but a HUD that logs and keeps rendering is strictly
+  // better than either.
+  process.on('uncaughtException', (error) => {
+    logHudError('uncaught-exception', error);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logHudError('unhandled-rejection', reason);
+  });
+
   // Handle stdin close (tmux pane closed)
   process.stdin.on('close', () => void shutdown());
   process.stdin.resume();
@@ -685,16 +745,21 @@ async function main(): Promise<void> {
   // refresh interval; the invalidation forces a full-screen clear so no
   // artifacts of the old geometry survive.
   process.stdout.on('resize', () => {
+    noteWakeSignal();
     invalidateRenderedFrame();
     renderNow();
   });
 
   // Set up file watchers
   hudFileWatcher.onConfigChange(() => {
+    noteWakeSignal();
     void refreshSlowProject(true);
   });
 
   hudFileWatcher.onRolloutChange(async (rolloutPath) => {
+    // Any rollout appearing or changing (bound or not) is activity: it ends
+    // deep idle so a /new session in the pane is rebound at base cadence.
+    noteWakeSignal();
     // A new rollout file may establish a freshly created (/new) session;
     // let the finder re-rank it immediately instead of waiting out the poll.
     await sessionFinder.noteRolloutAppeared(rolloutPath);

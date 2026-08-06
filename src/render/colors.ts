@@ -71,7 +71,9 @@ export const theme = {
   // Separators and decorations
   separator: colors.dim,
   label: colors.dim,
-  value: colors.white,
+  // Values render in the terminal's default foreground: hard-coded white
+  // (SGR 37) disappears on light backgrounds.
+  value: (text: string) => text,
   dim: colors.dim,
   
   // Context bar colors (based on percentage)
@@ -128,13 +130,9 @@ export const icons = {
   spinner: ASCII_MODE ? ['|', '/', '-', '\\'] : ['◐', '◓', '◑', '◒'],
   
   // Info
-  clock: '⏱️',
-  folder: '📁',
-  file: '📄',
-  tokens: '🎫',
-  plan: '📝',
-  tools: '🔧',
-  arrow: '→',
+  // Text-style glyph: emoji have ambiguous VS16 widths in some terminals
+  // and every other HUD glyph is a text character.
+  plan: ASCII_MODE ? '=' : '≡',
   bullet: '▸',
   multiply: '×',
   refresh: '↻',  // For compact count indicator
@@ -405,27 +403,21 @@ export function getContextColor(percent: number): (text: string) => string {
 }
 
 /**
- * Create a colored progress bar with percentage-based coloring
- * Matches claude-hud style exactly
+ * Context gauge: filled cells show what REMAINS, matching the "% left" label
+ * rendered next to it (a fuel gauge, not an odometer), while the color still
+ * reflects how much has been used — a red sliver means nearly exhausted.
  */
-export function coloredBar(percent: number, width: number = 10): string {
-  const clamped = Math.max(0, Math.min(100, percent));
-  const filled = Math.round((clamped / 100) * width);
-  const empty = width - filled;
-  
-  const colorFn = getContextColor(clamped);
-  
-  const filledStr = progressChars.filled.repeat(filled);
-  const emptyStr = progressChars.empty.repeat(empty);
-  
-  return colorFn(filledStr) + colors.dim(emptyStr);
-}
+export function remainingBar(usedPercent: number, width: number = 10): string {
+  const clamped = Math.max(0, Math.min(100, usedPercent));
+  const filled = Math.round(((100 - clamped) / 100) * width);
+  const empty = Math.max(0, width - filled);
 
-/**
- * Create a progress bar (legacy - for non-context bars)
- */
-export function progressBar(percent: number, width: number = 10): string {
-  return coloredBar(percent, width);
+  const colorFn = getContextColor(clamped);
+
+  return (
+    colorFn(progressChars.filled.repeat(filled)) +
+    colors.dim(progressChars.empty.repeat(empty))
+  );
 }
 
 /**

@@ -114,10 +114,16 @@ const runtimePermissionLines = renderHud({
   showDetails: true,
   layout,
 }).map(stripAnsi);
-const runtimeEnvironmentLine = runtimePermissionLines.find((line) => line.includes('Approval:'));
-assert.match(runtimeEnvironmentLine, /Approval: full access/);
-assert.match(runtimeEnvironmentLine, /^\[FULL ACCESS\]/);
-assert.match(runtimeEnvironmentLine, /Sandbox: off/);
+const runtimeEnvironmentLine = runtimePermissionLines.find((line) =>
+  line.startsWith('[FULL ACCESS]')
+);
+assert.ok(runtimeEnvironmentLine, 'full-access badge line must render');
+assert.doesNotMatch(
+  runtimeEnvironmentLine,
+  /Approval: |Sandbox: /,
+  'cells implied by the badge are dropped'
+);
+assert.match(runtimeEnvironmentLine, /MCP configured: 2/);
 
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'on-request' }), 'ask for approval');
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'untrusted' }), 'ask for approval');

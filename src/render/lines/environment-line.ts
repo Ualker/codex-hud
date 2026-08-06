@@ -34,34 +34,41 @@ export function renderEnvironmentLine(
   const sandbox = data.session?.sandboxMode ?? data.config.sandbox_mode;
   const approvalPolicy =
     data.session?.approvalPolicy ?? data.config.approval_policy;
-  if (sandbox === 'danger-full-access') {
+  const fullAccess = sandbox === 'danger-full-access';
+  if (fullAccess) {
     critical.push(theme.error('[FULL ACCESS]'));
   }
 
   // Approval and sandbox are security state, so they must survive before
-  // inventory counts on narrow panes.
+  // inventory counts on narrow panes. The badge already states the whole
+  // permission mode, though: repeating it as "Approval: full access |
+  // Sandbox: off" was three spellings of one fact, so cells whose value the
+  // badge implies are dropped and only a diverging approval policy remains
+  // visible.
   const approvalDisplay = getApprovalPolicyDisplay(data.config, {
     approvalPolicy,
     sandboxMode: sandbox,
   });
-  critical.push(colors.dim('Approval: ') + theme.value(approvalDisplay));
+  if (!fullAccess || approvalDisplay !== 'full access') {
+    critical.push(colors.dim('Approval: ') + theme.value(approvalDisplay));
+  }
 
-  if (sandbox) {
+  if (sandbox && !fullAccess) {
     const sandboxDisplay =
-      sandbox === 'danger-full-access'
-        ? theme.error('off')
-        : sandbox === 'workspace-write'
-          ? theme.warning('workspace-write')
-          : theme.info(sanitizeTerminalText(sandbox));
+      sandbox === 'workspace-write'
+        ? theme.warning('workspace-write')
+        : theme.info(sanitizeTerminalText(sandbox));
     critical.push(colors.dim('Sandbox: ') + sandboxDisplay);
   }
 
+  // The default state carries no signal; it stays visible but recedes.
+  const fastDisplay = getFastModeDisplay(data.config, {
+    serviceTier: data.session?.serviceTier,
+  });
   critical.push(
-    theme.value(
-      getFastModeDisplay(data.config, {
-        serviceTier: data.session?.serviceTier,
-      })
-    )
+    fastDisplay === 'Fast: off'
+      ? colors.dim(fastDisplay)
+      : theme.value(fastDisplay)
   );
 
   const mcpCount =

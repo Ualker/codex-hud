@@ -3,7 +3,7 @@
  * Phase 3: Extended with ahead/behind sync status and file change counts
  */
 
-import { execFile, execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import type { GitStatus } from '../types.js';
 
 const GIT_STATUS_ARGS = [
@@ -122,22 +122,6 @@ export function parsePorcelainV2Status(output: string): GitStatus {
   return status;
 }
 
-function collectGitStatusOnce(cwd?: string): GitStatus {
-  try {
-    const output = execFileSync('git', GIT_STATUS_ARGS, {
-      cwd: cwd || process.cwd(),
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-      env: gitEnvironment(),
-    });
-    return parsePorcelainV2Status(output);
-  } catch {
-    return emptyGitStatus();
-  }
-}
-
 /**
  * Non-blocking live collector. Exactly one Git process is spawned per refresh.
  */
@@ -172,11 +156,4 @@ export function collectGitStatusAsync(cwd?: string): Promise<GitStatus> {
       }
     );
   });
-}
-
-/**
- * Collect all git status information (synchronous variant for scripts).
- */
-export function collectGitStatus(cwd?: string): GitStatus {
-  return collectGitStatusOnce(cwd);
 }

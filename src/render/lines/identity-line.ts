@@ -5,7 +5,7 @@
  */
 
 import type { HudData, ContextUsage, LayoutConfig } from '../../types.js';
-import { theme, colors, coloredBar, getContextColor, icons, sanitizeTerminalText, truncate, truncateAnsi, visualLength } from '../colors.js';
+import { theme, colors, remainingBar, getContextColor, icons, sanitizeTerminalText, truncate, truncateAnsi, visualLength } from '../colors.js';
 import { getModelDisplayName } from '../../collectors/codex-config.js';
 
 /**
@@ -67,7 +67,7 @@ export function renderIdentityLine(
   const showContext = options.showContext !== false;
   if (showContext && data.contextUsage) {
     const ctx = data.contextUsage;
-    const bar = coloredBar(ctx.percent, layout.barWidth);
+    const bar = remainingBar(ctx.percent, layout.barWidth);
     const percentStr = getContextColor(ctx.percent)(
       `${Math.max(0, 100 - ctx.percent)}% left`
     );
@@ -87,7 +87,7 @@ export function renderIdentityLine(
     
     if (contextWindow && contextWindow > 0) {
       const percent = Math.round((total / contextWindow) * 100);
-      const bar = coloredBar(percent, layout.barWidth);
+      const bar = remainingBar(percent, layout.barWidth);
       const percentStr = getContextColor(percent)(
         `${Math.max(0, 100 - percent)}% left`
       );

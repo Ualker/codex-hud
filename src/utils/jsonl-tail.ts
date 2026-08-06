@@ -15,6 +15,12 @@ export interface JsonlTailOptions {
    * the default strict behavior so protocol drift surfaces as an error.
    */
   skipMalformed?: boolean;
+  /**
+   * Refuse batches larger than this many bytes. The whole span is
+   * materialized in memory, so a pathological rollout should surface as an
+   * error (callers show it and back off) instead of ballooning the process.
+   */
+  maxBytes?: number;
 }
 
 export async function readCompleteJsonl<T>(
@@ -32,6 +38,14 @@ export async function readCompleteJsonl<T>(
     const { size: fileSize } = await handle.stat();
     const truncated = fileSize < fromOffset;
     const startOffset = truncated ? 0 : fromOffset;
+    if (
+      options.maxBytes !== undefined &&
+      fileSize - startOffset > options.maxBytes
+    ) {
+      throw new Error(
+        `JSONL batch of ${fileSize - startOffset} bytes exceeds the ${options.maxBytes}-byte limit: ${filePath}`
+      );
+    }
     // allocUnsafe skips zero-filling; the read loop below either fills every
     // byte or throws, so uninitialized memory is never observed.
     const bytes = Buffer.allocUnsafe(fileSize - startOffset);

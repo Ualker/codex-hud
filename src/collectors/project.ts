@@ -22,11 +22,6 @@ const AGENTS_MD_FILENAMES = [
   'codex.md',
 ];
 
-const INSTRUCTIONS_MD_FILENAMES = [
-  'INSTRUCTIONS.md',
-  'instructions.md',
-];
-
 /**
  * Get the project name from the current directory
  * Tries git remote first, then falls back to folder name
@@ -97,13 +92,6 @@ export function countAgentsMdFiles(cwd: string): number {
 }
 
 /**
- * Count INSTRUCTIONS.md files in the directory tree
- */
-export function countInstructionsMdFiles(cwd: string): number {
-  return countFilesInTree(cwd, INSTRUCTIONS_MD_FILENAMES, true);
-}
-
-/**
  * Count rule files in .codex/rules directory
  */
 export function countRulesFiles(cwd: string): number {
@@ -119,14 +107,6 @@ export function countRulesFiles(cwd: string): number {
   } catch {
     return 0;
   }
-}
-
-/**
- * Check if .codex directory exists in cwd
- */
-export function hasCodexDir(cwd: string): boolean {
-  const codexDir = path.join(cwd, '.codex');
-  return fs.existsSync(codexDir) && fs.statSync(codexDir).isDirectory();
 }
 
 /**
@@ -154,26 +134,6 @@ export function countConfigFiles(cwd: string): number {
 }
 
 /**
- * Detect current work mode from environment variables or config
- * Returns 'development', 'production', or 'unknown'
- */
-export function detectWorkMode(): 'development' | 'production' | 'unknown' {
-  // Check environment variables
-  const nodeEnv = process.env.NODE_ENV?.toLowerCase();
-  const codexEnv = process.env.CODEX_ENV?.toLowerCase();
-  
-  if (codexEnv === 'production' || nodeEnv === 'production') {
-    return 'production';
-  }
-  if (codexEnv === 'development' || nodeEnv === 'development') {
-    return 'development';
-  }
-  
-  // Default to development if not specified
-  return 'development';
-}
-
-/**
  * Collect all project information
  * Phase 3: Extended with additional file counts and Codex-specific module status
  */
@@ -183,13 +143,10 @@ export function collectProjectInfo(
   options: ProjectCollectionOptions = {}
 ): ProjectInfo {
   const workDir = cwd || process.cwd();
-  
+
   // Count config files in .codex directory
   const configsCount = countConfigFiles(workDir);
-  
-  // Detect work mode from environment or config
-  const workMode = detectWorkMode();
-  
+
   // Count extensions (MCP servers count as extensions)
   const mcpCount = config ? getMcpServerCount(config) : 0;
   const assetCounts = collectCodexAssetBreakdown(workDir, process.env, config, {
@@ -197,13 +154,11 @@ export function collectProjectInfo(
     runtimeHookOverrides: options.runtimeHookOverrides,
     runtimeHooksEnabled: options.runtimeHooksEnabled,
   });
-  
+
   return {
     cwd: workDir,
     projectName: getProjectName(workDir),
     agentsMdCount: countAgentsMdFiles(workDir),
-    hasCodexDir: hasCodexDir(workDir),
-    instructionsMdCount: countInstructionsMdFiles(workDir),
     rulesCount: countRulesFiles(workDir),
     mcpCount,
     configsCount,
@@ -212,30 +167,5 @@ export function collectProjectInfo(
     otherAgentSkillsCount: assetCounts.otherAgentSkillsCount,
     hooksCount: assetCounts.hooksCount,
     globalConfigActive: fs.existsSync(getConfigPath()),
-    workMode,
   };
-}
-
-/**
- * Format project path for display
- * Shortens long paths for terminal display
- */
-export function formatProjectPath(cwd: string, maxLength: number = 30): string {
-  if (cwd.length <= maxLength) {
-    return cwd;
-  }
-  
-  // Try to shorten by using ~ for home directory
-  const home = process.env.HOME || '';
-  if (home && cwd.startsWith(home)) {
-    const shortened = '~' + cwd.slice(home.length);
-    if (shortened.length <= maxLength) {
-      return shortened;
-    }
-    // Still too long, truncate from the left
-    return '…' + shortened.slice(-(maxLength - 1));
-  }
-  
-  // Truncate from the left
-  return '…' + cwd.slice(-(maxLength - 1));
 }

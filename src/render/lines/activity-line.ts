@@ -7,7 +7,7 @@
 import {
   theme,
   colors,
-  coloredBar,
+  remainingBar,
   icons,
   getSpinnerFrame,
   sanitizeTerminalText,
@@ -738,7 +738,7 @@ export function renderToolsLine(
 
 /**
  * Render the todos/plan progress line
- * Format: 📝 3/7 steps | ✓ Task 1 | ◐ Task 2
+ * Format: ≡ 3/7 steps | ✓ Task 1 | ◐ Task 2
  */
 export function renderTodosLine(
   planProgress: PlanProgress | undefined,
@@ -827,7 +827,7 @@ export function renderTokenLine(
   // Context leads the row so the capacity signal survives narrow terminals.
   const ctx = data.contextUsage;
   if (ctx) {
-    const bar = coloredBar(ctx.percent, 12);
+    const bar = remainingBar(ctx.percent, 12);
     const remainingPercent = Math.max(0, 100 - ctx.percent);
     const remainingTokens = Math.max(0, ctx.total - ctx.used);
     const percentDisplay = ctx.percent >= 85
@@ -844,7 +844,7 @@ export function renderTokenLine(
     const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
     const remainingPercent = Math.max(0, 100 - percent);
     const remainingTokens = Math.max(0, total - totalTokens);
-    const bar = coloredBar(percent, 12);
+    const bar = remainingBar(percent, 12);
     const percentDisplay = percent >= 85
       ? theme.error(`${remainingPercent}% left`)
       : percent >= 70
@@ -887,7 +887,9 @@ export function renderTokenLine(
     return null;
   }
 
-  let line = parts.join(' | ');
+  // Dim pipes match every other row's separator style.
+  const tokenSeparator = ` ${colors.dim(icons.pipe)} `;
+  let line = parts.join(tokenSeparator);
   // On narrow panes drop the in/cache/out breakdown before the outer
   // truncation slices through it mid-parenthesis.
   if (
@@ -895,7 +897,7 @@ export function renderTokenLine(
     Number.isFinite(width) &&
     visualLength(line) > width
   ) {
-    line = parts.filter((part) => part !== breakdownPart).join(' | ');
+    line = parts.filter((part) => part !== breakdownPart).join(tokenSeparator);
   }
   return line;
 }
