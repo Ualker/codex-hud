@@ -223,6 +223,13 @@ const KNOWN_EVENT_TYPES = new Set([
   'view_image_tool_call',
   'web_search_begin',
   'web_search_end',
+  // codex-cli 0.147+ unified thread-item stream: completed items
+  // (AgentMessage/CommandExecution/Reasoning/UserMessage/...) duplicate the
+  // response_item records this parser already consumes; SubAgentActivity
+  // variants are consumed by the agent-activity collector.
+  'item_completed',
+  // Subagent spawn markers, consumed by the agent-activity collector.
+  'sub_agent_activity',
 ]);
 
 function incrementCounter(
