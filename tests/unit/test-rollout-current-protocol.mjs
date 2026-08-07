@@ -288,6 +288,61 @@ try {
     1
   );
 
+  // codex-cli 0.147+ writes the unified thread-item stream and subagent
+  // spawn markers; both are known-and-ignored, not protocol drift.
+  appendRecords([
+    {
+      timestamp: '2026-07-30T00:00:09.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: '019b1111-a111-7111-8111-111111111111',
+        turn_id: 'turn-2',
+        item: {
+          type: 'CommandExecution',
+          id: 'exec-11111111-2222-3333-4444-555555555555',
+          process_id: '40737',
+          command: ['/bin/zsh', '-lc', 'rg -n pattern src'],
+          cwd: 'file:///tmp/current-protocol',
+          exit_code: 0,
+        },
+      },
+    },
+    {
+      timestamp: '2026-07-30T00:00:09.100Z',
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: '019b1111-a111-7111-8111-111111111111',
+        turn_id: 'turn-2',
+        item: { type: 'AgentMessage', id: 'msg-1', text: 'done' },
+      },
+    },
+    {
+      timestamp: '2026-07-30T00:00:09.200Z',
+      type: 'event_msg',
+      payload: {
+        type: 'sub_agent_activity',
+        kind: 'started',
+        event_id: 'spawn-1',
+        occurred_at_ms: 1753833609200,
+        agent_thread_id: '019b2222-b222-7222-8222-222222222222',
+        agent_path: 'agents/explorer',
+      },
+    },
+  ]);
+  const withItemStream = await parser.parse();
+  assert.deepEqual(
+    withItemStream?.protocolHealth.unknownEventTypes,
+    {},
+    'the 0.147 item stream and spawn markers are known event types'
+  );
+  assert.equal(
+    withItemStream?.protocolHealth.unknownTopLevelTypes.future_protocol_record,
+    1,
+    'earlier unknown counters carry across incremental parses'
+  );
+
   console.log('test-rollout-current-protocol: PASS');
 } finally {
   const resolvedRoot = fs.realpathSync(tempRoot);
