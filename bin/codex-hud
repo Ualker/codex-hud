@@ -189,9 +189,50 @@ SESSION_NAME="${SESSION_PREFIX}-$(date +%Y%m%d%H%M%S)-$$"
 
 resolve_codex_cli() {
     local cmux_shim="${CMUX_CODEX_WRAPPER_SHIM:-}"
-    if [[ -n "$cmux_shim" && -x "$cmux_shim" && "$cmux_shim" != "$SCRIPT_DIR/codex-hud" ]]; then
-        CODEX_CLI_PATH="$cmux_shim"
-        return 0
+    if [[ -n "$cmux_shim" ]]; then
+        if [[ -x "$cmux_shim" && "$cmux_shim" != "$SCRIPT_DIR/codex-hud" ]]; then
+            CODEX_CLI_PATH="$cmux_shim"
+            return 0
+        fi
+
+        # cmux stores per-surface shims under the macOS temporary directory.
+        # A long-lived terminal can retain that path after the file is cleaned,
+        # so recover through the stable wrapper instead of silently losing all
+        # lifecycle hooks by launching the raw Codex binary.
+        local cmux_wrapper=""
+        local cmux_candidate=""
+        if [[ -n "${CMUX_BUNDLED_CLI_PATH:-}" ]]; then
+            cmux_candidate="$(dirname "$CMUX_BUNDLED_CLI_PATH")/cmux-codex-wrapper"
+            if [[ -x "$cmux_candidate" ]]; then
+                cmux_wrapper="$cmux_candidate"
+            fi
+        fi
+
+        if [[ -z "$cmux_wrapper" ]]; then
+            cmux_candidate="/Applications/cmux.app/Contents/Resources/bin/cmux-codex-wrapper"
+            if [[ -x "$cmux_candidate" ]]; then
+                cmux_wrapper="$cmux_candidate"
+            fi
+        fi
+
+        if [[ -z "$cmux_wrapper" ]]; then
+            local cmux_cli
+            cmux_cli=$(command -v cmux 2>/dev/null || true)
+            if [[ -n "$cmux_cli" ]]; then
+                cmux_candidate="$(dirname "$cmux_cli")/cmux-codex-wrapper"
+                if [[ -x "$cmux_candidate" ]]; then
+                    cmux_wrapper="$cmux_candidate"
+                fi
+            fi
+        fi
+
+        if [[ -n "$cmux_wrapper" ]]; then
+            warn "cmux Codex shim is unavailable at $cmux_shim; using stable wrapper: $cmux_wrapper"
+            CODEX_CLI_PATH="$cmux_wrapper"
+            return 0
+        fi
+
+        warn "cmux Codex shim is unavailable at $cmux_shim and no stable cmux-codex-wrapper was found; starting Codex without cmux lifecycle hooks"
     fi
 
     local path

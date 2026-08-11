@@ -25,6 +25,11 @@ cat > "$FAKE_BIN_DIR/cmux-codex-shim" <<'FAKE'
 exit 0
 FAKE
 
+cat > "$FAKE_BIN_DIR/cmux-codex-wrapper" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
@@ -50,6 +55,7 @@ FAKE
 chmod +x \
   "$FAKE_BIN_DIR/codex" \
   "$FAKE_BIN_DIR/cmux-codex-shim" \
+  "$FAKE_BIN_DIR/cmux-codex-wrapper" \
   "$FAKE_BIN_DIR/node" \
   "$FAKE_BIN_DIR/npm" \
   "$FAKE_BIN_DIR/tput"
@@ -180,6 +186,38 @@ if [[ "$launch_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* || \
       "$launch_line" == *"capability-current"* ]]; then
   echo "expected legacy tmux launch to use the cmux shim without exposing capability" >&2
   cat "$TMUX_LOG_FILE" >&2
+  exit 1
+fi
+
+# A long-lived cmux surface can retain a per-surface shim path after its
+# temporary file is cleaned. The wrapper must recover through the stable
+# cmux-codex-wrapper instead of silently launching Codex without hooks.
+: > "$TMUX_LOG_FILE"
+export TMUX_SUPPORTS_NEW_SESSION_ENV="1"
+export CMUX_CODEX_WRAPPER_SHIM="$TEST_TMP_DIR/missing-cmux-codex-shim"
+export CMUX_BUNDLED_CLI_PATH="$FAKE_BIN_DIR/cmux"
+"$ROOT_DIR/bin/codex-hud" --new-session >"$TEST_TMP_DIR/wrapper-stale-shim.log" 2>&1
+
+launch_line=$(grep '^respawn-pane .*@codex_hud_client_attached' "$TMUX_LOG_FILE")
+if [[ "$launch_line" != *"$FAKE_BIN_DIR/cmux-codex-wrapper"* ]]; then
+  echo "expected a stale cmux shim to fall back to the stable cmux-codex-wrapper" >&2
+  cat "$TMUX_LOG_FILE" >&2
+  cat "$TEST_TMP_DIR/wrapper-stale-shim.log" >&2
+  exit 1
+fi
+
+if [[ "$launch_line" == *"$CMUX_CODEX_WRAPPER_SHIM"* || \
+      "$launch_line" == *"capability-current"* ]]; then
+  echo "expected stale-shim recovery not to launch the missing shim or expose capability" >&2
+  cat "$TMUX_LOG_FILE" >&2
+  exit 1
+fi
+
+if ! grep -Fq \
+  "cmux Codex shim is unavailable at $CMUX_CODEX_WRAPPER_SHIM; using stable wrapper: $FAKE_BIN_DIR/cmux-codex-wrapper" \
+  "$TEST_TMP_DIR/wrapper-stale-shim.log"; then
+  echo "expected stale-shim recovery to report the selected stable wrapper" >&2
+  cat "$TEST_TMP_DIR/wrapper-stale-shim.log" >&2
   exit 1
 fi
 
