@@ -10,9 +10,12 @@ FAKE_SHELL_DIR="$TEST_TMP_DIR/shell dir;\$(marker)"
 FAKE_SHELL_PATH="$FAKE_SHELL_DIR/user shell"
 LOG_FILE="$TEST_TMP_DIR/tmux.log"
 OUTPUT_FILE="$TEST_TMP_DIR/wrapper.log"
+STALE_SHIM_OUTPUT_FILE="$TEST_TMP_DIR/wrapper-stale-shim.log"
 CODEX_MARKER_FILE="$TEST_TMP_DIR/codex-ran"
 SHELL_MARKER_FILE="$TEST_TMP_DIR/shell-resumed"
 INJECTION_MARKER_FILE="$TEST_TMP_DIR/command-substitution-ran"
+CMUX_BIN_DIR="$TEST_TMP_DIR/cmux-bin"
+CMUX_WRAPPER_PATH="$CMUX_BIN_DIR/cmux-codex-wrapper"
 
 cleanup() {
   rm -rf "$TEST_TMP_DIR"
@@ -26,7 +29,7 @@ fail() {
   exit 1
 }
 
-mkdir -p "$FAKE_BIN_DIR" "$FAKE_SHELL_DIR"
+mkdir -p "$FAKE_BIN_DIR" "$FAKE_SHELL_DIR" "$CMUX_BIN_DIR"
 
 cat > "$FAKE_BIN_DIR/codex" <<'FAKE'
 #!/usr/bin/env bash
@@ -67,12 +70,18 @@ case "${1:-}" in
 esac
 FAKE
 
+cat > "$CMUX_WRAPPER_PATH" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+
 chmod +x \
   "$FAKE_BIN_DIR/codex" \
   "$FAKE_BIN_DIR/marker" \
   "$FAKE_BIN_DIR/node" \
   "$FAKE_BIN_DIR/npm" \
   "$FAKE_BIN_DIR/tput" \
+  "$CMUX_WRAPPER_PATH" \
   "$FAKE_SHELL_PATH"
 
 # Keep the fixture independent from a real cmux session running the tests.
@@ -147,6 +156,29 @@ if [[ "$(cat "$SHELL_MARKER_FILE" 2>/dev/null || true)" != "shell" ]]; then
 fi
 if [[ -e "$INJECTION_MARKER_FILE" ]]; then
   fail "shell metacharacters from an executable path were evaluated"
+fi
+
+# A long-lived cmux surface can retain a per-surface shim path after its
+# temporary file is cleaned. Recover through the stable wrapper so cmux keeps
+# receiving Codex lifecycle hooks. With no CMUX_* variables, the assertion
+# above continues to prove that server/container launches use the raw CLI.
+: > "$LOG_FILE"
+export CMUX_CODEX_WRAPPER_SHIM="$TEST_TMP_DIR/missing-cmux-codex-shim"
+export CMUX_BUNDLED_CLI_PATH="$CMUX_BIN_DIR/cmux"
+"$ROOT_DIR/bin/codex-hud" --new-session >"$STALE_SHIM_OUTPUT_FILE" 2>&1
+
+launch_line="$(grep -m1 '^respawn-pane .*@codex_hud_client_attached' "$LOG_FILE" || true)"
+escaped_cmux_wrapper_path="$(printf '%q' "$CMUX_WRAPPER_PATH")"
+if [[ "$launch_line" != *"$escaped_cmux_wrapper_path"* ]]; then
+  fail "stale cmux shim did not fall back to the stable cmux-codex-wrapper"
+fi
+if [[ "$launch_line" == *"$CMUX_CODEX_WRAPPER_SHIM"* ]]; then
+  fail "stale cmux shim path was used as the Codex executable"
+fi
+if ! grep -Fq \
+  "cmux Codex shim is unavailable at $CMUX_CODEX_WRAPPER_SHIM; using stable wrapper: $CMUX_WRAPPER_PATH" \
+  "$STALE_SHIM_OUTPUT_FILE"; then
+  fail "stale-shim recovery did not report the selected stable wrapper"
 fi
 
 echo "test-wrapper-command-visibility: PASS"
