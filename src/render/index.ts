@@ -17,7 +17,13 @@ const SHOW_CURSOR = '\x1b[?25h';
 
 let lastStdoutFrame: string | null = null;
 let hasEverRendered = false;
-const STATUS_HINT = 'Click HUD: Ctrl+T view • t details • drag resize';
+// The hint is the only on-screen record of the hotkeys, so it must describe
+// the binding this session actually has. It used to teach only the clunky
+// path (focus the pane first) even when the wrapper had installed a global
+// toggle that works from the Codex pane.
+const STATUS_HINT = process.env.CODEX_HUD_TOGGLE_KEY
+  ? `${process.env.CODEX_HUD_TOGGLE_KEY} view • click HUD: t details • drag resize`
+  : 'Click HUD: Ctrl+T view • t details • drag resize';
 // The hint is for discoverability; after a few minutes it has served its
 // purpose and the first line gets its full width back.
 const STATUS_HINT_VISIBLE_MS = 5 * 60_000;
@@ -47,6 +53,36 @@ function statusHintVisible(): boolean {
  */
 export function invalidateRenderedFrame(): void {
   lastStdoutFrame = null;
+}
+
+/**
+ * Paint a minimal frame that depends on no collected data.
+ *
+ * A render that throws used to leave the last good frame on screen, and with
+ * CODEX_HUD_LOG_FILE unset by default the failure reached neither the pane nor
+ * the disk. A frozen HUD is indistinguishable from an idle session, so the one
+ * thing the failure path must do is look broken.
+ */
+export function renderFallbackFrame(summary: string): void {
+  try {
+    const width = getTerminalWidth();
+    const height = Math.max(1, getTerminalHeight());
+    const icon = process.env.CODEX_HUD_ASCII === '1' ? '!' : '⚠';
+    const text = truncateAnsi(
+      colors.red(`${icon} HUD display error · retrying · ${summary}`),
+      width
+    );
+    // Force a full repaint once rendering recovers: this frame bypassed the
+    // frame cache, so the cached value no longer describes the screen.
+    lastStdoutFrame = null;
+    let frameOut = CURSOR_HOME;
+    for (let i = 0; i < height; i++) {
+      frameOut += CLEAR_LINE + (i === 0 ? text : '') + (i < height - 1 ? '\n' : '');
+    }
+    process.stdout.write(frameOut);
+  } catch {
+    // The fallback itself must never throw; a stale frame beats a dead pane.
+  }
 }
 
 function applyStatusHint(lines: string[], width: number): string[] {

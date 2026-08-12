@@ -15,7 +15,16 @@
 
 import { execFile } from 'child_process';
 
-const TMUX_TIMEOUT_MS = 2000;
+/**
+ * Matches the pane-probe timeout in session-finder, for the same measured
+ * reason: on a loaded machine a bare `/bin/sh` spawn takes 0.7-2.1s here, so a
+ * two-second budget expired on 10 of 25 consecutive calls. Timing out returns
+ * no bindings, which silently drops every open HUD from the overview and
+ * leaves the mtime scan — the source this collector exists to replace — as the
+ * only answer. Nothing waits on this call: it refreshes a cache that keeps
+ * serving its previous snapshot, so a late result costs nothing.
+ */
+const TMUX_TIMEOUT_MS = 8000;
 const TMUX_MAX_BUFFER = 1024 * 1024;
 
 /**

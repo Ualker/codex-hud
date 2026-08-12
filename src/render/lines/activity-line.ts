@@ -486,6 +486,7 @@ const COLLECTOR_LABELS: Record<string, string> = {
   environment: 'project scan',
   config: 'Codex config',
   overview: 'session overview',
+  renderer: 'HUD display',
 };
 
 export function renderHealthLine(
@@ -504,6 +505,8 @@ export function renderHealthLine(
     if (health.status === 'error') {
       warnings.push(`${label} unavailable`);
     } else if (health.status === 'stale') {
+      // A stale collector has succeeded before, so it always carries a
+      // timestamp; `pending` covers the never-succeeded case and stays silent.
       const age = health.lastSuccessAt
         ? `${formatAge(nowMs - health.lastSuccessAt.getTime())} old`
         : 'not refreshing';

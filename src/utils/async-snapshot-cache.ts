@@ -92,13 +92,17 @@ export class AsyncSnapshotCache<T> {
 
   getHealth(): CollectorHealth {
     const now = this.now();
+    // A collector that has never succeeded is not stale, it is uninitialized:
+    // "never refreshed" and "stopped refreshing" need different words because
+    // only the second one is a fault the user can act on.
     const status =
       this.lastError !== undefined
         ? 'error'
-        : this.lastSuccessAtMs === 0 ||
-            now - this.lastSuccessAtMs > this.staleAfterMs
-          ? 'stale'
-          : 'fresh';
+        : this.lastSuccessAtMs === 0
+          ? 'pending'
+          : now - this.lastSuccessAtMs > this.staleAfterMs
+            ? 'stale'
+            : 'fresh';
 
     return {
       status,

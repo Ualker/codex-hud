@@ -33,7 +33,15 @@ const cache = new AsyncSnapshotCache(
 );
 
 assert.equal(cache.get().value, 'initial');
-assert.equal(cache.getHealth().status, 'stale');
+// Never-run is `pending`, not `stale`. Reporting it as stale made every HUD
+// start print "project scan not refreshing · git status not refreshing" for
+// the ~0.6s before the first collector round finished.
+assert.equal(cache.getHealth().status, 'pending');
+assert.equal(
+  cache.getHealth().lastSuccessAt,
+  undefined,
+  'a pending collector has no success to date'
+);
 
 await cache.refresh();
 assert.equal(calls, 1);

@@ -34,6 +34,12 @@ export interface RolloutParseResult {
   planProgress: PlanProgress | null;
   tokenUsage: TokenUsageInfo | null;
   rateLimits: RateLimitSnapshot | null;
+  /**
+   * When this session last observed the account's rate limits. Rate limits are
+   * account state, so a snapshot from another session can be newer than this
+   * one; comparing the two requires knowing when each was written.
+   */
+  rateLimitsAt: Date | null;
   turnActivity: TurnActivity | null;
   protocolHealth: ProtocolHealth;
   // Compact tracking. Codex writes each compaction BOTH as a top-level
@@ -1054,6 +1060,7 @@ export async function parseRolloutFile(
   let planProgress: PlanProgress | null = null;
   let tokenUsage: TokenUsageInfo | null = null;
   let rateLimits: RateLimitSnapshot | null = null;
+  let rateLimitsAt: Date | null = null;
   let turnActivity: TurnActivity | null = existingTurnActivity
     ? { ...existingTurnActivity }
     : null;
@@ -1077,6 +1084,7 @@ export async function parseRolloutFile(
     planProgress,
     tokenUsage,
     rateLimits,
+    rateLimitsAt,
     turnActivity,
     protocolHealth,
     compactCount: Math.max(compactTopLevelCount, compactEventCount),
@@ -1357,9 +1365,11 @@ export async function parseRolloutFile(
       }
       if (payload.rate_limits) {
         rateLimits = payload.rate_limits;
+        rateLimitsAt = timestamp;
       }
     } else if (payload.type === 'rate_limit' && payload.rate_limits) {
       rateLimits = payload.rate_limits;
+      rateLimitsAt = timestamp;
     } else if (payload.type === 'context_compacted') {
       compactEventCount++;
       lastCompactTime = timestamp;
@@ -1723,7 +1733,13 @@ export class RolloutParser {
       // Plans, limits and lifecycle snapshots are state, not per-batch events.
       // Preserve the previous value until a later record explicitly supersedes it.
       result.planProgress ??= this.cachedResult.planProgress;
-      result.rateLimits ??= this.cachedResult.rateLimits;
+      if (!result.rateLimits && this.cachedResult.rateLimits) {
+        // Carry the observation time with the snapshot; a limits value whose
+        // timestamp came from a different record cannot be compared for
+        // freshness against another session's.
+        result.rateLimits = this.cachedResult.rateLimits;
+        result.rateLimitsAt = this.cachedResult.rateLimitsAt;
+      }
       result.turnActivity ??= this.cachedResult.turnActivity;
 
       // Sticky: a bounded first read keeps every later incremental result
