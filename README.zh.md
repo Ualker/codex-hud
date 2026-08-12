@@ -37,7 +37,10 @@ Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu W
 键位，无需切换焦点即可使用，提示行会显示当前会话实际拥有的那一种。概览列出最近
 30 分钟内有活动的 session——不只是恰好正在执行回合的那些——先按当前阶段排序，再按
 最近活动时间排序，Context 剩余量作为并列时的次序。概览用 `▸` 标出当前 HUD 绑定的
-session，并保证该行在 session 数超过可显示行数时仍然可见。HUD pane 处于焦点时，
+session，并保证该行在 session 数超过可显示行数时仍然可见。每行末尾是承载它的 tmux
+session 名——即 `tmux ls` 和 session 选择器里显示的那个名字，所以看到需要处理的行就
+能直接定位；仅由 rollout 扫描发现、没有 HUD pane 的 session 回退显示 Session ID。
+只有列出的 session 使用了不同模型时才会出现模型列。HUD pane 处于焦点时，
 按 `t` 可循环切换工具详情级别（`targets` → `full` → `off`），并短暂显示切换后的级别。
 
 ![Codex HUD — 多 Session 概览](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
@@ -88,6 +91,7 @@ codex
 | `codex-hud --reload` | 必要时先重建，再重启当前目录最新会话的 HUD pane |
 | `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
 | `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
+| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着 |
 | `codex-hud --hud-version` | 显示包版本和 checkout revision |
 
 ## HUD 显示了什么？
@@ -106,16 +110,16 @@ Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in
 
 | 行 | 内容 |
 |----|------|
-| **标题** | 模型 + effort、项目名、git 分支、会话时长 |
+| **标题** | 模型 + effort、项目名、git 分支，以及绑定的 Codex 会话已运行多久。首轮采集完成前模型显示为 `[…]`、不显示时长，因为此时两者都还不知道 |
 | **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先（徽章已蕴含的单元不再重复显示，默认态 `Fast: off` 弱化为 dim）；随后是 MCP、Codex skill、hook、AGENTS.md 和配置来源 |
-| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、累计消耗、compact 次数；限额使用达到 70% 后显示 reset 信息，reset 时刻已过的限额快照直接不显示，不再重放。限额是账号级状态，取本机任一 Codex 会话写下的最新快照，而不是绑定会话碰巧最后看到的那一份 |
+| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、累计消耗、compact 次数；只要版面还有空行就显示限额窗口及其 reset 时刻，使用率达到 70% 后转为高亮告警；reset 时刻已过的限额快照直接不显示，不再重放。限额是账号级状态，取本机任一 Codex 会话写下的最新快照，而不是绑定会话碰巧最后看到的那一份 |
 | **健康** | Git、会话日志、agent、项目扫描、配置、概览采集以及 HUD 自身显示的状态（自然语言描述），以及本版本无法识别的 Codex 记录条数。尚未完成首轮的采集器保持沉默，只有跑过又停了才算告警 |
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent |
 | **Session** | 工作目录、Session ID、CLI 版本；排在计划和工具历史之后，小 pane 优先保留动态信息 |
 
-版面是双向自适应的。有余量时会同时保留回合行与运行中工具行，因为两者计的不是同一个数：回合行是 Codex 连续执行工具的时长，工具行是当前这一条调用的时长。pane 放不下时按顺序整行舍弃低信号内容——先是回合行，然后 Session 详情行，然后多条 agent 行折叠成一行 `◐ N agents` 计数，最后才是静态环境行（其 `[FULL ACCESS]` 徽章上移到标题行）——保证计划和 agent 等动态状态存活，而不是截断时恰好落在末尾的内容被丢弃。
+版面是双向自适应的。有余量时会同时保留回合行与运行中工具行，因为两者计的不是同一个数：回合行是 Codex 连续执行工具的时长，工具行是当前这一条调用的时长。pane 放不下时按顺序整行舍弃低信号内容——先是低压限额读数，然后回合行，然后 Session 详情行，然后多条 agent 行折叠成一行 `◐ N agents` 计数，最后才是静态环境行（其 `[FULL ACCESS]` 徽章上移到标题行）——保证计划和 agent 等动态状态存活，而不是截断时恰好落在末尾的内容被丢弃。
 
-窄 pane 上按"整个单元"舍弃，而不是把词截断。标题行保住项目名、收缩分支名；环境行先丢默认态 `Fast: off`，再丢 `[FULL ACCESS]` 徽章已蕴含的 sandbox 值，实在放不下就整行让出，而不是显示半句安全状态。
+窄 pane 上按"整个单元"舍弃，而不是把词截断。标题行保住项目名、收缩分支名；环境行取其优先级序列中能放下的最长前缀——权限在前、清单计数在后——实在放不下就整行让出，而不是显示半句安全状态。因为取的是前缀而不是能塞就塞，把 pane 拖宽只会增加单元，短的低优先单元也不会再占掉高优先单元的位置。
 
 工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具只显示保护隐私的**命令头部**——程序名加一个已知子命令或脚本名（如 `npm test`、`sed && rg`），不含任何参数、路径或标志；文件类工具只显示脱敏后的目标。`full` 才显示已脱敏、限长后的完整命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
 

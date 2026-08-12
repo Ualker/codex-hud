@@ -420,8 +420,11 @@ for (const width of [120, 20]) {
 }
 
 // Agent compact degradation removes MCP, then duration, then project, while retaining the summary.
+// The uptime cell exists only for a bound session: it reports how long that
+// Codex session has run, and the HUD process's own age is not a stand-in.
 const compactData = {
   ...baseData,
+  session: { startTime: new Date(Date.now() - 120000) },
   project: {
     ...baseData.project,
     projectName: 'very-long-project-name-for-agent-priority',

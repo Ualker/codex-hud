@@ -27,6 +27,7 @@ import {
   sanitizeTerminalText,
   truncate,
   truncateAnsi,
+  truncateStart,
   visualLength,
 } from './colors.js';
 import {
@@ -214,23 +215,32 @@ function renderExpandedLayout(
 
   // Context capacity is actionable and remains ahead of activity history.
   const tokenLine = renderTokenLine(data, width);
-  const rateLimitLine = renderRateLimitLine(data, width);
-  const usageRows: string[] = [];
-  if (tokenLine) {
-    const combined = rateLimitLine
-      ? `${tokenLine} ${colors.dim(icons.pipe)} ${rateLimitLine}`
-      : tokenLine;
-    if (visualLength(combined) <= width) {
-      usageRows.push(combined);
-    } else {
-      usageRows.push(tokenLine);
-      if (rateLimitLine) {
-        usageRows.push(rateLimitLine);
+  // Two readings of the same account quota: the alert form only appears under
+  // pressure, the calm form always states where the window stands. The calm
+  // one is worth a row only when there is one to spare, so the ladder picks.
+  const rateLimitAlertLine = renderRateLimitLine(data, width);
+  const rateLimitCalmLine = renderRateLimitLine(data, width, Date.now(), {
+    includeBelowPressure: true,
+  });
+  const buildUsageRows = (rateLimitLine: string | null): string[] => {
+    const rows: string[] = [];
+    if (tokenLine) {
+      const combined = rateLimitLine
+        ? `${tokenLine} ${colors.dim(icons.pipe)} ${rateLimitLine}`
+        : tokenLine;
+      if (visualLength(combined) <= width) {
+        rows.push(combined);
+      } else {
+        rows.push(tokenLine);
+        if (rateLimitLine) {
+          rows.push(rateLimitLine);
+        }
       }
+    } else if (rateLimitLine) {
+      rows.push(rateLimitLine);
     }
-  } else if (rateLimitLine) {
-    usageRows.push(rateLimitLine);
-  }
+    return rows;
+  };
 
   const toolsLine = renderToolsLine(
     data.toolActivity,
@@ -266,6 +276,7 @@ function renderExpandedLayout(
    * height — including heights with rows to spare.
    */
   interface LayoutVariant {
+    showCalmQuota?: boolean;
     keepTurnWithTool?: boolean;
     dropSession?: boolean;
     collapseAgents?: boolean;
@@ -289,7 +300,13 @@ function renderExpandedLayout(
     if (healthLine) {
       lines.push(healthLine);
     }
-    lines.push(...usageRows);
+    lines.push(
+      ...buildUsageRows(
+        compression.showCalmQuota
+          ? rateLimitCalmLine ?? rateLimitAlertLine
+          : rateLimitAlertLine
+      )
+    );
 
     // `turnActivity.since` is the phase start, not the current tool's start,
     // so the two rows carry different numbers: "executing tools for 4m" versus
@@ -333,6 +350,7 @@ function renderExpandedLayout(
   // clip the tail, which used to hide the plan row and even a running agent
   // while keeping a static config row that had not changed all session.
   const steps: LayoutVariant[] = [
+    { showCalmQuota: true, keepTurnWithTool: true },
     { keepTurnWithTool: true },
     {},
     { dropSession: true },
@@ -388,6 +406,34 @@ function orderForViewport(
   const [self] = reordered.splice(selfIndex, 1);
   reordered.splice(Math.max(0, maxLines - 2), 0, self);
   return reordered;
+}
+
+/**
+ * Sized to the suffix the wrapper's own naming scheme varies:
+ * `codex-hud-<project>-<hash>-<timestamp>-<pid>`, whose last two segments are
+ * 19-21 columns. Wider only re-prints part of the hash every row shares.
+ */
+const OVERVIEW_ADDRESS_WIDTH = 22;
+
+/**
+ * The one field on an overview row the user can act on.
+ *
+ * Measured live with three sessions open in one project, every row read
+ * "prj │ … │ 019ff4ef" — same project name, and a session id that matches
+ * nothing they can type. The tmux session name is what `tmux ls` and the
+ * session chooser show, and the binding scan already carries it. Truncated
+ * from the head because codex-hud names share a
+ * `codex-hud-<project>-<hash>-` prefix and differ only in the tail.
+ */
+function overviewAddress(session: SessionOverviewItem): string {
+  if (session.tmuxSession) {
+    return truncateStart(
+      sanitizeTerminalText(session.tmuxSession),
+      OVERVIEW_ADDRESS_WIDTH
+    );
+  }
+  // Not running under a codex-hud pane: the id is all there is.
+  return session.id.length > 8 ? session.id.slice(0, 8) : session.id;
 }
 
 function renderOverviewLayout(
@@ -480,17 +526,32 @@ function renderOverviewLayout(
     ...ageDisplays.map((display) => visualLength(display))
   );
 
+  // Only worth a column when it separates rows; with one model in play it is
+  // the same word repeated down the pane.
+  const models = new Set(
+    overview.sessions
+      .map((session) => session.model)
+      .filter((model): model is string => Boolean(model))
+  );
+  const showModel = models.size > 1;
+  const modelDisplays = overview.sessions.map((session) =>
+    colors.dim(truncate(sanitizeTerminalText(session.model ?? '--'), 20))
+  );
+  const modelColumnWidth = showModel
+    ? Math.max(...modelDisplays.map((display) => visualLength(display)))
+    : 0;
+
   return overview.sessions.map((session, index) => {
-    const shortId = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
     const parts = [
       padEnd(theme.projectName(projectNames[index]), projectColumnWidth),
+      ...(showModel ? [padEnd(modelDisplays[index], modelColumnWidth)] : []),
       padEnd(phaseLabels[index], phaseColumnWidth),
       padEnd(ctxDisplays[index], ctxColumnWidth),
       padEnd(ageDisplays[index], ageColumnWidth),
-      colors.dim(shortId),
+      colors.dim(overviewAddress(session)),
     ];
-    // Mark the row this HUD is bound to; without it the only clue is the
-    // 8-char session id.
+    // Mark the row this HUD is bound to; the address column tells the rows
+    // apart, but not which one you are already looking at.
     const marker =
       data.overviewSelfSessionId !== undefined &&
       session.id === data.overviewSelfSessionId

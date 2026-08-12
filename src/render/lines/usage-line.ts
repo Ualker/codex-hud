@@ -20,6 +20,14 @@ export function renderUsageLine(data: HudData, layout: LayoutConfig): string | n
     return null;
   }
 
-  const startTime = data.session?.startTime ?? data.sessionStart;
+  // Only a bound session has an uptime. Falling back to the HUD process start
+  // made the provisional first frame claim "up 0s" for a session that turned
+  // out to be hours old, and put "up 3h0m" next to
+  // "○ Waiting for a Codex session…" — an uptime for a session that does not
+  // exist. Saying nothing is the honest form of both.
+  const startTime = data.session?.startTime;
+  if (!startTime) {
+    return null;
+  }
   return colors.dim(`up ${formatUptime(startTime)}`);
 }

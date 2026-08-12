@@ -992,7 +992,8 @@ Environment Variables:
   CODEX_HUD_CLEAR_SCROLLBACK Clear terminal scrollback on first render (default: 0)
   CODEX_HUD_HISTORY_LIMIT HUD pane scrollback lines (default: 10000)
   CODEX_HUD_TOOL_DETAILS Tool details: off, targets (default), or full
-  CODEX_HUD_LOG_FILE  Append HUD diagnostics to this file (default: unset, silent)
+  CODEX_HUD_LOG_FILE  Append HUD diagnostics to this file (default: ~/Library/Logs/codex-hud/hud.log
+                      on macOS, \$XDG_STATE_HOME/codex-hud/hud.log elsewhere; 'off' discards them)
   CODEX_HUD_SHOW_OTHER_AGENT_SKILLS Show non-Codex .agents skill count (default: 0)
   CODEX_HUD_ASCII      Use ASCII status glyphs (default: 0)
   NO_COLOR             Disable ANSI colors when set
@@ -1118,9 +1119,43 @@ kill_session() {
 }
 
 # List all codex-hud sessions
+# One line per session with the two things the name does not carry: which
+# directory it is working in, and whether its HUD pane is still alive. With
+# several sessions open the bare tmux listing differs only by timestamp and
+# pid, which tells the user nothing about what they are looking at.
 list_sessions() {
+    local rows panes name main_pane hud_pane attached cwd hud_state
+
     echo "Active codex-hud sessions:"
-    tmux list-sessions 2>/dev/null | grep "^codex-hud-" || echo "  (none)"
+    rows=$(tmux list-sessions \
+        -F "#{session_name}|#{@codex_hud_main_pane}|#{@codex_hud_pane}|#{?session_attached,attached,detached}" \
+        2>/dev/null | grep "^codex-hud-") || rows=""
+    if [[ -z "$rows" ]]; then
+        echo "  (none)"
+        return 0
+    fi
+
+    panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_current_path}" 2>/dev/null) || panes=""
+
+    while IFS='|' read -r name main_pane hud_pane attached; do
+        [[ -n "$name" ]] || continue
+        # The path is the last field and may itself contain the separator, so
+        # take everything after the first two fields rather than field three.
+        cwd=$(printf '%s\n' "$panes" | awk -F'|' -v p="$main_pane" \
+            '$1 == p { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }')
+        if [[ -z "$cwd" ]]; then
+            cwd="?"
+        elif [[ "$cwd" == "$HOME"* ]]; then
+            cwd="~${cwd#"$HOME"}"
+        fi
+        hud_state=$(printf '%s\n' "$panes" | awk -F'|' -v p="$hud_pane" '$1 == p { print $2; exit }')
+        case "$hud_state" in
+            live) hud_state="" ;;
+            dead) hud_state="  HUD: dead (codex-hud --reload)" ;;
+            *)    hud_state="  HUD: missing" ;;
+        esac
+        printf '  %s  %s  [%s]%s\n' "$name" "$cwd" "$attached" "$hud_state"
+    done <<< "$rows"
 }
 
 # Every codex-hud session for this directory, oldest first (current naming

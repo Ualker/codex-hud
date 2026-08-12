@@ -363,6 +363,12 @@ async function refreshOverviewData(): Promise<SessionOverview> {
 
   const activeSessions = [...scanned];
   const scannedIds = new Set(scanned.map((session) => session.sessionId));
+  // The tmux session name is where the user goes to reach a row; carry it
+  // across from the binding scan for every session it covers, including the
+  // ones the rollout scan already found.
+  const tmuxSessionById = new Map(
+    openBindings.map((binding) => [binding.sessionId, binding.tmuxSession])
+  );
   const boundWithoutRollout: OpenHudBinding[] = [];
   for (const binding of openBindings) {
     if (scannedIds.has(binding.sessionId)) {
@@ -419,10 +425,12 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       result.lastCompactTime
     );
     const cwd = result.session?.cwd;
+    const id = result.session?.id ?? sessionFile.sessionId;
     sessions.push({
-      id: result.session?.id ?? sessionFile.sessionId,
+      id,
       cwd,
       projectName: cwd ? path.basename(cwd) : undefined,
+      tmuxSession: tmuxSessionById.get(id) ?? tmuxSessionById.get(sessionFile.sessionId),
       model: result.session?.model,
       turnActivity: result.turnActivity ?? undefined,
       lastActivityAt:
@@ -439,6 +447,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       id: binding.sessionId,
       cwd: binding.cwd,
       projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
+      tmuxSession: binding.tmuxSession,
       neverStarted: true,
     });
   }
@@ -602,6 +611,10 @@ function collectData(): HudData {
   };
 }
 
+function isWorkingPhase(phase: string | undefined): boolean {
+  return phase !== undefined && phase !== 'idle' && phase !== 'aborted';
+}
+
 /**
  * Current cadence plan derived from live collector state. Cheap enough to
  * evaluate on every render tick and timer tick.
@@ -613,23 +626,42 @@ function computeCadence(nowMs: number = Date.now()): CadencePlan {
     rolloutData?.toolActivity?.recentCalls.some(
       (call) => call.status === 'running'
     ) ?? false;
-  const phase = rolloutData?.turnActivity?.phase;
-  const hasActiveTurn =
-    phase !== undefined && phase !== 'idle' && phase !== 'aborted';
+  const hasActiveTurn = isWorkingPhase(rolloutData?.turnActivity?.phase);
   const hasActiveAgent = (cachedAgentActivity?.visibleAgentCount ?? 0) > 0;
-  const lastActivityMs = Math.max(
+  let lastActivityMs = Math.max(
     lastWakeSignalMs,
     rolloutData?.lastEventTime?.getTime() ?? 0,
     rolloutData?.turnActivity?.lastActivityAt.getTime() ?? 0,
     session?.modifiedAt.getTime() ?? 0
   );
 
+  // While the dashboard is up, the sessions on it are the ones being watched,
+  // and none of them is the bound session. Backing off has to account for
+  // their activity or a user watching a busy fleet would see it go slack.
+  //
+  // A session killed mid-turn leaves a rollout whose last phase never becomes
+  // idle, so it reads as working until it ages out. That delays the backoff
+  // but cannot prevent it: such a session leaves the overview's activity
+  // window half an hour after its last write.
+  const overviewVisible = displayMode === 'overview';
+  let overviewWorking = false;
+  if (overviewVisible) {
+    for (const item of overviewCache.get().sessions) {
+      overviewWorking ||= isWorkingPhase(item.turnActivity?.phase);
+      lastActivityMs = Math.max(
+        lastActivityMs,
+        item.lastActivityAt?.getTime() ?? 0
+      );
+    }
+  }
+
   return planCadence({
     nowMs,
     lastActivityMs,
-    hasActiveWork: hasRunningTool || hasActiveTurn || hasActiveAgent,
+    hasActiveWork:
+      hasRunningTool || hasActiveTurn || hasActiveAgent || overviewWorking,
     bound: session !== null,
-    overviewVisible: displayMode === 'overview',
+    overviewVisible,
     gitIsRepo: gitCache.get().isGitRepo,
   });
 }
@@ -727,6 +759,7 @@ function startCollectorTimers(): void {
   let lastGitRefreshMs = 0;
   let lastAgentsRefreshMs = 0;
   let lastRolloutSweepMs = 0;
+  let lastOverviewRefreshMs = 0;
   let lastAccountLimitsRefreshMs = Date.now();
 
   gitRefreshTimer = setInterval(() => {
@@ -756,11 +789,17 @@ function startCollectorTimers(): void {
     });
   }, 5000);
   overviewRefreshTimer = setInterval(() => {
-    if (displayMode === 'overview') {
-      void overviewCache.refresh().catch(() => {
-        // Keep the previous overview snapshot.
-      });
+    if (displayMode !== 'overview') {
+      return;
     }
+    const now = Date.now();
+    if (now - lastOverviewRefreshMs < computeCadence(now).overviewMs) {
+      return;
+    }
+    lastOverviewRefreshMs = now;
+    void overviewCache.refresh().catch(() => {
+      // Keep the previous overview snapshot.
+    });
   }, 1000);
   agentRefreshTimer = setInterval(() => {
     const now = Date.now();

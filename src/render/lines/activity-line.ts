@@ -408,10 +408,14 @@ function isExpiredWindow(window: RateLimitWindow, nowMs: number): boolean {
   );
 }
 
+/** Below this the quota is not a warning; it is still a number worth having. */
+const RATE_LIMIT_PRESSURE_PERCENT = 70;
+
 export function renderRateLimitLine(
   data: HudData,
   width: number = Number.POSITIVE_INFINITY,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  options: { includeBelowPressure?: boolean } = {}
 ): string | null {
   const limits = data.rateLimits;
   const knownWindows = [limits?.primary, limits?.secondary].filter(
@@ -431,25 +435,34 @@ export function renderRateLimitLine(
   const reached =
     Boolean(limits?.rate_limit_reached_type) ||
     limits?.spend_control_reached === true;
-  const pressuredWindows = knownWindows.filter(
+  const liveWindows = knownWindows.filter(
     (window) =>
-      window.used_percent !== undefined &&
-      window.used_percent >= 70 &&
-      !isExpiredWindow(window, nowMs)
+      window.used_percent !== undefined && !isExpiredWindow(window, nowMs)
   );
-  if (!limits || (!reached && pressuredWindows.length === 0)) {
+  // A gauge that only lights up once the tank is nearly empty is not a gauge.
+  // Measured on this account: the weekly window went 1% -> 48% in two days
+  // while the row stayed hidden, and the previous window was last seen at 88%.
+  // The caller decides whether there is a row to spare for the calm reading;
+  // pressure and "reached" still render unconditionally.
+  const shownWindows = options.includeBelowPressure
+    ? liveWindows
+    : liveWindows.filter(
+        (window) =>
+          (window.used_percent ?? 0) >= RATE_LIMIT_PRESSURE_PERCENT
+      );
+  if (!limits || (!reached && shownWindows.length === 0)) {
     return null;
   }
 
   const parts: string[] = [];
-  for (const window of pressuredWindows) {
+  for (const window of shownWindows) {
     const usedPercent = window.used_percent ?? 0;
     const color =
       usedPercent >= 90
         ? theme.error
-        : usedPercent >= 70
+        : usedPercent >= RATE_LIMIT_PRESSURE_PERCENT
           ? theme.warning
-          : theme.info;
+          : colors.dim;
     parts.push(
       color(
         `${formatRateWindow(window.window_minutes)} limit ${Math.round(usedPercent)}%`

@@ -125,38 +125,41 @@ export function renderEnvironmentLine(
   const fits = (parts: string[]): boolean =>
     !Number.isFinite(width) || visualLength(parts.join(separator)) <= width;
 
-  // The critical cells used to be exempt from the width check and were hard
+  // One priority order, most to least worth the space, and the row is the
+  // longest prefix of it that fits.
+  //
+  // The critical cells were once exempt from the width check and hard
   // truncated instead, so a 40-column pane spent a whole row on
-  // "Approval: ask for approval | Sandbox: w…" — a half-spelled security state,
-  // which is worse than a shorter true one. Shed whole cells instead, cheapest
-  // first: the fast-mode default carries no signal, and the sandbox value is
-  // the one the [FULL ACCESS] badge already implies when it is present.
-  const tiers: (string | null)[][] = [
-    [badgePart, approvalPart, sandboxPart, fastPart],
-    [badgePart, approvalPart, sandboxPart],
-    [badgePart, approvalPart],
-    [badgePart],
-  ];
-  let selected: string[] | null = null;
-  for (const tier of tiers) {
-    const parts = tier.filter((part): part is string => Boolean(part));
-    if (parts.length === 0) {
-      continue;
-    }
-    if (fits(parts)) {
-      selected = parts;
+  // "Approval: ask for approval | Sandbox: w…" — a half-spelled security
+  // state, which is worse than a shorter true one. Shedding whole cells fixed
+  // that, but as two separate ladders — critical tiers, then a greedy pack of
+  // the details — the set of visible cells was not monotone in width: at 56
+  // columns the row carried MCP and Hooks, at 64 Hooks vanished in favour of
+  // the longer skills cell, and at 76 it came back; widening from 52 to 53
+  // brought "Fast: off" back and pushed the MCP count out. Dragging the pane
+  // wider is not supposed to remove information. A single prefix also keeps
+  // the order honest: a shorter low-priority cell can no longer take the slot
+  // of one that outranks it just by being shorter.
+  const ordered = [
+    badgePart,
+    approvalPart,
+    sandboxPart,
+    fastPart,
+    ...details,
+  ].filter((part): part is string => Boolean(part));
+
+  const selected: string[] = [];
+  for (const part of ordered) {
+    const candidate = [...selected, part];
+    if (!fits(candidate)) {
       break;
     }
+    selected.push(part);
   }
-  if (!selected) {
+  // Not even the shortest true statement fits: give the row back so the layout
+  // can spend it on something that does.
+  if (selected.length === 0) {
     return null;
-  }
-
-  for (const detail of details) {
-    const candidate = [...selected, detail];
-    if (fits(candidate)) {
-      selected.push(detail);
-    }
   }
 
   return truncateAnsi(selected.join(separator), width);

@@ -124,6 +124,38 @@ const plain = (value) => (value === null ? null : stripAnsi(value));
   );
 }
 
+// ---- widening the pane never removes a cell -------------------------------
+// The detail cells used to be packed greedily: a cell that did not fit was
+// skipped and the next one tried. That made the visible set non-monotone in
+// width — at 56 columns the row carried MCP and Hooks, at 64 Hooks vanished in
+// favour of the longer skills cell, and at 76 it came back. It also let a
+// shorter low-priority cell displace the higher-priority one it outranked on
+// length alone (at 44 columns "Codex skills: 17" appeared and
+// "MCP configured: 6" did not).
+{
+  const cells = (width) => {
+    const line = plain(renderEnvironmentLine(data, width));
+    return new Set(line === null ? [] : line.split(' | '));
+  };
+
+  let previous = cells(20);
+  for (let width = 21; width <= 160; width++) {
+    const current = cells(width);
+    for (const cell of previous) {
+      assert.ok(
+        current.has(cell),
+        `${JSON.stringify(cell)} survives widening to ${width}`
+      );
+    }
+    previous = current;
+  }
+
+  assert.ok(
+    cells(44).has('MCP configured: 6') || cells(44).size <= 2,
+    'a lower-priority cell never takes the slot of one that outranks it'
+  );
+}
+
 // ---- the full-access badge outranks everything it implies -----------------
 {
   const fullAccess = {
