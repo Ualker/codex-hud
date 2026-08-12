@@ -42,7 +42,11 @@ import {
   renderTurnActivityLine,
   renderRateLimitLine,
   renderHealthLine,
+  renderAgentSummaryLine,
+  renderBindingHintLine,
+  renderToolDetailsNotice,
 } from './lines/index.js';
+import { formatCompactAge } from '../utils/format-age.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
   if (!agentActivity) {
@@ -166,64 +170,74 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
  * Row 3: Ctx: ████░░░░ 45% (50K/128K) | Tokens: 12.5K
  * Row 4+: Current activity and agents, then Dir/Session, plan, and tool history
  */
-function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number): string[] {
-  const lines: string[] = [];
-  
-  // Row 1: Identity | Project | Duration
-  const row1Parts: string[] = [];
-  const identityLine = renderIdentityLine(data, layout, { maxWidth: width, showContext: false });
-  row1Parts.push(identityLine);
-  row1Parts.push(renderProjectLine(data));
-  
-  const usageLine = renderUsageLine(data, layout);
-  if (usageLine) {
-    row1Parts.push(usageLine);
-  }
-  
+function renderExpandedLayout(
+  data: HudData,
+  layout: LayoutConfig,
+  width: number,
+  maxLines: number = Number.POSITIVE_INFINITY
+): string[] {
   const separator = layout.showSeparators ? theme.separator(' │ ') : ' ';
-  let row1 = row1Parts.join(separator);
-  if (usageLine && visualLength(row1) > width) {
-    row1 = row1Parts.slice(0, 2).join(separator);
-  }
-  if (visualLength(row1) > width) {
-    const availableForProject = Math.max(0, width - visualLength(identityLine) - visualLength(separator));
-    const projectLine = renderProjectLine(data, { includeFileStats: false, maxWidth: availableForProject });
-    row1 = [identityLine, projectLine].join(separator);
-  }
-  lines.push(row1);
-  
-  // Row 2: Environment line
-  const envLine = renderEnvironmentLine(data, width);
-  if (envLine) {
-    lines.push(envLine);
-  }
 
+  // Row 1: Identity | Project | Duration
+  const identityLine = renderIdentityLine(data, layout, { maxWidth: width, showContext: false });
+  const buildRow1 = (suffix: string | null): string => {
+    const parts: string[] = [identityLine, renderProjectLine(data)];
+    const usageLine = renderUsageLine(data, layout);
+    if (usageLine) {
+      parts.push(usageLine);
+    }
+    if (suffix) {
+      parts.push(suffix);
+    }
+
+    let row = parts.join(separator);
+    if (usageLine && visualLength(row) > width) {
+      row = [...parts.slice(0, 2), ...(suffix ? [suffix] : [])].join(separator);
+    }
+    if (visualLength(row) > width) {
+      const reserved =
+        visualLength(identityLine) +
+        visualLength(separator) +
+        (suffix ? visualLength(suffix) + visualLength(separator) : 0);
+      const projectLine = renderProjectLine(data, {
+        includeFileStats: false,
+        maxWidth: Math.max(0, width - reserved),
+      });
+      row = [identityLine, projectLine, ...(suffix ? [suffix] : [])].join(separator);
+    }
+    return row;
+  };
+
+  const envLine = renderEnvironmentLine(data, width);
   // Collector/protocol warnings outrank ordinary usage details.
   const healthLine = renderHealthLine(data, width);
-  if (healthLine) {
-    lines.push(healthLine);
-  }
 
   // Context capacity is actionable and remains ahead of activity history.
   const tokenLine = renderTokenLine(data, width);
   const rateLimitLine = renderRateLimitLine(data, width);
+  const usageRows: string[] = [];
   if (tokenLine) {
     const combined = rateLimitLine
       ? `${tokenLine} ${colors.dim(icons.pipe)} ${rateLimitLine}`
       : tokenLine;
     if (visualLength(combined) <= width) {
-      lines.push(combined);
+      usageRows.push(combined);
     } else {
-      lines.push(tokenLine);
+      usageRows.push(tokenLine);
       if (rateLimitLine) {
-        lines.push(rateLimitLine);
+        usageRows.push(rateLimitLine);
       }
     }
   } else if (rateLimitLine) {
-    lines.push(rateLimitLine);
+    usageRows.push(rateLimitLine);
   }
 
-  const toolsLine = renderToolsLine(data.toolActivity, width);
+  const toolsLine = renderToolsLine(
+    data.toolActivity,
+    width,
+    Date.now(),
+    data.partialHistory
+  );
   const hasRunningTool = Boolean(
     data.toolActivity?.recentCalls.some(
       (call) => call.status === 'running'
@@ -231,29 +245,96 @@ function renderExpandedLayout(data: HudData, layout: LayoutConfig, width: number
   );
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
   const agentLines = renderAgentLines(data.agentActivity, width);
+  const agentSummaryLine = renderAgentSummaryLine(data.agentActivity, width);
   const planLine = renderTodosLine(data.planProgress, width);
-
-  if (hasRunningTool && toolsLine) {
-    lines.push(toolsLine);
-  } else if (turnLine) {
-    lines.push(turnLine);
-  }
-
-  lines.push(...agentLines);
-  if (planLine) {
-    lines.push(planLine);
-  }
-  if (!hasRunningTool && toolsLine) {
-    lines.push(toolsLine);
-  }
-  // Static identity (Dir/Session/CLI) never changes mid-session; keep it
-  // last so small panes hide it before live plan/tool state.
   const sessionLine = renderSessionDetailLine(data, width);
-  if (sessionLine) {
-    lines.push(sessionLine);
+  // Nothing bound yet: say so instead of rendering three rows and letting the
+  // blank remainder read as a broken HUD.
+  const bindingHintLine = renderBindingHintLine(data, width);
+  // Receipt for the `t` hotkey; it stands in for the tool row that the `off`
+  // mode removes, which is the case with no other on-screen evidence.
+  const toolDetailsNotice = toolsLine ? null : renderToolDetailsNotice(width);
+
+  const fullAccess =
+    (data.session?.sandboxMode ?? data.config.sandbox_mode) ===
+    'danger-full-access';
+
+  interface Compression {
+    dropSession?: boolean;
+    collapseAgents?: boolean;
+    dropEnv?: boolean;
   }
 
-  return lines;
+  const assemble = (compression: Compression): string[] => {
+    const lines: string[] = [];
+    // The environment row is static for the whole session, so it is the first
+    // whole category to go — but it is also where the sandbox badge lives, so
+    // that badge moves up to row 1 rather than disappearing with it.
+    const keepEnv = Boolean(envLine) && !compression.dropEnv;
+    lines.push(
+      buildRow1(
+        !keepEnv && fullAccess ? theme.error('[FULL ACCESS]') : null
+      )
+    );
+    if (keepEnv && envLine) {
+      lines.push(envLine);
+    }
+    if (healthLine) {
+      lines.push(healthLine);
+    }
+    lines.push(...usageRows);
+
+    if (hasRunningTool && toolsLine) {
+      lines.push(toolsLine);
+    } else if (turnLine) {
+      lines.push(turnLine);
+    } else if (bindingHintLine) {
+      lines.push(bindingHintLine);
+    }
+
+    if (compression.collapseAgents && agentSummaryLine) {
+      lines.push(agentSummaryLine);
+    } else {
+      lines.push(...agentLines);
+    }
+    if (planLine) {
+      lines.push(planLine);
+    }
+    if (!hasRunningTool && toolsLine) {
+      lines.push(toolsLine);
+    } else if (toolDetailsNotice) {
+      lines.push(toolDetailsNotice);
+    }
+    // Static identity (Dir/Session/CLI) never changes mid-session; keep it
+    // last so small panes hide it before live plan/tool state.
+    if (sessionLine && !compression.dropSession) {
+      lines.push(sessionLine);
+    }
+
+    return lines;
+  };
+
+  // Degrade by dropping whole low-signal rows rather than letting the viewport
+  // clip the tail, which used to hide the plan row and even a running agent
+  // while keeping a static config row that had not changed all session.
+  const steps: Compression[] = [
+    {},
+    { dropSession: true },
+    { dropSession: true, collapseAgents: true },
+    { dropSession: true, collapseAgents: true, dropEnv: true },
+  ];
+
+  let rendered = assemble(steps[0]);
+  if (!Number.isFinite(maxLines)) {
+    return rendered;
+  }
+  for (const step of steps) {
+    rendered = assemble(step);
+    if (rendered.length <= maxLines) {
+      break;
+    }
+  }
+  return rendered;
 }
 
 /**
@@ -271,22 +352,16 @@ function renderOverviewLayout(
   }
 
   const now = Date.now();
-  const formatAge = (timestamp: Date | undefined): string => {
-    if (!timestamp) {
-      return '--';
-    }
-    const seconds = Math.max(
-      0,
-      Math.floor((now - timestamp.getTime()) / 1000)
-    );
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    return `${Math.floor(minutes / 60)}h`;
-  };
+  const formatAge = (timestamp: Date | undefined): string =>
+    timestamp ? formatCompactAge(now - timestamp.getTime()) : '--';
   const phaseLabel = (
     session: SessionOverviewItem
   ): string => {
+    // An open session that has never run a turn is not unknown; Codex simply
+    // has not written a rollout for it yet.
+    if (session.neverStarted) {
+      return colors.dim('Ready');
+    }
     const phase = session.turnActivity?.phase;
     switch (phase) {
       case 'running-tool':
@@ -321,17 +396,34 @@ function renderOverviewLayout(
     ...phaseLabels.map((label) => visualLength(label))
   );
 
+  // Sessions without context data (never started, or a rollout that could not
+  // be parsed) must still occupy the gauge column, or every column after them
+  // shifts left and the table stops scanning as a table.
+  const ctxDisplays = overview.sessions.map((session) => {
+    const ctx = session.contextUsage;
+    return ctx
+      ? `${remainingBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
+      : colors.dim('--');
+  });
+  const ctxColumnWidth = Math.max(
+    ...ctxDisplays.map((display) => visualLength(display))
+  );
+  const ageDisplays = overview.sessions.map((session) =>
+    colors.dim(
+      session.lastActivityAt ? `${formatAge(session.lastActivityAt)} ago` : '--'
+    )
+  );
+  const ageColumnWidth = Math.max(
+    ...ageDisplays.map((display) => visualLength(display))
+  );
+
   return overview.sessions.map((session, index) => {
     const shortId = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
-    const ctx = session.contextUsage;
-    const ctxDisplay = ctx
-      ? `${remainingBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
-      : colors.dim('ctx --');
     const parts = [
       padEnd(theme.projectName(projectNames[index]), projectColumnWidth),
       padEnd(phaseLabels[index], phaseColumnWidth),
-      ctxDisplay,
-      colors.dim(`${formatAge(session.lastActivityAt)} ago`),
+      padEnd(ctxDisplays[index], ctxColumnWidth),
+      padEnd(ageDisplays[index], ageColumnWidth),
       colors.dim(shortId),
     ];
     // Mark the row this HUD is bound to; without it the only clue is the
@@ -361,6 +453,11 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   if (layout.mode === 'compact') {
     return renderCompactLayout(data, layout, options.width);
   }
-  
-  return renderExpandedLayout(data, layout, options.width);
+
+  return renderExpandedLayout(
+    data,
+    layout,
+    options.width,
+    options.maxLines ?? Number.POSITIVE_INFINITY
+  );
 }

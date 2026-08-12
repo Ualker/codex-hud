@@ -21,6 +21,11 @@ import {
   SlowProjectWorkerClient,
   type SlowProjectSnapshot,
 } from './collectors/slow-project-client.js';
+import {
+  listOpenHudBindings,
+  publishHudBinding,
+  type OpenHudBinding,
+} from './collectors/open-huds.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import {
@@ -33,6 +38,7 @@ import {
   renderToStdout,
   cleanupRenderer,
   invalidateRenderedFrame,
+  revealStatusHint,
 } from './render/index.js';
 import { cycleToolDetailsMode } from './render/lines/activity-line.js';
 import { logHudError } from './utils/hud-log.js';
@@ -59,6 +65,7 @@ const RENDER_ERROR_RETRY_INTERVAL = 1500;
 const GIT_CACHE_TTL_MS = 5000;
 const PROJECT_CACHE_TTL_MS = 60_000;
 const OVERVIEW_CACHE_TTL_MS = 5000;
+const OVERVIEW_ACTIVE_WINDOW_SECONDS = 30 * 60;
 
 // Current working directory for the HUD
 const HUD_CWD = process.env.CODEX_HUD_CWD || process.cwd();
@@ -197,8 +204,21 @@ function recordCollectorError(
   };
 }
 
+const HUD_TMUX_SESSION = process.env.CODEX_HUD_TMUX_SESSION || undefined;
+
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
+  // Let other HUDs' overviews see this binding. A session bound before its
+  // first turn has no rollout yet, which is exactly the case file timestamps
+  // cannot represent.
+  void publishHudBinding(
+    HUD_TMUX_SESSION,
+    session?.sessionId ?? null,
+    rolloutSession?.path ?? null,
+    HUD_CWD
+  ).catch(() => {
+    // The overview degrades to the mtime scan; never fail a binding on this.
+  });
   agentActivityCollector.setRootSession(rolloutSession);
   cachedAgentActivity = undefined;
   delete collectorHealth.rollout;
@@ -282,6 +302,14 @@ interface OverviewParserEntry {
   parser: RolloutParser;
 }
 
+function statSafely(filePath: string): fs.Stats | null {
+  try {
+    return fs.statSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
 // Sessions drop out of the 60s active window and come back (long tool runs,
 // brief idles). Parsers are kept in a bounded LRU instead of being evicted
 // immediately, so re-entry resumes incrementally rather than re-reading the
@@ -290,9 +318,47 @@ const OVERVIEW_PARSER_LIMIT = 20;
 const overviewParsers = new Map<string, OverviewParserEntry>();
 
 async function refreshOverviewData(): Promise<SessionOverview> {
-  // A 60-second activity window can only cross today's midnight, so scanning
-  // today and yesterday is sufficient and avoids walking eight date folders.
-  const activeSessions = findActiveRollouts(60, undefined, 1);
+  // Two sources, because neither is sufficient alone.
+  //
+  // The rollout scan finds sessions being worked right now, including ones
+  // this machine's HUDs are not bound to. But it defines "active" as "file
+  // written recently", and measured live that surfaced neither of two open
+  // Codex sessions: one had not written since a resume five days earlier, the
+  // other had no rollout at all because Codex creates one lazily on the first
+  // turn. Every window from one minute to twelve hours returned zero rows.
+  //
+  // The tmux scan finds sessions that are genuinely open, which is what the
+  // dashboard is for, but only those running under a codex-hud pane.
+  const [scanned, openBindings] = await Promise.all([
+    Promise.resolve(
+      findActiveRollouts(OVERVIEW_ACTIVE_WINDOW_SECONDS, undefined, 1)
+    ),
+    listOpenHudBindings(),
+  ]);
+
+  const activeSessions = [...scanned];
+  const scannedIds = new Set(scanned.map((session) => session.sessionId));
+  const boundWithoutRollout: OpenHudBinding[] = [];
+  for (const binding of openBindings) {
+    if (scannedIds.has(binding.sessionId)) {
+      continue;
+    }
+    const stats = binding.rolloutPath
+      ? statSafely(binding.rolloutPath)
+      : null;
+    if (!binding.rolloutPath || !stats) {
+      boundWithoutRollout.push(binding);
+      continue;
+    }
+    activeSessions.push({
+      path: binding.rolloutPath,
+      sessionId: binding.sessionId,
+      timestamp: stats.mtime,
+      size: stats.size,
+      modifiedAt: stats.mtime,
+    });
+  }
+
   const activePaths = new Set(activeSessions.map((session) => session.path));
   const sessions: SessionOverviewItem[] = [];
 
@@ -337,6 +403,18 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       lastActivityAt:
         result.lastEventTime ?? result.turnActivity?.lastActivityAt,
       contextUsage,
+    });
+  }
+
+  // Sessions that are open but have never written a rollout. There is nothing
+  // to parse, so the row carries identity only; the phase column renders these
+  // as "Unknown" and the sort keeps them below sessions doing real work.
+  for (const binding of boundWithoutRollout) {
+    sessions.push({
+      id: binding.sessionId,
+      cwd: binding.cwd,
+      projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
+      neverStarted: true,
     });
   }
 
@@ -519,6 +597,7 @@ function collectData(): HudData {
     rateLimits: rolloutData?.rateLimits ?? undefined,
     turnActivity: rolloutData?.turnActivity ?? undefined,
     protocolHealth: rolloutData?.protocolHealth,
+    partialHistory: rolloutData?.partialHistory,
     contextUsage,
     displayMode,
   };
@@ -704,17 +783,20 @@ function setupKeyListener(): void {
       void shutdown();
       return;
     }
+    // Any interaction with the pane re-arms the hotkey hint.
+    revealStatusHint();
     if (TOGGLE_KEYS.some((key) => input.includes(key))) {
       toggleDisplayMode();
       renderNow();
       return;
     }
     // `t` cycles tool details targets -> full -> off at runtime; the
-    // environment variable only seeds the initial mode.
-    if (input.includes('t') || input.includes('T')) {
+    // environment variable only seeds the initial mode. Matched exactly: a
+    // substring test fired on any paste or escape sequence containing a "t".
+    if (input === 't' || input === 'T') {
       cycleToolDetailsMode();
-      renderNow();
     }
+    renderNow();
   });
 }
 

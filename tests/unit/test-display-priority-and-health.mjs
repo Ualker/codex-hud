@@ -122,15 +122,32 @@ const turn = stripAnsi(renderTurnActivityLine(data.turnActivity, 80, now));
 assert.match(turn, /Thinking 42s/);
 assert.match(turn, /event 8s ago/);
 
-const rate = stripAnsi(renderRateLimitLine(data, 80));
+const rate = stripAnsi(renderRateLimitLine(data, 80, now));
 assert.match(rate, /5h limit 82%/);
 assert.match(rate, /7d limit 91%/);
 assert.match(rate, /resets/);
 
+// A quota snapshot only describes the window it was written in. Rollouts keep
+// replaying their last token_count forever, so an idle or resumed session used
+// to advertise a percentage from a window that had already reset — observed
+// live as "7d limit 84% | resets 08/05" a week after that date.
+assert.equal(
+  renderRateLimitLine(data, 80, now + 8 * 24 * 3600 * 1000),
+  null,
+  'a snapshot whose windows have all reset states nothing about the current one'
+);
+const partiallyExpired = stripAnsi(
+  renderRateLimitLine(data, 80, now + 2 * 3600 * 1000)
+);
+assert.doesNotMatch(partiallyExpired, /5h limit/, 'the reset window drops out');
+assert.match(partiallyExpired, /7d limit 91%/, 'the live window survives');
+
 const health = stripAnsi(renderHealthLine(data, 100, now));
-assert.match(health, /git stale 18s/);
-assert.match(health, /rollout error/);
-assert.match(health, /protocol unknown 1/);
+// Collector keys are internal names; the health row is the only place a user
+// meets them, so each reads as a phrase rather than a status enum.
+assert.match(health, /git status 18s old/);
+assert.match(health, /session log unavailable/);
+assert.match(health, /1 unrecognized Codex record\b/);
 assert.doesNotMatch(health, /private details/);
 
 const overview = renderHud(

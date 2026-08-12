@@ -21,6 +21,18 @@ export interface JsonlTailOptions {
    * error (callers show it and back off) instead of ballooning the process.
    */
   maxBytes?: number;
+  /**
+   * Stop at this absolute byte offset instead of end-of-file. Lets a caller
+   * read a bounded head of a large file without materializing the rest.
+   */
+  toOffset?: number;
+  /**
+   * Treat `fromOffset` as an arbitrary byte position rather than a known line
+   * boundary: bytes up to the first newline are discarded instead of being
+   * parsed as a truncated record. Required for tail reads, which would
+   * otherwise report the leading fragment as a malformed line.
+   */
+  alignToLineStart?: boolean;
 }
 
 export async function readCompleteJsonl<T>(
@@ -38,17 +50,21 @@ export async function readCompleteJsonl<T>(
     const { size: fileSize } = await handle.stat();
     const truncated = fileSize < fromOffset;
     const startOffset = truncated ? 0 : fromOffset;
+    const endOffset =
+      options.toOffset !== undefined
+        ? Math.max(startOffset, Math.min(fileSize, options.toOffset))
+        : fileSize;
     if (
       options.maxBytes !== undefined &&
-      fileSize - startOffset > options.maxBytes
+      endOffset - startOffset > options.maxBytes
     ) {
       throw new Error(
-        `JSONL batch of ${fileSize - startOffset} bytes exceeds the ${options.maxBytes}-byte limit: ${filePath}`
+        `JSONL batch of ${endOffset - startOffset} bytes exceeds the ${options.maxBytes}-byte limit: ${filePath}`
       );
     }
     // allocUnsafe skips zero-filling; the read loop below either fills every
     // byte or throws, so uninitialized memory is never observed.
-    const bytes = Buffer.allocUnsafe(fileSize - startOffset);
+    const bytes = Buffer.allocUnsafe(endOffset - startOffset);
 
     let totalBytesRead = 0;
     while (totalBytesRead < bytes.byteLength) {
@@ -76,7 +92,13 @@ export async function readCompleteJsonl<T>(
       };
     }
 
-    const committed = bytes.subarray(0, finalNewlineIndex + 1);
+    // A tail read starts mid-record; those leading bytes belong to a line
+    // whose beginning was never read, so they are dropped rather than parsed.
+    const scanStart =
+      options.alignToLineStart && startOffset > 0
+        ? bytes.indexOf(0x0a) + 1
+        : 0;
+    const committed = bytes.subarray(scanStart, finalNewlineIndex + 1);
     const records: T[] = [];
     let malformedLines = 0;
 
@@ -99,7 +121,9 @@ export async function readCompleteJsonl<T>(
 
     return {
       records,
-      nextOffset: startOffset + committed.byteLength,
+      // Derived from the absolute final newline so a discarded leading
+      // fragment cannot shift the committed cursor.
+      nextOffset: startOffset + finalNewlineIndex + 1,
       truncated,
       malformedLines,
     };

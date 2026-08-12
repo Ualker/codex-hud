@@ -170,6 +170,60 @@ try {
     assert.equal(unbounded.records.length, 2, 'no limit without maxBytes');
   }
 
+  {
+    // toOffset reads a bounded head instead of the whole file, and maxBytes
+    // is then measured against that bounded span rather than the file size.
+    const filePath = path.join(testRoot, 'head.jsonl');
+    writeBytes(filePath, '{"a":1}\n{"b":2}\n{"c":3}\n');
+
+    const head = await readCompleteJsonl(filePath, 0, { toOffset: 16 });
+    assert.deepEqual(head.records, [{ a: 1 }, { b: 2 }]);
+    assert.equal(head.nextOffset, 16);
+    assert.equal(head.truncated, false, 'a bounded head is not a truncation');
+
+    // A toOffset past EOF simply reads to EOF.
+    const clamped = await readCompleteJsonl(filePath, 0, { toOffset: 9999 });
+    assert.equal(clamped.records.length, 3);
+
+    await assert.doesNotReject(
+      readCompleteJsonl(filePath, 0, { toOffset: 16, maxBytes: 16 })
+    );
+  }
+
+  {
+    // A tail read starts mid-record. Those bytes belong to a line whose
+    // beginning was never read, so they are dropped rather than counted as
+    // malformed — and the committed cursor must still be absolute.
+    const filePath = path.join(testRoot, 'aligned.jsonl');
+    writeBytes(filePath, '{"first":1}\n{"second":2}\n{"third":3}\n');
+    const fileSize = fs.statSync(filePath).size;
+
+    const midRecord = 4; // inside the first line
+    const aligned = await readCompleteJsonl(filePath, midRecord, {
+      alignToLineStart: true,
+    });
+    assert.deepEqual(aligned.records, [{ second: 2 }, { third: 3 }]);
+    assert.equal(aligned.malformedLines, 0, 'the leading fragment is not malformed');
+    assert.equal(
+      aligned.nextOffset,
+      fileSize,
+      'the committed cursor stays absolute despite the discarded fragment'
+    );
+
+    // Without the flag the fragment is a committed malformed line, which is
+    // why the option exists.
+    const unaligned = await readCompleteJsonl(filePath, midRecord, {
+      skipMalformed: true,
+    });
+    assert.equal(unaligned.malformedLines, 1);
+
+    // Offset 0 never discards anything, flag or not.
+    const fromStart = await readCompleteJsonl(filePath, 0, {
+      alignToLineStart: true,
+    });
+    assert.equal(fromStart.records.length, 3);
+  }
+
   console.log('test-agent-jsonl-tail: PASS');
 } finally {
   removeTestRoot(testRoot);

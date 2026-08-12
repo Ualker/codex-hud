@@ -49,6 +49,12 @@ export interface RolloutParseResult {
   lastToolActivityTime: Date | null;
   lastAssistantMessageTime: Date | null;
   lastEventTime: Date | null;
+  /**
+   * The first pass skipped the middle of a large rollout, so cumulative
+   * counters (tool totals, compactions) are lower bounds. Sticky: once set it
+   * survives every later incremental parse.
+   */
+  partialHistory: boolean;
 }
 
 export interface RolloutParseOutput {
@@ -928,6 +934,99 @@ function parseToolCompletion(
 }
 
 /**
+ * Enough to cover the first line (`session_meta`) with room to spare.
+ */
+const INITIAL_HEAD_BYTES = 64 * 1024;
+/**
+ * How much of a large rollout's end is read on the first pass. Everything the
+ * HUD renders live — turn state, plan, token counts, recent calls — is written
+ * at the end, while the middle is transcript the HUD never displays.
+ */
+const INITIAL_TAIL_BYTES = 2 * 1024 * 1024;
+/**
+ * Backstop for incremental reads. A rollout that grows by this much between
+ * two passes is pathological; surfacing it beats materializing it.
+ */
+const MAX_INCREMENTAL_READ_BYTES = 64 * 1024 * 1024;
+
+interface RolloutBatch {
+  records: RolloutLine[];
+  nextOffset: number;
+  truncated: boolean;
+  malformedLines: number;
+  partialHistory: boolean;
+}
+
+function hasTokenCount(records: readonly RolloutLine[]): boolean {
+  return records.some(
+    (record) =>
+      record?.type === 'event_msg' &&
+      (record.payload as EventMsgPayload | undefined)?.type === 'token_count'
+  );
+}
+
+/**
+ * Read the span this pass needs.
+ *
+ * Reading a whole rollout cost 292ms of blocked event loop and a 124MB RSS
+ * spike on a measured 11.2MB file — paid on every HUD start, rebind, `--reload`
+ * and first entry into the overview, once per session. The first pass over a
+ * large file therefore reads a bounded head and tail instead.
+ *
+ * Only `session_meta` is kept from the head. Replaying arbitrary head records
+ * would strand tool calls whose completions fell in the skipped middle, leaving
+ * them "running" forever and pinning the turn phase.
+ */
+async function readRolloutBatch(
+  rolloutPath: string,
+  fromOffset: number
+): Promise<RolloutBatch> {
+  const readWholeSpan = async (offset: number): Promise<RolloutBatch> => ({
+    ...(await readCompleteJsonl<RolloutLine>(rolloutPath, offset, {
+      skipMalformed: true,
+      maxBytes: MAX_INCREMENTAL_READ_BYTES,
+    })),
+    partialHistory: false,
+  });
+
+  const { size } = await fs.promises.stat(rolloutPath);
+  if (fromOffset !== 0 || size <= INITIAL_HEAD_BYTES + INITIAL_TAIL_BYTES) {
+    return readWholeSpan(fromOffset);
+  }
+
+  const [head, tail] = await Promise.all([
+    readCompleteJsonl<RolloutLine>(rolloutPath, 0, {
+      skipMalformed: true,
+      toOffset: INITIAL_HEAD_BYTES,
+    }),
+    readCompleteJsonl<RolloutLine>(rolloutPath, size - INITIAL_TAIL_BYTES, {
+      skipMalformed: true,
+      alignToLineStart: true,
+    }),
+  ]);
+
+  // A tail this size normally spans many turns, but a single turn with an
+  // enormous tool output can fill it alone and leave no token_count behind.
+  // Context capacity is the HUD's most-read cell, so pay for the whole file
+  // rather than render a bound session with no capacity information.
+  if (!hasTokenCount(tail.records)) {
+    return readWholeSpan(0);
+  }
+
+  return {
+    records: [
+      ...head.records.filter((record) => record?.type === 'session_meta'),
+      ...tail.records,
+    ],
+    nextOffset: tail.nextOffset,
+    // The file did not shrink; this span was bounded deliberately.
+    truncated: false,
+    malformedLines: tail.malformedLines,
+    partialHistory: true,
+  };
+}
+
+/**
  * Parse a single rollout file incrementally
  * Supports reading from a specific byte offset for incremental updates
  */
@@ -964,6 +1063,7 @@ export async function parseRolloutFile(
   let lastToolActivityTime: Date | null = null;
   let lastAssistantMessageTime: Date | null = null;
   let lastEventTime: Date | null = null;
+  let partialHistory = false;
   const protocolHealth: ProtocolHealth = {
     unknownTopLevelTypes: {},
     unknownResponseTypes: {},
@@ -986,6 +1086,7 @@ export async function parseRolloutFile(
     lastToolActivityTime,
     lastAssistantMessageTime,
     lastEventTime,
+    partialHistory,
   });
 
   if (!fs.existsSync(rolloutPath)) {
@@ -1001,9 +1102,8 @@ export async function parseRolloutFile(
   // Commit only bytes through the final newline. A JSON object that is still
   // being written remains unread until a later pass, instead of being skipped
   // permanently by advancing the cursor to EOF.
-  const batch = await readCompleteJsonl<RolloutLine>(rolloutPath, fromOffset, {
-    skipMalformed: true,
-  });
+  const batch = await readRolloutBatch(rolloutPath, fromOffset);
+  partialHistory = batch.partialHistory;
   protocolHealth.malformedLines += batch.malformedLines;
   if (batch.truncated) {
     runningCalls.clear();
@@ -1625,6 +1725,10 @@ export class RolloutParser {
       result.planProgress ??= this.cachedResult.planProgress;
       result.rateLimits ??= this.cachedResult.rateLimits;
       result.turnActivity ??= this.cachedResult.turnActivity;
+
+      // Sticky: a bounded first read keeps every later incremental result
+      // honest about its lower-bound counters.
+      result.partialHistory ||= this.cachedResult.partialHistory;
 
       result.lastToolActivityTime ??=
         this.cachedResult.lastToolActivityTime;
