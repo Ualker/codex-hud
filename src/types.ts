@@ -120,6 +120,12 @@ export interface SessionOverviewItem {
   lastActivityAt?: Date;
   activeAgentCount?: number;
   contextUsage?: ContextUsage;
+  /**
+   * The session is open but has never run a turn, so Codex has not created a
+   * rollout for it yet. Distinguishes "nothing to report" from "we could not
+   * read what happened", which the phase column would otherwise merge.
+   */
+  neverStarted?: boolean;
 }
 
 export interface SessionOverview {
@@ -551,6 +557,12 @@ export interface HudData {
   turnActivity?: TurnActivity;
   protocolHealth?: ProtocolHealth;
   collectorHealth?: CollectorHealthMap;
+  /**
+   * The rollout was large enough that its middle was skipped on the first
+   * read, so cumulative counters (tool totals, compactions) are lower bounds
+   * and must be rendered as such.
+   */
+  partialHistory?: boolean;
 
   // Display mode and overview data
   displayMode?: HudDisplayMode;
@@ -567,6 +579,11 @@ export interface RenderOptions {
   width: number;
   showDetails: boolean;
   layout?: LayoutConfig;
+  /**
+   * Rows the pane can show. The expanded layout compresses low-signal rows to
+   * fit instead of letting the viewport clip whatever happened to land last.
+   */
+  maxLines?: number;
 }
 
 export const DEFAULT_LAYOUT: LayoutConfig = {

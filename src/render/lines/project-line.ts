@@ -5,7 +5,7 @@
  */
 
 import type { HudData, GitStatus } from '../../types.js';
-import { theme, icons, colors, sanitizeTerminalText, visualLength, truncate } from '../colors.js';
+import { theme, icons, colors, sanitizeTerminalText, truncateAnsi, visualLength, truncate } from '../colors.js';
 import { osc8Link, fileUrl } from '../../utils/hyperlinks.js';
 
 /**
@@ -106,8 +106,11 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
     return line;
   }
 
+  // Every remaining path must honour maxWidth. Returning an untruncated git
+  // segment pushed row 1 past the pane width and left the outer clamp to cut
+  // it blind, losing the trailing ahead/behind markers mid-token.
   if (maxWidth <= 0) {
-    return gitDisplay || '';
+    return '';
   }
 
   // Retry without file stats if present.
@@ -122,12 +125,15 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
     const gitSegment = ` ${gitDisplay}`;
     const availableForProject = maxWidth - visualLength(gitSegment);
     if (availableForProject <= 0) {
-      return gitDisplay;
+      return truncateAnsi(gitDisplay, maxWidth);
     }
     const truncatedName = truncate(projectName, availableForProject);
-    return [linkProject(theme.projectName(truncatedName)), gitDisplay].join(' ');
+    return truncateAnsi(
+      [linkProject(theme.projectName(truncatedName)), gitDisplay].join(' '),
+      maxWidth
+    );
   }
 
   const truncatedName = truncate(projectName, maxWidth);
-  return linkProject(theme.projectName(truncatedName));
+  return truncateAnsi(linkProject(theme.projectName(truncatedName)), maxWidth);
 }

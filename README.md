@@ -29,10 +29,11 @@ Because you're flying blind without one. Codex HUD gives you a persistent dashbo
 **Q: I run multiple Codex sessions. Can I monitor them all?**
 
 Yes. Click the HUD pane and press `Ctrl+T`, or run
-`codex-hud --toggle-mode` from the main pane. Overview sorts sessions by
-project, live phase, context remaining, and recent activity, and marks the
-session this HUD is bound to with `▸`. While the HUD pane is focused, `t`
-cycles the tool-detail level (`targets` → `full` → `off`).
+`codex-hud --toggle-mode` from the main pane. Overview lists sessions worked in
+the last 30 minutes — not only those mid-turn at that instant — sorted by live
+phase, context remaining, and recent activity, and marks the session this HUD is
+bound to with `▸`. While the HUD pane is focused, `t` cycles the tool-detail
+level (`targets` → `full` → `off`) and briefly confirms the new level.
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -89,22 +90,32 @@ After the first install, these are available in your shell:
 ```text
 [gpt-5.6-sol high] my-project git:(main *) up 12m
 [FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
+Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K) | Total: 1.2M
 ◐ Thinking 42s · event 8s ago
 ◐ exec_command: npm test @my-project 1.4s | ✓ read_file ×3
 ```
 
 The context gauge is a fuel bar: filled cells show what remains, matching the
-`% left` label, and the color reflects pressure (green → yellow → red).
+`% left` label, and the color reflects pressure (green → yellow → red). `Total`
+is the session's cumulative token spend, next to the per-turn count.
+
+Before a Codex session is bound the HUD says `○ Waiting for a Codex session…`
+rather than rendering a short frame that could be mistaken for a failure.
 
 | Line | Shows |
 |------|-------|
 | **Header** | Model + effort, project, git branch, and session duration |
 | **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources |
-| **Capacity** | Context percent/tokens remaining, input/cache/output, compact count; rate-limit reset details appear at 70% usage |
-| **Health** | Stale/error state for Git, rollout, agents, environment/config, and overview; unknown protocol-event count |
+| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; rate-limit reset details appear at 70% usage, and a quota window whose reset time has already passed is dropped rather than replayed |
+| **Health** | Plain-language state for Git, session log, agents, project scan, config, and overview, plus counts of Codex records this build does not recognize |
 | **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |
 | **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible |
+
+When the pane cannot show every row, the layout drops whole low-signal rows in
+order — session details first, then several agent rows collapse into one
+`◐ N agents` count, then the static environment row (its `[FULL ACCESS]` badge
+moves up to the header) — so live plan and agent state survive instead of
+whatever happened to land last.
 
 Tool activity stays on one physical line by default. With the default
 `CODEX_HUD_TOOL_DETAILS=targets`, execution tools show only a privacy-preserving

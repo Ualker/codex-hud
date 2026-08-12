@@ -33,9 +33,10 @@ Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu W
 **Q: 我同时跑多个 Codex session，能一起监控吗？**
 
 可以。先点击 HUD pane，再按 `Ctrl+T`；也可以在主 pane 执行
-`codex-hud --toggle-mode`。概览按项目、当前阶段、Context 剩余量和最近活动排序，
-并用 `▸` 标出当前 HUD 绑定的 session。HUD pane 处于焦点时，按 `t` 可循环切换
-工具详情级别（`targets` → `full` → `off`）。
+`codex-hud --toggle-mode`。概览列出最近 30 分钟内有活动的 session——不只是恰好
+正在执行回合的那些——按当前阶段、Context 剩余量和最近活动排序，并用 `▸` 标出当前
+HUD 绑定的 session。HUD pane 处于焦点时，按 `t` 可循环切换工具详情级别
+（`targets` → `full` → `off`），并短暂显示切换后的级别。
 
 ![Codex HUD — 多 Session 概览](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -92,21 +93,25 @@ codex
 ```text
 [gpt-5.6-sol high] my-project git:(main *) up 12m
 [FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K)
+Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K) | Total: 1.2M
 ◐ Thinking 42s · event 8s ago
 ◐ exec_command: npm test @my-project 1.4s | ✓ read_file ×3
 ```
 
-上下文进度条是"油量表"语义：实心格表示剩余量，与旁边的 `% left` 文字一致；颜色反映压力（绿 → 黄 → 红）。
+上下文进度条是"油量表"语义：实心格表示剩余量，与旁边的 `% left` 文字一致；颜色反映压力（绿 → 黄 → 红）。`Total` 是本 session 的累计 token 消耗，与单轮用量并列。
+
+尚未绑定 Codex session 时，HUD 显示 `○ Waiting for a Codex session…`，而不是渲染一个可能被误认为故障的半截画面。
 
 | 行 | 内容 |
 |----|------|
 | **标题** | 模型 + effort、项目名、git 分支、会话时长 |
 | **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先（徽章已蕴含的单元不再重复显示，默认态 `Fast: off` 弱化为 dim）；随后是 MCP、Codex skill、hook、AGENTS.md 和配置来源 |
-| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、compact 次数；限额使用达到 70% 后显示 reset 信息 |
-| **健康** | Git、rollout、agent、环境/配置和概览采集的 stale/error；未知协议事件计数 |
+| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、累计消耗、compact 次数；限额使用达到 70% 后显示 reset 信息，reset 时刻已过的限额快照直接不显示，不再重放 |
+| **健康** | Git、会话日志、agent、项目扫描、配置和概览采集的状态（自然语言描述），以及本版本无法识别的 Codex 记录条数 |
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent |
 | **Session** | 工作目录、Session ID、CLI 版本；排在计划和工具历史之后，小 pane 优先保留动态信息 |
+
+pane 放不下全部行时，版面按顺序整行舍弃低信号内容——先是 Session 详情行，然后多条 agent 行折叠成一行 `◐ N agents` 计数，最后才是静态环境行（其 `[FULL ACCESS]` 徽章上移到标题行）——保证计划和 agent 等动态状态存活，而不是截断时恰好落在末尾的内容被丢弃。
 
 工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具只显示保护隐私的**命令头部**——程序名加一个已知子命令或脚本名（如 `npm test`、`sed && rg`），不含任何参数、路径或标志；文件类工具只显示脱敏后的目标。`full` 才显示已脱敏、限长后的完整命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
 

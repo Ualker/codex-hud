@@ -1,0 +1,206 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const modulePath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'dist',
+  'collectors',
+  'open-huds.js'
+);
+
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-open-huds-'));
+
+/**
+ * Run the collector with a stub `tmux` first on PATH, so the test exercises
+ * the parsing and failure handling rather than a live tmux server.
+ */
+function withStubTmux(script, body) {
+  const binDir = fs.mkdtempSync(path.join(tempRoot, 'bin-'));
+  const stub = path.join(binDir, 'tmux');
+  fs.writeFileSync(stub, `#!/bin/sh\n${script}\n`, 'utf8');
+  fs.chmodSync(stub, 0o755);
+
+  const result = spawnSync(process.execPath, ['-e', body], {
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+/** A stub that emits the given lines verbatim. */
+function emitStub(lines) {
+  const file = path.join(fs.mkdtempSync(path.join(tempRoot, 'out-')), 'stdout');
+  fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+  return `cat ${file}`;
+}
+
+const encode = (payload) =>
+  Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+
+const listBody = `
+  const { listOpenHudBindings } = await import(${JSON.stringify(modulePath)});
+  process.stdout.write(JSON.stringify(await listOpenHudBindings()));
+`;
+
+try {
+  {
+    // A HUD bound before its first turn has no rollout path. That is exactly
+    // the case no file-timestamp scan can represent, so it must survive.
+    const parsed = JSON.parse(
+      withStubTmux(
+        emitStub([
+          encode({
+            tmuxSession: 'codex-hud-a',
+            sessionId: 'session-a',
+            rolloutPath: '/tmp/a.jsonl',
+            cwd: '/work/a',
+          }),
+          encode({
+            tmuxSession: 'codex-hud-b',
+            sessionId: 'session-b',
+            cwd: '/work/b',
+          }),
+          '', // a tmux session with no HUD
+        ]),
+        listBody
+      )
+    );
+
+    assert.equal(parsed.length, 2, 'sessions with no HUD binding are skipped');
+    assert.deepEqual(parsed[0], {
+      tmuxSession: 'codex-hud-a',
+      sessionId: 'session-a',
+      rolloutPath: '/tmp/a.jsonl',
+      cwd: '/work/a',
+    });
+    assert.deepEqual(
+      parsed[1],
+      { tmuxSession: 'codex-hud-b', sessionId: 'session-b', cwd: '/work/b' },
+      'a bound session with no rollout keeps its identity'
+    );
+  }
+
+  {
+    // Two panes can bind the same Codex session; the dashboard lists it once.
+    const parsed = JSON.parse(
+      withStubTmux(
+        emitStub([
+          encode({ tmuxSession: 'codex-hud-a', sessionId: 'shared' }),
+          encode({ tmuxSession: 'codex-hud-b', sessionId: 'shared' }),
+        ]),
+        listBody
+      )
+    );
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].tmuxSession, 'codex-hud-a', 'the first pane wins');
+  }
+
+  {
+    // Garbage from a different build or a hand-edited option is skipped, not
+    // fatal, and never blocks the valid rows around it.
+    const parsed = JSON.parse(
+      withStubTmux(
+        emitStub([
+          'not-base64!!',
+          Buffer.from('{"incomplete":', 'utf8').toString('base64'),
+          encode({ tmuxSession: 'codex-hud-a', sessionId: '' }),
+          encode({ tmuxSession: 'codex-hud-b', sessionId: 'session-b' }),
+        ]),
+        listBody
+      )
+    );
+    assert.deepEqual(parsed, [
+      { tmuxSession: 'codex-hud-b', sessionId: 'session-b' },
+    ]);
+  }
+
+  {
+    // No tmux server, or a tmux too old for this format, is "no data" — the
+    // overview falls back to the rollout scan instead of failing.
+    assert.deepEqual(JSON.parse(withStubTmux('exit 1', listBody)), []);
+  }
+
+  {
+    // Publishing without a tmux session name must not spawn anything.
+    const publishBody = `
+      const { publishHudBinding } = await import(${JSON.stringify(modulePath)});
+      await publishHudBinding(undefined, 'session-a', '/tmp/a.jsonl', '/work/a');
+      process.stdout.write('ok');
+    `;
+    assert.equal(
+      withStubTmux('echo "stub must not run" >&2; exit 3', publishBody),
+      'ok'
+    );
+  }
+
+  {
+    // A binding change lands as one option write, and an unbind clears the
+    // whole advertisement rather than leaving half of it behind.
+    const log = path.join(tempRoot, 'publish.log');
+    const publishBody = `
+      const { publishHudBinding } = await import(${JSON.stringify(modulePath)});
+      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a');
+      await publishHudBinding('codex-hud-a', null, null, '/work/a');
+      process.stdout.write('ok');
+    `;
+    withStubTmux(`printf '%s\\n' "$*" >> ${log}`, publishBody);
+
+    const lines = fs
+      .readFileSync(log, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim());
+    assert.equal(lines.length, 2, 'one option write per binding change');
+
+    const encoded = lines[0].slice(lines[0].lastIndexOf(' ') + 1);
+    assert.deepEqual(
+      JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')),
+      {
+        tmuxSession: 'codex-hud-a',
+        sessionId: 'session-a',
+        rolloutPath: '/tmp/a.jsonl',
+        cwd: '/work/a',
+      },
+      'every field travels together in one write'
+    );
+    assert.ok(
+      lines[1].trimEnd().endsWith('@codex_hud_bound'),
+      'an unbind clears the whole advertisement'
+    );
+  }
+
+  {
+    // The payload must survive tmux verbatim. tmux escapes non-printable
+    // bytes as it stores an option value — a \\x1f-joined value came back as
+    // the four literal characters \\, 0, 3, 7 — so the encoding may only use
+    // characters tmux passes through.
+    const publishBody = `
+      const { publishHudBinding } = await import(${JSON.stringify(modulePath)});
+      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a');
+      process.stdout.write('ok');
+    `;
+    const log = path.join(tempRoot, 'charset.log');
+    withStubTmux(`printf '%s\\n' "$*" >> ${log}`, publishBody);
+
+    const written = fs.readFileSync(log, 'utf8').trim();
+    const encoded = written.slice(written.lastIndexOf(' ') + 1);
+    assert.match(
+      encoded,
+      /^[A-Za-z0-9+/]+={0,2}$/,
+      'the published value stays inside an alphabet tmux stores verbatim'
+    );
+  }
+
+  console.log('test-open-huds: PASS');
+} finally {
+  const resolvedRoot = fs.realpathSync(tempRoot);
+  assert.equal(path.dirname(resolvedRoot), fs.realpathSync(os.tmpdir()));
+  assert.ok(path.basename(resolvedRoot).startsWith('codex-hud-open-huds-'));
+  fs.rmSync(resolvedRoot, { recursive: true, force: true });
+}

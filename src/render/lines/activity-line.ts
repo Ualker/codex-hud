@@ -28,6 +28,7 @@ import type {
 } from '../../types.js';
 import { isExecutionTool } from '../../utils/tool-names.js';
 import { extractCommandHead } from '../../utils/command-head.js';
+import { formatCompactAge } from '../../utils/format-age.js';
 import { osc8Link, fileUrl } from '../../utils/hyperlinks.js';
 
 const DESCENDANT_PREFIX = '↳';
@@ -55,10 +56,16 @@ const TOOL_DETAILS_MODE_ORDER: readonly ToolDetailsMode[] = [
   'off',
 ];
 
+// Cycling to `off` removes the tool row entirely; without a receipt the row
+// just vanishes and there is nothing on screen saying which key brought it
+// back. The notice occupies exactly the row the mode change affects.
+const MODE_NOTICE_MS = 3000;
+let modeNoticeUntilMs = 0;
+
 /**
  * Cycle targets -> full -> off -> targets at runtime. Returns the new mode.
  */
-export function cycleToolDetailsMode(): ToolDetailsMode {
+export function cycleToolDetailsMode(nowMs: number = Date.now()): ToolDetailsMode {
   const current = toolDetailsMode();
   const next =
     TOOL_DETAILS_MODE_ORDER[
@@ -66,7 +73,26 @@ export function cycleToolDetailsMode(): ToolDetailsMode {
         TOOL_DETAILS_MODE_ORDER.length
     ];
   toolDetailsModeOverride = next;
+  modeNoticeUntilMs = nowMs + MODE_NOTICE_MS;
   return next;
+}
+
+/**
+ * Transient confirmation of the current tool-details mode. Replaces the tool
+ * row for a few seconds after `t`, so the row count stays put except while
+ * the mode is `off` — the one case where the row would otherwise be gone.
+ */
+export function renderToolDetailsNotice(
+  width: number = Number.POSITIVE_INFINITY,
+  nowMs: number = Date.now()
+): string | null {
+  if (nowMs >= modeNoticeUntilMs) {
+    return null;
+  }
+  return truncateAnsi(
+    colors.dim(`tool details: ${toolDetailsMode()} · press t to cycle`),
+    width
+  );
 }
 
 /**
@@ -166,6 +192,76 @@ export function renderAgentLines(
   return agentActivity.rows.map((row) => renderAgentActivityRow(row, width, nowMs));
 }
 
+/**
+ * One-row stand-in for several agent rows, used when the pane cannot show all
+ * of them. Collapsing keeps the fact that N agents are running — plain
+ * truncation used to drop the extra agents *and* the plan row underneath them,
+ * hiding the most work exactly when the most work was happening.
+ *
+ * Returns null when the rows carry per-row information a count cannot express
+ * (errors), so the caller falls back to another compression step.
+ */
+export function renderAgentSummaryLine(
+  agentActivity: AgentActivity | undefined,
+  width: number,
+  nowMs: number = Date.now()
+): string | null {
+  const rows = agentActivity?.rows;
+  if (!agentActivity || agentActivity.rootTrackingError || !rows || rows.length < 2) {
+    return null;
+  }
+
+  let oldestStartedAtMs = Number.POSITIVE_INFINITY;
+  let descendants = 0;
+  for (const row of rows) {
+    if (row.status !== 'starting' && row.status !== 'running') {
+      return null;
+    }
+    const startedAtMs = row.elapsedStartedAt?.getTime();
+    if (startedAtMs === undefined || !Number.isFinite(startedAtMs)) {
+      return null;
+    }
+    oldestStartedAtMs = Math.min(oldestStartedAtMs, startedAtMs);
+    descendants += row.activeDescendantCount;
+  }
+
+  const spinner = getSpinnerFrame(
+    Math.floor(nowMs / 100) % icons.spinner.length
+  );
+  const elapsed = formatAgentElapsed(new Date(oldestStartedAtMs), nowMs);
+  const descendantSuffix = descendants > 0 ? ` ${DESCENDANT_PREFIX}${descendants}` : '';
+  return truncateAnsi(
+    theme.agentRunning(
+      `${spinner} ${rows.length} agents ${elapsed}${descendantSuffix}`
+    ),
+    width
+  );
+}
+
+/**
+ * Shown while the HUD has no live turn state to display. Without it the HUD
+ * silently renders three rows in a seven-row pane and a first-time user cannot
+ * tell "waiting for Codex to start" apart from "the HUD is broken".
+ *
+ * Two distinct states reach this row. Codex creates a rollout lazily, on the
+ * first turn, so a session can be bound and identified — its id comes from the
+ * session store, not the rollout — while nothing has been written for the HUD
+ * to read. Observed live on a session sitting at the prompt for 19 hours with
+ * no rollout file anywhere on disk.
+ */
+export function renderBindingHintLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
+  if (data.turnActivity) {
+    return null;
+  }
+  const message = data.session
+    ? 'Session ready · no turns yet'
+    : 'Waiting for a Codex session…';
+  return truncateAnsi(colors.dim(`${icons.pending} ${message}`), width);
+}
+
 type ToolGroupStatus = 'completed' | 'error' | 'yielded';
 
 interface ToolCallGroup {
@@ -192,15 +288,7 @@ function formatToolDuration(durationMs: number): string {
   return `${minutes}m${remainingSeconds.toString().padStart(2, '0')}s`;
 }
 
-function formatAge(durationMs: number): string {
-  if (durationMs < 60_000) {
-    return `${Math.max(0, Math.floor(durationMs / 1000))}s`;
-  }
-  if (durationMs < 3_600_000) {
-    return `${Math.floor(durationMs / 60_000)}m`;
-  }
-  return `${Math.floor(durationMs / 3_600_000)}h`;
-}
+const formatAge = formatCompactAge;
 
 function turnPhasePresentation(
   activity: TurnActivity,
@@ -304,22 +392,50 @@ function formatResetTime(
       });
 }
 
+/**
+ * A quota window whose reset moment has already passed says nothing about the
+ * current period. Rate limits are account-level state that only lands in the
+ * HUD through the bound rollout's last `token_count` event, so a resumed or
+ * idle session keeps replaying whatever snapshot it was left with — observed
+ * live as "7d limit 84% | resets 08/05" a full week after that reset.
+ */
+function isExpiredWindow(window: RateLimitWindow, nowMs: number): boolean {
+  const resetsAt = window.resets_at;
+  return (
+    resetsAt !== undefined &&
+    Number.isFinite(resetsAt) &&
+    resetsAt * 1000 <= nowMs
+  );
+}
+
 export function renderRateLimitLine(
   data: HudData,
-  width: number = Number.POSITIVE_INFINITY
+  width: number = Number.POSITIVE_INFINITY,
+  nowMs: number = Date.now()
 ): string | null {
   const limits = data.rateLimits;
+  const knownWindows = [limits?.primary, limits?.secondary].filter(
+    (window): window is RateLimitWindow => Boolean(window)
+  );
+  // "Reached" is part of the same snapshot, so it expires with it.
+  const datedWindows = knownWindows.filter(
+    (window) => window.resets_at !== undefined && Number.isFinite(window.resets_at)
+  );
+  const snapshotExpired =
+    datedWindows.length > 0 &&
+    datedWindows.every((window) => isExpiredWindow(window, nowMs));
+  if (snapshotExpired) {
+    return null;
+  }
+
   const reached =
     Boolean(limits?.rate_limit_reached_type) ||
     limits?.spend_control_reached === true;
-  const pressuredWindows = [
-    limits?.primary,
-    limits?.secondary,
-  ].filter(
-    (window): window is RateLimitWindow =>
-      Boolean(window) &&
-      window?.used_percent !== undefined &&
-      window.used_percent >= 70
+  const pressuredWindows = knownWindows.filter(
+    (window) =>
+      window.used_percent !== undefined &&
+      window.used_percent >= 70 &&
+      !isExpiredWindow(window, nowMs)
   );
   if (!limits || (!reached && pressuredWindows.length === 0)) {
     return null;
@@ -353,6 +469,25 @@ export function renderRateLimitLine(
   return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
 }
 
+/**
+ * Collector keys are internal names; the health row is the one place a user
+ * reads them, so each gets a phrase that says what stopped working. "git
+ * stale" and "protocol unknown 17" both prompted "what does that mean?".
+ */
+function plural(count: number, noun: string): string {
+  return count === 1 ? noun : `${noun}s`;
+}
+
+const COLLECTOR_LABELS: Record<string, string> = {
+  git: 'git status',
+  rollout: 'session log',
+  agents: 'agent tracking',
+  session: 'session binding',
+  environment: 'project scan',
+  config: 'Codex config',
+  overview: 'session overview',
+};
+
 export function renderHealthLine(
   data: HudData,
   width: number = Number.POSITIVE_INFINITY,
@@ -365,13 +500,14 @@ export function renderHealthLine(
     if (!health) {
       continue;
     }
+    const label = COLLECTOR_LABELS[name] ?? name;
     if (health.status === 'error') {
-      warnings.push(`${name} error`);
+      warnings.push(`${label} unavailable`);
     } else if (health.status === 'stale') {
       const age = health.lastSuccessAt
-        ? ` ${formatAge(nowMs - health.lastSuccessAt.getTime())}`
-        : '';
-      warnings.push(`${name} stale${age}`);
+        ? `${formatAge(nowMs - health.lastSuccessAt.getTime())} old`
+        : 'not refreshing';
+      warnings.push(`${label} ${age}`);
     }
   }
 
@@ -391,10 +527,15 @@ export function renderHealthLine(
       0
     );
     if (unknownCount > 0) {
-      warnings.push(`protocol unknown ${unknownCount}`);
+      warnings.push(
+        `${unknownCount} unrecognized Codex ${plural(unknownCount, 'record')}`
+      );
     }
     if (protocolHealth.malformedLines > 0) {
-      warnings.push(`protocol malformed ${protocolHealth.malformedLines}`);
+      const count = protocolHealth.malformedLines;
+      warnings.push(
+        `${count} unreadable session-log ${plural(count, 'line')}`
+      );
     }
   }
 
@@ -646,7 +787,8 @@ function joinToolParts(
 export function renderToolsLine(
   toolActivity: ToolActivity | undefined,
   width: number = Number.POSITIVE_INFINITY,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  partialHistory: boolean = false
 ): string | null {
   if (toolDetailsMode() === 'off') {
     return null;
@@ -684,7 +826,9 @@ export function renderToolsLine(
   );
   const totalPart =
     toolActivity.totalCalls > toolActivity.recentCalls.length
-      ? colors.dim(`(${toolActivity.totalCalls} total)`)
+      ? colors.dim(
+          `(${partialHistory ? '≥' : ''}${toolActivity.totalCalls} total)`
+        )
       : null;
 
   if (current && showDetailedFinished && detailedFinished) {
@@ -822,12 +966,25 @@ export function renderTokenLine(
   }
 
   const parts: string[] = [];
+  const atLeast = data.partialHistory ? '≥' : '';
+  // Everything but the context gauge, in the order it is given up when the row
+  // does not fit. Trimming whole cells beats letting the outer truncation
+  // slice through a parenthesised group mid-token.
+  let tokensPart: string | null = null;
   let breakdownPart: string | null = null;
+  let totalPart: string | null = null;
+  let compactPart: string | null = null;
+
+  // The gauge scales with the pane: a fixed twelve cells alone pushed this row
+  // past a 45-column pane, where it is the row that matters most.
+  const barWidth = Number.isFinite(width)
+    ? Math.max(4, Math.min(12, Math.floor(width / 8)))
+    : 12;
 
   // Context leads the row so the capacity signal survives narrow terminals.
   const ctx = data.contextUsage;
   if (ctx) {
-    const bar = remainingBar(ctx.percent, 12);
+    const bar = remainingBar(ctx.percent, barWidth);
     const remainingPercent = Math.max(0, 100 - ctx.percent);
     const remainingTokens = Math.max(0, ctx.total - ctx.used);
     const percentDisplay = ctx.percent >= 85
@@ -844,7 +1001,7 @@ export function renderTokenLine(
     const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
     const remainingPercent = Math.max(0, 100 - percent);
     const remainingTokens = Math.max(0, total - totalTokens);
-    const bar = remainingBar(percent, 12);
+    const bar = remainingBar(percent, barWidth);
     const percentDisplay = percent >= 85
       ? theme.error(`${remainingPercent}% left`)
       : percent >= 70
@@ -860,7 +1017,10 @@ export function renderTokenLine(
     const cachedInput = usage.cached_input_tokens ?? 0;
     const nonCachedInput = Math.max(0, (usage.input_tokens ?? 0) - cachedInput);
 
-    parts.push(theme.tokenCount(`Tokens: ${formatTokenCount(usage.total_tokens ?? 0)}`));
+    tokensPart = theme.tokenCount(
+      `Tokens: ${formatTokenCount(usage.total_tokens ?? 0)}`
+    );
+    parts.push(tokensPart);
 
     const breakdown: string[] = [];
     if (nonCachedInput > 0) {
@@ -879,8 +1039,24 @@ export function renderTokenLine(
     }
   }
 
+  // Cumulative spend across the whole session. It is already parsed from every
+  // token_count event but never reached the screen, so the row could show
+  // "7d limit 84%" with no way to see what had been burned to get there.
+  const sessionTotal = data.tokenUsage?.total_token_usage?.total_tokens;
+  if (
+    data.tokenUsage?.last_token_usage &&
+    sessionTotal !== undefined &&
+    sessionTotal > (usage?.total_tokens ?? 0)
+  ) {
+    totalPart =
+      colors.dim('Total: ') +
+      theme.tokenCount(`${atLeast}${formatTokenCount(sessionTotal)}`);
+    parts.push(totalPart);
+  }
+
   if (ctx?.compactCount && ctx.compactCount > 0) {
-    parts.push(colors.dim(`${icons.refresh}${ctx.compactCount}`));
+    compactPart = colors.dim(`${icons.refresh}${atLeast}${ctx.compactCount}`);
+    parts.push(compactPart);
   }
 
   if (parts.length === 0) {
@@ -890,16 +1066,25 @@ export function renderTokenLine(
   // Dim pipes match every other row's separator style.
   const tokenSeparator = ` ${colors.dim(icons.pipe)} `;
   let line = parts.join(tokenSeparator);
-  // On narrow panes drop the in/cache/out breakdown before the outer
-  // truncation slices through it mid-parenthesis.
-  if (
-    breakdownPart !== null &&
-    Number.isFinite(width) &&
-    visualLength(line) > width
-  ) {
-    line = parts.filter((part) => part !== breakdownPart).join(tokenSeparator);
+  if (Number.isFinite(width) && visualLength(line) > width) {
+    // Least informative first. The context gauge is never a candidate: it is
+    // why this row leads the layout.
+    const dropOrder = [compactPart, totalPart, breakdownPart, tokensPart];
+    const dropped = new Set<string>();
+    for (const candidate of dropOrder) {
+      if (visualLength(line) <= width) {
+        break;
+      }
+      if (candidate === null) {
+        continue;
+      }
+      dropped.add(candidate);
+      line = parts.filter((part) => !dropped.has(part)).join(tokenSeparator);
+    }
   }
-  return line;
+  // Below roughly 28 columns even the lone context cell overflows; clamp here
+  // so this renderer honours its width contract like every other row.
+  return truncateAnsi(line, width);
 }
 
 export function renderSessionDetailLine(

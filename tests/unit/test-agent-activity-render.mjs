@@ -507,8 +507,8 @@ const overWideProject = renderProjectLine(unshrinkableProject, {
   maxWidth: 1,
 });
 assert.ok(
-  visualLength(overWideProject) > 1,
-  'the project helper demonstrably exceeds an unshrinkable one-column budget'
+  visualLength(overWideProject) <= 1,
+  'the project helper honors even an unshrinkable one-column budget'
 );
 const reservedCompactWidth = identityWidth + summaryWidth + (2 * separatorWidth) + 1;
 const recheckedCompact = renderHud(
@@ -554,7 +554,16 @@ const unclippedLines = renderHud(
   clippedData,
   { width: 80, showDetails: true, layout: expandedLayout }
 );
-assert.equal(unclippedLines.length, 8, 'unclipped renderer exposes all physical lines');
+// The fixture binds no session, so the layout also states that it is waiting
+// for one; without that row an unbound HUD is indistinguishable from a broken
+// one. Tracking-error agent rows are never collapsed into a count, so all
+// three stay physically present here.
+assert.equal(unclippedLines.length, 9, 'unclipped renderer exposes all physical lines');
+assert.equal(
+  unclippedLines.filter((line) => stripAnsi(line).includes('Waiting for a Codex session')).length,
+  1,
+  'an unbound HUD says so instead of rendering a silently short frame'
+);
 assert.equal(
   unclippedLines.filter((line) => stripAnsi(line).includes('tracking error')).length,
   3,
@@ -598,7 +607,16 @@ const stdoutOutput = writes.join('');
 const physicalLines = stdoutOutput.split('\x1b[2K').slice(1);
 assert.equal(physicalLines.length, 5, 'height clipping writes exactly the visible physical line count');
 const finalPhysicalLine = stripAnsi(physicalLines[physicalLines.length - 1]).trimEnd();
-assert.match(finalPhysicalLine, /\+3 hidden/);
+// The layout first sheds rows that carry no live state (Dir/Session, then the
+// static environment row), so all three agent rows stay visible and only the
+// plan and tool rows fall to the viewport clipper. Tracking-error rows are
+// never collapsed into a count, which is why compression stops at seven.
+assert.match(finalPhysicalLine, /\+2 hidden/);
+assert.equal(
+  physicalLines.filter((line) => stripAnsi(line).includes('tracking error')).length,
+  3,
+  'compression protects live agent rows ahead of static ones'
+);
 
 const metrics = {
   elapsedExpected: '2m14s',
@@ -609,11 +627,11 @@ const metrics = {
   errorWidthActual: visualLength(errorWidth24),
   compactExpected: 3,
   compactActual: Number(stripAnsi(compactCount).split(': ')[1]),
-  totalPhysicalLinesExpected: 8,
+  totalPhysicalLinesExpected: 9,
   totalPhysicalLinesActual: unclippedLines.length,
   visiblePhysicalLinesExpected: 5,
   visiblePhysicalLinesActual: physicalLines.length,
-  hiddenPhysicalLinesExpected: 3,
+  hiddenPhysicalLinesExpected: 2,
   hiddenPhysicalLinesActual: Number(finalPhysicalLine.match(/…(\d+) more lines hidden/)?.[1]),
   spinnerBoundaryCasesExpected: 9,
   spinnerBoundaryCasesActual: spinnerCases.length,

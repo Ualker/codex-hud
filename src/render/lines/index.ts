@@ -17,4 +17,7 @@ export {
   renderHealthLine,
   formatAgentElapsed,
   renderAgentLines,
+  renderAgentSummaryLine,
+  renderBindingHintLine,
+  renderToolDetailsNotice,
 } from './activity-line.js';

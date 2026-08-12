@@ -22,9 +22,22 @@ const STATUS_HINT = 'Click HUD: Ctrl+T view • t details • drag resize';
 // purpose and the first line gets its full width back.
 const STATUS_HINT_VISIBLE_MS = 5 * 60_000;
 const RENDERER_LOADED_AT = Date.now();
+// Once the initial window closes the hint is the only record of the hotkeys,
+// so interacting with the pane brings it back instead of leaving the keys
+// undiscoverable for the rest of the session.
+const STATUS_HINT_RECALL_MS = 5000;
+let statusHintUntilMs = 0;
+
+export function revealStatusHint(nowMs: number = Date.now()): void {
+  statusHintUntilMs = nowMs + STATUS_HINT_RECALL_MS;
+}
 
 function statusHintVisible(): boolean {
-  return Date.now() - RENDERER_LOADED_AT < STATUS_HINT_VISIBLE_MS;
+  const now = Date.now();
+  return (
+    now - RENDERER_LOADED_AT < STATUS_HINT_VISIBLE_MS ||
+    now < statusHintUntilMs
+  );
 }
 
 /**
@@ -167,13 +180,16 @@ export function renderToStdout(data: HudData): void {
   const layout = createDefaultLayout(width, height);
   const clearScrollback = process.env.CODEX_HUD_CLEAR_SCROLLBACK === '1';
   
+  const maxLines = Math.max(1, height);
   const options: RenderOptions = {
     width,
     showDetails: true,
     layout,
+    // The layout compresses low-signal rows to this budget; the viewport fit
+    // below stays as a backstop for the cases it cannot compress away.
+    maxLines,
   };
-  
-  const maxLines = Math.max(1, height);
+
   const fitted = fitLinesToViewport(renderHud(data, options), maxLines, width);
   const lines = truncateLines(
     statusHintVisible() ? applyStatusHint(fitted, width) : fitted,

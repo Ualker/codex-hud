@@ -7,8 +7,11 @@
 const ESC = '\x1b[';
 const RESET = `${ESC}0m`;
 const DIM = `${ESC}2m`;
+// NO_COLOR disables color only when it is present *and non-empty*; an empty
+// value is explicitly "not set" per the convention, so it must not strip color.
+const NO_COLOR = process.env.NO_COLOR;
 const COLOR_ENABLED =
-  process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb';
+  (NO_COLOR === undefined || NO_COLOR === '') && process.env.TERM !== 'dumb';
 const ASCII_MODE = process.env.CODEX_HUD_ASCII === '1';
 
 function ansi(code: string, text: string): string {
@@ -133,6 +136,8 @@ export const icons = {
   // Text-style glyph: emoji have ambiguous VS16 widths in some terminals
   // and every other HUD glyph is a text character.
   plan: ASCII_MODE ? '=' : '≡',
+  // Hollow counterpart of the spinner family, for "nothing is running yet".
+  pending: ASCII_MODE ? 'o' : '○',
   bullet: '▸',
   multiply: '×',
   refresh: '↻',  // For compact count indicator
