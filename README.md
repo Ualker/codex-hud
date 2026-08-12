@@ -29,11 +29,15 @@ Because you're flying blind without one. Codex HUD gives you a persistent dashbo
 **Q: I run multiple Codex sessions. Can I monitor them all?**
 
 Yes. Click the HUD pane and press `Ctrl+T`, or run
-`codex-hud --toggle-mode` from the main pane. Overview lists sessions worked in
-the last 30 minutes — not only those mid-turn at that instant — sorted by live
-phase, context remaining, and recent activity, and marks the session this HUD is
-bound to with `▸`. While the HUD pane is focused, `t` cycles the tool-detail
-level (`targets` → `full` → `off`) and briefly confirms the new level.
+`codex-hud --toggle-mode` from the main pane; `CODEX_HUD_BIND_TOGGLE=1` installs
+a `Prefix+H` binding that works without moving focus, and the hint line names
+whichever of the two this session actually has. Overview lists sessions worked
+in the last 30 minutes — not only those mid-turn at that instant — sorted by
+live phase, then by how recently each was touched, with context remaining as the
+tiebreak. It marks the session this HUD is bound to with `▸`, and keeps that row
+visible even when there are more sessions than rows. While the HUD pane is
+focused, `t` cycles the tool-detail level (`targets` → `full` → `off`) and
+briefly confirms the new level.
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -106,16 +110,24 @@ rather than rendering a short frame that could be mistaken for a failure.
 |------|-------|
 | **Header** | Model + effort, project, git branch, and session duration |
 | **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources |
-| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; rate-limit reset details appear at 70% usage, and a quota window whose reset time has already passed is dropped rather than replayed |
-| **Health** | Plain-language state for Git, session log, agents, project scan, config, and overview, plus counts of Codex records this build does not recognize |
+| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; rate-limit reset details appear at 70% usage, and a quota window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote, not from whatever the bound session last happened to see |
+| **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex records this build does not recognize. A collector that has not finished its first run is silent — only something that stopped working is a warning |
 | **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |
 | **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible |
 
-When the pane cannot show every row, the layout drops whole low-signal rows in
-order — session details first, then several agent rows collapse into one
-`◐ N agents` count, then the static environment row (its `[FULL ACCESS]` badge
-moves up to the header) — so live plan and agent state survive instead of
-whatever happened to land last.
+The layout adapts in both directions. With rows to spare it keeps the turn row
+alongside the running-tool row, because they count different things: the turn
+row measures how long Codex has been executing tools without pause, the tool row
+how long the call in flight has run. When the pane cannot show every row it
+drops whole low-signal rows in order — the turn row first, then session details,
+then several agent rows collapse into one `◐ N agents` count, then the static
+environment row (its `[FULL ACCESS]` badge moves up to the header) — so live
+plan and agent state survive instead of whatever happened to land last.
+
+Narrow panes shed whole cells rather than cutting words. The header keeps the
+project name and shrinks the branch; the environment row drops the default
+`Fast: off`, then the sandbox value the `[FULL ACCESS]` badge already implies,
+and gives its row back entirely rather than showing half a security statement.
 
 Tool activity stays on one physical line by default. With the default
 `CODEX_HUD_TOOL_DETAILS=targets`, execution tools show only a privacy-preserving
@@ -198,7 +210,7 @@ codex-hud --hud-version      # Print version and revision
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row (the `t` key cycles this at runtime) |
 | `CODEX_HUD_MODE` | `single` | Initial display mode: `single` or `overview` |
-| `CODEX_HUD_LOG_FILE` | (unset) | Append HUD diagnostics (watcher/render/tracking errors) to this file; silent otherwise |
+| `CODEX_HUD_LOG_FILE` | per-user default | Append HUD diagnostics (watcher/render/tracking errors) to this file. Defaults to `~/Library/Logs/codex-hud/hud.log` on macOS, `$XDG_STATE_HOME/codex-hud/hud.log` elsewhere; set `off` to discard them |
 | `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | Also show `.agents` skill count; `CODEX_HOME/skills` remains authoritative for Codex |
 | `CODEX_HUD_ASCII` | `0` | Use ASCII progress and status glyphs |

@@ -407,7 +407,13 @@ export interface ProtocolHealth {
   malformedLines: number;
 }
 
-export type CollectorHealthStatus = 'fresh' | 'stale' | 'error';
+/**
+ * `pending` is "has not finished its first run yet", which is not a fault.
+ * Folding it into `stale` made every HUD start report two broken collectors
+ * for the ~0.6s before the first round completed, which is exactly the kind
+ * of false alarm that teaches a user to ignore the health row.
+ */
+export type CollectorHealthStatus = 'pending' | 'fresh' | 'stale' | 'error';
 
 export interface CollectorHealth {
   status: CollectorHealthStatus;
@@ -417,7 +423,7 @@ export interface CollectorHealth {
 }
 
 export type CollectorHealthMap = Partial<
-  Record<'environment' | 'config' | 'git' | 'project' | 'session' | 'rollout' | 'agents' | 'overview', CollectorHealth>
+  Record<'environment' | 'config' | 'git' | 'project' | 'session' | 'rollout' | 'agents' | 'overview' | 'renderer', CollectorHealth>
 >;
 
 // ============================================================================

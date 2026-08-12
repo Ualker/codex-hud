@@ -70,26 +70,30 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
   const projectLabel = linkProject(theme.projectName(projectName));
   const parts: string[] = [projectLabel];
   let gitDisplay = '';
+  let gitContent = '';
   let fileStats = '';
-  
+
+  // Format as "git:(branch * ↑1)"
+  const buildGitDisplay = (content: string): string =>
+    theme.gitPrefix('git:(') + theme.gitBranch(content) + theme.gitPrefix(')');
+
   // Git status (if in a git repo)
   if (data.git.isGitRepo && data.git.branch) {
     // Build git status string
-    let gitContent = sanitizeTerminalText(data.git.branch);
-    
+    gitContent = sanitizeTerminalText(data.git.branch);
+
     // Add dirty indicator
     if (data.git.isDirty) {
       gitContent += ` ${icons.dirty}`;
     }
-    
+
     // Add sync status (ahead/behind)
     const syncStatus = renderGitSync(data.git);
     if (syncStatus) {
       gitContent += ` ${syncStatus}`;
     }
-    
-    // Format as "git:(branch * ↑1)"
-    gitDisplay = theme.gitPrefix('git:(') + theme.gitBranch(gitContent) + theme.gitPrefix(')');
+
+    gitDisplay = buildGitDisplay(gitContent);
     parts.push(gitDisplay);
     
     // Add file stats if any
@@ -121,17 +125,26 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
     }
   }
 
+  // Shrink the branch, not the project name. The old order reserved the whole
+  // git segment first and spent whatever remained on the project, so a 34-char
+  // branch survived intact while the project name decayed to "…" and then
+  // vanished — backwards, because on a narrow pane with several sessions open
+  // "which project is this" is the identity the row exists to carry.
   if (gitDisplay) {
-    const gitSegment = ` ${gitDisplay}`;
-    const availableForProject = maxWidth - visualLength(gitSegment);
-    if (availableForProject <= 0) {
-      return truncateAnsi(gitDisplay, maxWidth);
+    const projectWidth = visualLength(projectLabel);
+    // "git:()" plus at least one character of branch; below that the segment
+    // states nothing and the row is better off spending the cells on the name.
+    const gitOverhead = visualLength('git:()');
+    const availableForGit = maxWidth - projectWidth - 1;
+    if (availableForGit > gitOverhead) {
+      return truncateAnsi(
+        [
+          projectLabel,
+          buildGitDisplay(truncate(gitContent, availableForGit - gitOverhead)),
+        ].join(' '),
+        maxWidth
+      );
     }
-    const truncatedName = truncate(projectName, availableForProject);
-    return truncateAnsi(
-      [linkProject(theme.projectName(truncatedName)), gitDisplay].join(' '),
-      maxWidth
-    );
   }
 
   const truncatedName = truncate(projectName, maxWidth);

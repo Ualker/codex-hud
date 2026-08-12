@@ -128,6 +128,26 @@ try {
   }
 
   {
+    // A slow tmux must still be waited for. Measured on a loaded machine, a
+    // bare /bin/sh spawn here takes 0.7-2.1s, and the original two-second
+    // budget expired on 10 of 25 consecutive calls — silently dropping every
+    // open HUD from the overview and leaving the mtime scan, the very source
+    // this collector exists to replace, as the only answer. Nothing waits on
+    // this call, so a late result costs nothing.
+    const slow = emitStub([
+      encode({ tmuxSession: 'codex-hud-slow', sessionId: 'session-slow' }),
+    ]);
+    const parsed = JSON.parse(
+      withStubTmux(`sleep 3\n${slow}`, listBody)
+    );
+    assert.deepEqual(
+      parsed,
+      [{ tmuxSession: 'codex-hud-slow', sessionId: 'session-slow' }],
+      'a three-second tmux still reports its bindings'
+    );
+  }
+
+  {
     // Publishing without a tmux session name must not spawn anything.
     const publishBody = `
       const { publishHudBinding } = await import(${JSON.stringify(modulePath)});

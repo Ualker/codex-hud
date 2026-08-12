@@ -150,6 +150,66 @@ assert.match(health, /session log unavailable/);
 assert.match(health, /1 unrecognized Codex record\b/);
 assert.doesNotMatch(health, /private details/);
 
+// A collector that has not finished its first run is `pending`, not a fault.
+// Reporting it made every HUD start show "project scan not refreshing · git
+// status not refreshing" for the ~0.6s before the first round completed, which
+// is exactly the false alarm that teaches a user to ignore this row.
+{
+  const startingUp = {
+    ...data,
+    protocolHealth: undefined,
+    collectorHealth: {
+      environment: { status: 'pending', lastAttemptAt: new Date(now) },
+      git: { status: 'pending', lastAttemptAt: new Date(now) },
+    },
+  };
+  assert.equal(
+    renderHealthLine(startingUp, 100, now),
+    null,
+    'a HUD that is still starting up reports nothing'
+  );
+
+  // Once a collector has succeeded and then stopped, it is a real fault again.
+  const wentStale = {
+    ...startingUp,
+    collectorHealth: {
+      ...startingUp.collectorHealth,
+      git: {
+        status: 'stale',
+        lastAttemptAt: new Date(now),
+        lastSuccessAt: new Date(now - 90_000),
+      },
+    },
+  };
+  const staleLine = stripAnsi(renderHealthLine(wentStale, 100, now));
+  assert.match(staleLine, /git status 1m old/);
+  assert.doesNotMatch(
+    staleLine,
+    /project scan/,
+    'the still-pending collector stays quiet beside it'
+  );
+}
+
+// A render failure has to reach the pane; the health row is where it lands
+// once rendering recovers enough to paint one.
+{
+  const brokenRenderer = {
+    ...data,
+    protocolHealth: undefined,
+    collectorHealth: {
+      renderer: {
+        status: 'error',
+        lastAttemptAt: new Date(now),
+        errorSummary: 'TypeError: bad thing',
+      },
+    },
+  };
+  assert.match(
+    stripAnsi(renderHealthLine(brokenRenderer, 100, now)),
+    /HUD display unavailable/
+  );
+}
+
 const overview = renderHud(
   {
     ...data,

@@ -259,13 +259,20 @@ function renderExpandedLayout(
     (data.session?.sandboxMode ?? data.config.sandbox_mode) ===
     'danger-full-access';
 
-  interface Compression {
+  /**
+   * One rung of the layout ladder, from most to least informative. The ladder
+   * used to only ever remove rows; `keepTurnWithTool` is the first rung that
+   * adds one, because the running-tool row displaced the turn row at every
+   * height — including heights with rows to spare.
+   */
+  interface LayoutVariant {
+    keepTurnWithTool?: boolean;
     dropSession?: boolean;
     collapseAgents?: boolean;
     dropEnv?: boolean;
   }
 
-  const assemble = (compression: Compression): string[] => {
+  const assemble = (compression: LayoutVariant): string[] => {
     const lines: string[] = [];
     // The environment row is static for the whole session, so it is the first
     // whole category to go — but it is also where the sandbox badge lives, so
@@ -284,7 +291,15 @@ function renderExpandedLayout(
     }
     lines.push(...usageRows);
 
-    if (hasRunningTool && toolsLine) {
+    // `turnActivity.since` is the phase start, not the current tool's start,
+    // so the two rows carry different numbers: "executing tools for 4m" versus
+    // "this command has run 12s". Collapsing them lost the first, which is the
+    // one that separates a long grind from a fresh call — and the turn row is
+    // also where the `event N ago` staleness marker lives.
+    const showTurnWithTool = Boolean(
+      compression.keepTurnWithTool && hasRunningTool && turnLine && toolsLine
+    );
+    if (hasRunningTool && toolsLine && !showTurnWithTool) {
       lines.push(toolsLine);
     } else if (turnLine) {
       lines.push(turnLine);
@@ -300,7 +315,7 @@ function renderExpandedLayout(
     if (planLine) {
       lines.push(planLine);
     }
-    if (!hasRunningTool && toolsLine) {
+    if ((!hasRunningTool || showTurnWithTool) && toolsLine) {
       lines.push(toolsLine);
     } else if (toolDetailsNotice) {
       lines.push(toolDetailsNotice);
@@ -317,7 +332,8 @@ function renderExpandedLayout(
   // Degrade by dropping whole low-signal rows rather than letting the viewport
   // clip the tail, which used to hide the plan row and even a running agent
   // while keeping a static config row that had not changed all session.
-  const steps: Compression[] = [
+  const steps: LayoutVariant[] = [
+    { keepTurnWithTool: true },
     {},
     { dropSession: true },
     { dropSession: true, collapseAgents: true },
@@ -341,15 +357,62 @@ function renderExpandedLayout(
  * Render the overview layout (active sessions only)
  * Each line: project | phase | Ctx ... % left | age | short session ID
  */
+/**
+ * Keep the row this HUD is bound to inside the visible slice.
+ *
+ * The viewport keeps the first `maxLines` rows and stamps "+N hidden" onto the
+ * last of them. With enough open sessions the bound row fell off the end, so
+ * the dashboard listed every session except the one you were looking at.
+ */
+function orderForViewport(
+  sessions: readonly SessionOverviewItem[],
+  selfSessionId: string | undefined,
+  maxLines: number
+): readonly SessionOverviewItem[] {
+  if (
+    selfSessionId === undefined ||
+    !Number.isFinite(maxLines) ||
+    sessions.length <= maxLines
+  ) {
+    return sessions;
+  }
+  const selfIndex = sessions.findIndex(
+    (session) => session.id === selfSessionId
+  );
+  // The last visible row carries the indicator and gets truncated to make
+  // room, so "safely visible" stops one row short of the budget.
+  if (selfIndex < 0 || selfIndex <= maxLines - 2) {
+    return sessions;
+  }
+  const reordered = [...sessions];
+  const [self] = reordered.splice(selfIndex, 1);
+  reordered.splice(Math.max(0, maxLines - 2), 0, self);
+  return reordered;
+}
+
 function renderOverviewLayout(
   data: HudData,
   layout: LayoutConfig,
-  width: number
+  width: number,
+  maxLines: number
 ): string[] {
-  const overview = data.overview;
-  if (!overview || overview.sessions.length === 0) {
-    return [colors.dim('No active sessions')];
+  const allSessions = data.overview?.sessions;
+  if (!allSessions || allSessions.length === 0) {
+    // The snapshot refreshes asynchronously, so the first toggle paints before
+    // any scan has finished. "No active sessions" is a claim about the world;
+    // until a scan has completed, the honest statement is that we are looking.
+    const scanned = (data.overview?.updatedAt?.getTime() ?? 0) > 0;
+    return [
+      colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
+    ];
   }
+  const overview = {
+    sessions: orderForViewport(
+      allSessions,
+      data.overviewSelfSessionId,
+      maxLines
+    ),
+  };
 
   const now = Date.now();
   const formatAge = (timestamp: Date | undefined): string =>
@@ -447,7 +510,12 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   const layout = options.layout ?? DEFAULT_LAYOUT;
 
   if (data.displayMode === 'overview') {
-    return renderOverviewLayout(data, layout, options.width);
+    return renderOverviewLayout(
+      data,
+      layout,
+      options.width,
+      options.maxLines ?? Number.POSITIVE_INFINITY
+    );
   }
   
   if (layout.mode === 'compact') {

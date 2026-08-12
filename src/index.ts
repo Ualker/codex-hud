@@ -26,6 +26,12 @@ import {
   publishHudBinding,
   type OpenHudBinding,
 } from './collectors/open-huds.js';
+import {
+  findLatestAccountRateLimits,
+  preferFreshestRateLimits,
+  type AccountRateLimits,
+} from './collectors/account-limits.js';
+import { compareOverviewSessions } from './collectors/overview-order.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import {
@@ -38,6 +44,7 @@ import {
   renderToStdout,
   cleanupRenderer,
   invalidateRenderedFrame,
+  renderFallbackFrame,
   revealStatusHint,
 } from './render/index.js';
 import { cycleToolDetailsMode } from './render/lines/activity-line.js';
@@ -63,6 +70,11 @@ const SESSION_START = new Date();
 // this is only the fallback used when a render tick itself throws.
 const RENDER_ERROR_RETRY_INTERVAL = 1500;
 const GIT_CACHE_TTL_MS = 5000;
+// Account-wide rate limits change only when some session on this machine
+// completes a turn, so a slow poll is enough; deep idle stretches it further.
+const ACCOUNT_LIMITS_TTL_MS = 60_000;
+const ACCOUNT_LIMITS_INTERVAL_MS = 60_000;
+const ACCOUNT_LIMITS_DEEP_IDLE_INTERVAL_MS = 5 * 60_000;
 const PROJECT_CACHE_TTL_MS = 60_000;
 const OVERVIEW_CACHE_TTL_MS = 5000;
 const OVERVIEW_ACTIVE_WINDOW_SECONDS = 30 * 60;
@@ -91,6 +103,7 @@ let isRunning = true;
 let isShuttingDown = false;
 let gitRefreshTimer: NodeJS.Timeout | null = null;
 let projectRefreshTimer: NodeJS.Timeout | null = null;
+let accountLimitsRefreshTimer: NodeJS.Timeout | null = null;
 let overviewRefreshTimer: NodeJS.Timeout | null = null;
 let agentRefreshTimer: NodeJS.Timeout | null = null;
 let rolloutFallbackTimer: NodeJS.Timeout | null = null;
@@ -172,7 +185,7 @@ function recordCollectorAttempt(
 ): CollectorHealth {
   const health: CollectorHealth = {
     ...collectorHealth[name],
-    status: collectorHealth[name]?.status ?? 'stale',
+    status: collectorHealth[name]?.status ?? 'pending',
     lastAttemptAt: new Date(),
   };
   collectorHealth[name] = health;
@@ -283,6 +296,18 @@ const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
     ttlMs: PROJECT_CACHE_TTL_MS,
     staleAfterMs: PROJECT_CACHE_TTL_MS * 2,
   }
+);
+/**
+ * Newest rate-limit snapshot written by any session on this machine.
+ *
+ * Deliberately not wired into collectorHealth: when this scan fails the HUD
+ * falls back to the bound session's own snapshot, which is a well-defined
+ * degradation rather than a fault worth spending a warning row on.
+ */
+const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
+  null,
+  () => findLatestAccountRateLimits(),
+  { ttlMs: ACCOUNT_LIMITS_TTL_MS, staleAfterMs: ACCOUNT_LIMITS_TTL_MS * 10 }
 );
 const gitCache = new AsyncSnapshotCache(
   emptyGitStatus(),
@@ -429,37 +454,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
     }
   }
 
-  const phaseRank = (phase: SessionOverviewItem['turnActivity']): number => {
-    switch (phase?.phase) {
-      case 'running-tool':
-      case 'thinking':
-        return 0;
-      case 'responding':
-        return 1;
-      case 'aborted':
-        return 2;
-      case 'idle':
-      default:
-        return 3;
-    }
-  };
-  sessions.sort((left, right) => {
-    const phaseDelta =
-      phaseRank(left.turnActivity) - phaseRank(right.turnActivity);
-    if (phaseDelta !== 0) {
-      return phaseDelta;
-    }
-    const contextDelta =
-      (right.contextUsage?.percent ?? 0) -
-      (left.contextUsage?.percent ?? 0);
-    if (contextDelta !== 0) {
-      return contextDelta;
-    }
-    return (
-      (right.lastActivityAt?.getTime() ?? 0) -
-      (left.lastActivityAt?.getTime() ?? 0)
-    );
-  });
+  sessions.sort(compareOverviewSessions);
 
   return { sessions, updatedAt: new Date() };
 }
@@ -594,7 +589,11 @@ function collectData(): HudData {
     agentActivity: cachedAgentActivity,
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
-    rateLimits: rolloutData?.rateLimits ?? undefined,
+    rateLimits: preferFreshestRateLimits(
+      rolloutData?.rateLimits,
+      rolloutData?.rateLimitsAt,
+      accountLimitsCache.get()
+    ),
     turnActivity: rolloutData?.turnActivity ?? undefined,
     protocolHealth: rolloutData?.protocolHealth,
     partialHistory: rolloutData?.partialHistory,
@@ -645,13 +644,19 @@ async function mainLoop(): Promise<void> {
 
   try {
     renderToStdout(collectData());
+    delete collectorHealth.renderer;
     const plan = computeCadence();
     sessionFinder.setDeepIdle(plan.deepIdle);
     setTimeout(mainLoop, plan.renderMs);
   } catch (error) {
-    // stderr would land inside the rendered frame; diagnostics go to the
-    // optional CODEX_HUD_LOG_FILE instead.
+    // stderr would land inside the rendered frame, so diagnostics go to the
+    // log file. That is not enough on its own: the screen keeps whatever was
+    // painted last, which reads as a healthy idle session. Say so in the pane.
     logHudError('render', error);
+    recordCollectorError('renderer', error);
+    renderFallbackFrame(
+      collectorHealth.renderer?.errorSummary ?? 'unknown error'
+    );
     setTimeout(mainLoop, RENDER_ERROR_RETRY_INTERVAL);
   }
 }
@@ -671,6 +676,9 @@ async function shutdown(): Promise<void> {
   }
   if (projectRefreshTimer) {
     clearInterval(projectRefreshTimer);
+  }
+  if (accountLimitsRefreshTimer) {
+    clearInterval(accountLimitsRefreshTimer);
   }
   if (overviewRefreshTimer) {
     clearInterval(overviewRefreshTimer);
@@ -719,6 +727,7 @@ function startCollectorTimers(): void {
   let lastGitRefreshMs = 0;
   let lastAgentsRefreshMs = 0;
   let lastRolloutSweepMs = 0;
+  let lastAccountLimitsRefreshMs = Date.now();
 
   gitRefreshTimer = setInterval(() => {
     const now = Date.now();
@@ -732,6 +741,19 @@ function startCollectorTimers(): void {
   }, 1000);
   projectRefreshTimer = setInterval(() => {
     void refreshSlowProject();
+  }, 5000);
+  accountLimitsRefreshTimer = setInterval(() => {
+    const now = Date.now();
+    const interval = computeCadence(now).deepIdle
+      ? ACCOUNT_LIMITS_DEEP_IDLE_INTERVAL_MS
+      : ACCOUNT_LIMITS_INTERVAL_MS;
+    if (now - lastAccountLimitsRefreshMs < interval) {
+      return;
+    }
+    lastAccountLimitsRefreshMs = now;
+    void accountLimitsCache.refresh().catch(() => {
+      // Falls back to the bound session's own snapshot.
+    });
   }, 5000);
   overviewRefreshTimer = setInterval(() => {
     if (displayMode === 'overview') {
@@ -813,7 +835,13 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
   process.on('SIGHUP', () => void shutdown());
-  process.on('SIGUSR1', toggleDisplayMode);
+  // Repaint immediately: the signal is the only toggle that does not go
+  // through the key handler, and without this the view flipped but the pane
+  // kept the old frame until the next tick — up to three seconds when idle.
+  process.on('SIGUSR1', () => {
+    toggleDisplayMode();
+    renderNow();
+  });
 
   // Last-resort diagnostics: a stray throw or rejection escaping a timer or
   // watcher path must not kill the pane silently. remain-on-exit would leave
@@ -871,6 +899,11 @@ async function main(): Promise<void> {
   // to gate the first frame (~940ms measured, longer under load) and the
   // pane stayed blank for that whole time.
   renderNow();
+  // Not awaited: quota is a slow-moving number and must not sit between the
+  // provisional frame and the first real one.
+  void accountLimitsCache.refresh(true).catch(() => {
+    // Falls back to the bound session's own snapshot.
+  });
   await Promise.allSettled([
     gitCache.refresh(true),
     refreshSlowProject(true),

@@ -27,7 +27,6 @@ export function renderEnvironmentLine(
   data: HudData,
   width: number = Number.POSITIVE_INFINITY
 ): string | null {
-  const critical: string[] = [];
   const details: string[] = [];
 
   // Runtime turn_context state takes precedence over static config.
@@ -35,9 +34,7 @@ export function renderEnvironmentLine(
   const approvalPolicy =
     data.session?.approvalPolicy ?? data.config.approval_policy;
   const fullAccess = sandbox === 'danger-full-access';
-  if (fullAccess) {
-    critical.push(theme.error('[FULL ACCESS]'));
-  }
+  const badgePart = fullAccess ? theme.error('[FULL ACCESS]') : null;
 
   // Approval and sandbox are security state, so they must survive before
   // inventory counts on narrow panes. The badge already states the whole
@@ -49,27 +46,28 @@ export function renderEnvironmentLine(
     approvalPolicy,
     sandboxMode: sandbox,
   });
-  if (!fullAccess || approvalDisplay !== 'full access') {
-    critical.push(colors.dim('Approval: ') + theme.value(approvalDisplay));
-  }
+  const approvalPart =
+    !fullAccess || approvalDisplay !== 'full access'
+      ? colors.dim('Approval: ') + theme.value(approvalDisplay)
+      : null;
 
-  if (sandbox && !fullAccess) {
-    const sandboxDisplay =
-      sandbox === 'workspace-write'
-        ? theme.warning('workspace-write')
-        : theme.info(sanitizeTerminalText(sandbox));
-    critical.push(colors.dim('Sandbox: ') + sandboxDisplay);
-  }
+  const sandboxPart =
+    sandbox && !fullAccess
+      ? colors.dim('Sandbox: ') +
+        (sandbox === 'workspace-write'
+          ? theme.warning('workspace-write')
+          : theme.info(sanitizeTerminalText(sandbox)))
+      : null;
 
-  // The default state carries no signal; it stays visible but recedes.
+  // The default state carries no signal; it stays visible but recedes, and it
+  // is the first critical cell to go when the row cannot fit them all.
   const fastDisplay = getFastModeDisplay(data.config, {
     serviceTier: data.session?.serviceTier,
   });
-  critical.push(
+  const fastPart =
     fastDisplay === 'Fast: off'
       ? colors.dim(fastDisplay)
-      : theme.value(fastDisplay)
-  );
+      : theme.value(fastDisplay);
 
   const mcpCount =
     data.project.mcpCount || getMcpServerCount(data.config);
@@ -124,13 +122,39 @@ export function renderEnvironmentLine(
   }
 
   const separator = ` ${colors.dim(icons.pipe)} `;
-  const selected = [...critical];
+  const fits = (parts: string[]): boolean =>
+    !Number.isFinite(width) || visualLength(parts.join(separator)) <= width;
+
+  // The critical cells used to be exempt from the width check and were hard
+  // truncated instead, so a 40-column pane spent a whole row on
+  // "Approval: ask for approval | Sandbox: w…" — a half-spelled security state,
+  // which is worse than a shorter true one. Shed whole cells instead, cheapest
+  // first: the fast-mode default carries no signal, and the sandbox value is
+  // the one the [FULL ACCESS] badge already implies when it is present.
+  const tiers: (string | null)[][] = [
+    [badgePart, approvalPart, sandboxPart, fastPart],
+    [badgePart, approvalPart, sandboxPart],
+    [badgePart, approvalPart],
+    [badgePart],
+  ];
+  let selected: string[] | null = null;
+  for (const tier of tiers) {
+    const parts = tier.filter((part): part is string => Boolean(part));
+    if (parts.length === 0) {
+      continue;
+    }
+    if (fits(parts)) {
+      selected = parts;
+      break;
+    }
+  }
+  if (!selected) {
+    return null;
+  }
+
   for (const detail of details) {
-    const candidate = [...selected, detail].join(separator);
-    if (
-      !Number.isFinite(width) ||
-      visualLength(candidate) <= width
-    ) {
+    const candidate = [...selected, detail];
+    if (fits(candidate)) {
       selected.push(detail);
     }
   }
