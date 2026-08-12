@@ -23,6 +23,7 @@ const base = {
   assert.equal(plan.gitMs, 5_000);
   assert.equal(plan.agentsMs, 1_000);
   assert.equal(plan.rolloutFallbackMs, 2_000);
+  assert.equal(plan.overviewMs, 5_000);
 }
 
 // Active work always renders at the fast interval, regardless of timestamps.
@@ -47,17 +48,46 @@ const base = {
   assert.equal(plan.gitMs, 60_000);
   assert.equal(plan.agentsMs, 5_000);
   assert.equal(plan.rolloutFallbackMs, 10_000);
+  assert.equal(plan.overviewMs, 30_000);
 }
 
-// The overview dashboard is being watched: never deep idle.
+// Displaying the overview used to veto deep idle outright, on the grounds
+// that someone must be watching it. Nothing tells the HUD whether that is
+// still true — switching tmux window or detaching leaves the dashboard up and
+// unwatched — and the assumption cost 2.8x an idle single view for as long as
+// the mode was left on. What the fleet is doing decides instead, and the
+// caller folds the listed sessions into hasActiveWork.
 {
   const plan = planCadence({
     ...base,
     overviewVisible: true,
     lastActivityMs: nowMs - DEEP_IDLE_AFTER_MS * 2,
   });
+  assert.equal(plan.deepIdle, true, 'a quiet fleet left on screen backs off');
+  assert.equal(plan.renderMs, 3000);
+  assert.equal(plan.overviewMs, 30_000);
+}
+
+// A fleet that is working keeps the dashboard live no matter how long since
+// the last keypress: watching sessions run is exactly what it is for.
+{
+  const plan = planCadence({
+    ...base,
+    overviewVisible: true,
+    hasActiveWork: true,
+    lastActivityMs: nowMs - DEEP_IDLE_AFTER_MS * 2,
+  });
+  assert.equal(plan.deepIdle, false);
+  assert.equal(plan.renderMs, 500);
+  assert.equal(plan.overviewMs, 5_000);
+}
+
+// Recent interaction keeps the base cadence for an idle fleet too.
+{
+  const plan = planCadence({ ...base, overviewVisible: true });
   assert.equal(plan.deepIdle, false);
   assert.equal(plan.renderMs, 1500);
+  assert.equal(plan.overviewMs, 5_000);
 }
 
 // Unbound HUDs keep their slower render interval before deep idle kicks in.

@@ -52,14 +52,28 @@ export function renderIdentityLine(
   options: { maxWidth?: number; showContext?: boolean } = {}
 ): string {
   const parts: string[] = [];
-  
-  // Model name in brackets
+
+  // Model name in brackets. "default" is a true statement only once the config
+  // has been read and found to set no model; before the first collection it is
+  // a guess that happens to look like a real model name. The provisional frame
+  // painted at startup is on screen for ~200ms of every launch and every
+  // --reload, and it used to assert "[default]" there.
+  //
+  // Keyed on "has ever loaded" rather than the status word: a collector that
+  // errored before its first success has no config either, while one that
+  // errors later still holds the last good snapshot.
+  const configHealth = data.collectorHealth?.environment;
+  const configKnown =
+    configHealth === undefined || configHealth.lastSuccessAt !== undefined;
   const modelName = data.session?.model ?? getModelDisplayName(data.config);
   const reasoningEffort = data.session?.reasoningEffort ?? data.config.model_reasoning_effort;
   const showReasoningEffort = Boolean((data.session?.model ?? data.config.model) && reasoningEffort);
-  const identityName = sanitizeTerminalText(
-    showReasoningEffort ? `${modelName} ${reasoningEffort}` : modelName
-  ) || 'default';
+  // Same marker the truncation helpers use for "there is more than this".
+  const identityName = data.session?.model === undefined && !configKnown
+    ? '…'
+    : sanitizeTerminalText(
+        showReasoningEffort ? `${modelName} ${reasoningEffort}` : modelName
+      ) || 'default';
   let contextDisplay = '';
 
   // Expanded mode suppresses this because its token line already renders the
