@@ -29,10 +29,17 @@ export function renderEnvironmentLine(
 ): string | null {
   const details: string[] = [];
 
-  // Runtime turn_context state takes precedence over static config.
-  const sandbox = data.session?.sandboxMode ?? data.config.sandbox_mode;
+  // Runtime turn_context state takes precedence over static config. A bounded
+  // history with no recovered runtime value is unknown: falling back to the
+  // current config can make an older full-access session look sandboxed.
+  const partialRuntime = data.partialHistory === true;
+  const runtimeSandbox = data.session?.sandboxMode;
+  const runtimeApprovalPolicy = data.session?.approvalPolicy;
+  const sandbox =
+    runtimeSandbox ?? (partialRuntime ? undefined : data.config.sandbox_mode);
   const approvalPolicy =
-    data.session?.approvalPolicy ?? data.config.approval_policy;
+    runtimeApprovalPolicy ??
+    (partialRuntime ? undefined : data.config.approval_policy);
   const fullAccess = sandbox === 'danger-full-access';
   const badgePart = fullAccess ? theme.error('[FULL ACCESS]') : null;
 
@@ -42,32 +49,42 @@ export function renderEnvironmentLine(
   // Sandbox: off" was three spellings of one fact, so cells whose value the
   // badge implies are dropped and only a diverging approval policy remains
   // visible.
-  const approvalDisplay = getApprovalPolicyDisplay(data.config, {
-    approvalPolicy,
-    sandboxMode: sandbox,
-  });
+  const approvalUncertain =
+    partialRuntime &&
+    (runtimeApprovalPolicy === undefined ||
+      (runtimeApprovalPolicy === 'never' && runtimeSandbox === undefined));
+  const approvalDisplay = approvalUncertain
+    ? '?'
+    : getApprovalPolicyDisplay(data.config, {
+        approvalPolicy,
+        sandboxMode: sandbox,
+      });
   const approvalPart =
     !fullAccess || approvalDisplay !== 'full access'
       ? colors.dim('Approval: ') + theme.value(approvalDisplay)
       : null;
 
-  const sandboxPart =
-    sandbox && !fullAccess
-      ? colors.dim('Sandbox: ') +
-        (sandbox === 'workspace-write'
+  const sandboxPart = !fullAccess && (sandbox || partialRuntime)
+    ? colors.dim('Sandbox: ') +
+      (sandbox === undefined
+        ? colors.dim('?')
+        : sandbox === 'workspace-write'
           ? theme.warning('workspace-write')
           : theme.info(sanitizeTerminalText(sandbox)))
-      : null;
+    : null;
 
   // The default state carries no signal; it stays visible but recedes, and it
   // is the first critical cell to go when the row cannot fit them all.
-  const fastDisplay = getFastModeDisplay(data.config, {
-    serviceTier: data.session?.serviceTier,
-  });
-  const fastPart =
-    fastDisplay === 'Fast: off'
-      ? colors.dim(fastDisplay)
-      : theme.value(fastDisplay);
+  const runtimeServiceTier = data.session?.serviceTier;
+  const fastUnknown = partialRuntime && runtimeServiceTier === undefined;
+  const fastDisplay = fastUnknown
+    ? 'Fast: ?'
+    : getFastModeDisplay(data.config, {
+        serviceTier: runtimeServiceTier,
+      });
+  const fastPart = fastUnknown || fastDisplay === 'Fast: off'
+    ? colors.dim(fastDisplay)
+    : theme.value(fastDisplay);
 
   const mcpCount =
     data.project.mcpCount || getMcpServerCount(data.config);

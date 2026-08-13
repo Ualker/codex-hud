@@ -98,6 +98,8 @@ fs.appendFileSync(rolloutPath, `${JSON.stringify({
   payload: {
     type: 'thread_settings_applied',
     thread_settings: {
+      approval_policy: 'never',
+      sandbox_policy: { type: 'danger-full-access' },
       collaboration_mode: {
         settings: {
           model: 'gpt-5.6',
@@ -119,6 +121,39 @@ assert.equal(
   'high',
   'nested thread settings should update the active reasoning effort'
 );
+assert.equal(updatedNestedSettings?.session?.approvalPolicy, 'never');
+assert.equal(
+  updatedNestedSettings?.session?.sandboxMode,
+  'danger-full-access'
+);
+
+fs.appendFileSync(rolloutPath, `${JSON.stringify({
+  timestamp: '2026-04-09T14:18:08.000Z',
+  type: 'response_item',
+  payload: {
+    type: 'custom_tool_call',
+    call_id: 'variable-plan',
+    name: 'exec',
+    input: [
+      'const plan = [',
+      '{step:"read",status:"completed"},',
+      '{step:"verify",status:"completed"}',
+      '];',
+      'text(await tools.update_plan({explanation:"done", plan}));',
+    ].join(''),
+  },
+})}\n${JSON.stringify({
+  timestamp: '2026-04-09T14:18:08.100Z',
+  type: 'response_item',
+  payload: {
+    type: 'custom_tool_call_output',
+    call_id: 'variable-plan',
+    output: '{}',
+  },
+})}\n`, 'utf8');
+const updatedVariablePlan = await parser.parse();
+assert.equal(updatedVariablePlan?.planProgress?.completedSteps, 2);
+assert.equal(updatedVariablePlan?.planProgress?.totalSteps, 2);
 
 const rolloutWithRunningCall = writeRollout([
   {

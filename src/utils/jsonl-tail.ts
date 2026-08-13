@@ -2,6 +2,8 @@ import { open } from 'fs/promises';
 
 export interface JsonlTailBatch<T> {
   records: T[];
+  /** Absolute offset of the first record returned after optional alignment. */
+  recordsStartOffset: number;
   nextOffset: number;
   truncated: boolean;
   /** Newline-terminated lines that failed JSON.parse and were skipped. */
@@ -86,6 +88,7 @@ export async function readCompleteJsonl<T>(
     if (finalNewlineIndex === -1) {
       return {
         records: [],
+        recordsStartOffset: startOffset,
         nextOffset: startOffset,
         truncated,
         malformedLines: 0,
@@ -121,6 +124,7 @@ export async function readCompleteJsonl<T>(
 
     return {
       records,
+      recordsStartOffset: startOffset + scanStart,
       // Derived from the absolute final newline so a discarded leading
       // fragment cannot shift the committed cursor.
       nextOffset: startOffset + finalNewlineIndex + 1,

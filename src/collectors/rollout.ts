@@ -470,6 +470,33 @@ function summarizePatch(patch: string): string | undefined {
   );
 }
 
+function webQueryDetails(query: string | undefined): ToolDisplayDetails {
+  if (!query) {
+    return {};
+  }
+  return {
+    summary: sanitizeDisplayText(query, MAX_TOOL_SUMMARY_LENGTH),
+    target: sanitizeDisplayText(query, MAX_TOOL_TARGET_LENGTH),
+  };
+}
+
+/** Recover the first `search_query[].q` string from a malformed JS object. */
+function extractWebQueryLiteral(source: string | undefined): string | undefined {
+  const searchIndex = source?.indexOf('search_query') ?? -1;
+  if (!source || searchIndex < 0) {
+    return undefined;
+  }
+  const querySource = source.slice(searchIndex);
+  // Some 0.147 calls contain `q":"..."`: the property key is malformed,
+  // but the quoted query itself is still unambiguous and safe to decode.
+  const match = /(?:^|[,{])\s*["']?q["']?\s*:\s*((['"`])(?:\\.|(?!\2)[\s\S])*?\2)/
+    .exec(querySource);
+  const decoded = match ? parseJsLiteral(`[${match[1]}]`) : undefined;
+  return Array.isArray(decoded) && typeof decoded[0] === 'string'
+    ? decoded[0]
+    : undefined;
+}
+
 function summarizeToolArguments(
   toolName: string,
   args: unknown
@@ -564,6 +591,18 @@ function summarizeToolArguments(
           ? `limit ${limit}`
           : undefined;
       return { summary };
+    }
+    case 'web__run': {
+      const searches = Array.isArray(args.search_query)
+        ? args.search_query
+        : [];
+      const firstSearch = searches.find(
+        (candidate) => isRecord(candidate) && stringValue(candidate.q)
+      );
+      const query = isRecord(firstSearch)
+        ? stringValue(firstSearch.q)
+        : undefined;
+      return webQueryDetails(query);
     }
     case 'apply_patch': {
       const patch = stringValue(args.patch ?? args.input);
@@ -677,6 +716,42 @@ function extractCustomInvocationArgument(
   return undefined;
 }
 
+/** Read a local `const name = { ... }` or `const name = [ ... ]` literal. */
+function extractAssignedJsLiteral(
+  source: string,
+  name: string
+): unknown {
+  const maskedSource = maskJavaScriptLiterals(source);
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const assignment = new RegExp(
+    `\\b(?:const|let|var)\\s+${escapedName}\\s*=\\s*([\\[{])`
+  ).exec(maskedSource);
+  if (!assignment || assignment.index === undefined) {
+    return undefined;
+  }
+
+  const start = assignment.index + assignment[0].lastIndexOf(assignment[1]);
+  const stack: string[] = [];
+  for (let index = start; index < maskedSource.length; index++) {
+    const char = maskedSource[index];
+    if (char === '{' || char === '[') {
+      stack.push(char);
+      continue;
+    }
+    if (char !== '}' && char !== ']') {
+      continue;
+    }
+    const expected = char === '}' ? '{' : '[';
+    if (stack.pop() !== expected) {
+      return undefined;
+    }
+    if (stack.length === 0) {
+      return parseJsLiteral(source.slice(start, index + 1));
+    }
+  }
+  return undefined;
+}
+
 function summarizeCustomInvocations(
   invocations: readonly CustomToolInvocation[]
 ): string | undefined {
@@ -773,9 +848,28 @@ function analyzeToolCall(payload: ResponseItemPayload): {
   // has unquoted keys, so strict parsing failed on every call ever made by
   // codex-cli 0.147 and the tool row lost its commands. JSON is still tried
   // first for the protocols that do send it.
-  const parsedArgument =
+  let parsedArgument =
     parseJsonValue(argumentSource) ?? parseJsLiteral(argumentSource);
-  const details = summarizeToolArguments(invocation.name, parsedArgument);
+  if (
+    invocation.name.toLowerCase() === 'update_plan' &&
+    isRecord(parsedArgument) &&
+    !Array.isArray(parsedArgument.plan) &&
+    /\bplan\b/.test(argumentSource ?? '')
+  ) {
+    const assignedPlan = extractAssignedJsLiteral(source, 'plan');
+    if (Array.isArray(assignedPlan)) {
+      parsedArgument = { ...parsedArgument, plan: assignedPlan };
+    }
+  }
+  let details = summarizeToolArguments(invocation.name, parsedArgument);
+  if (
+    invocation.name.toLowerCase() === 'web__run' &&
+    details.summary === undefined
+  ) {
+    details = webQueryDetails(
+      extractWebQueryLiteral(argumentSource ?? source)
+    );
+  }
   if (
     details.summary === undefined &&
     invocation.name.toLowerCase() === 'apply_patch'
@@ -996,6 +1090,25 @@ const INITIAL_TAIL_BYTES = 2 * 1024 * 1024;
  */
 const MAX_INCREMENTAL_READ_BYTES = 64 * 1024 * 1024;
 
+const RECOVERABLE_EVENT_TYPES = new Set([
+  'plan_update',
+  'context_compacted',
+  'thread_settings_applied',
+]);
+const HISTORY_STATE_MARKERS = [
+  '"type":"session_meta"',
+  '"type":"turn_context"',
+  '"type":"compacted"',
+  '"type":"plan_update"',
+  '"type":"context_compacted"',
+  '"type":"thread_settings_applied"',
+  '"name":"update_plan"',
+  'tools.update_plan',
+].map((marker) => Buffer.from(marker));
+const HISTORY_MARKER_OVERLAP = Math.max(
+  ...HISTORY_STATE_MARKERS.map((marker) => marker.length - 1)
+);
+
 interface RolloutBatch {
   records: RolloutLine[];
   nextOffset: number;
@@ -1013,6 +1126,194 @@ function hasTokenCount(records: readonly RolloutLine[]): boolean {
 }
 
 /**
+ * Convert a skipped-history record into state that is safe to replay.
+ *
+ * Tool calls themselves are intentionally excluded: their matching output may
+ * be outside the bounded windows. `update_plan` is converted to a synthetic
+ * plan event so its latest state survives without creating an orphaned call.
+ */
+function recoverHistoryStateRecord(record: RolloutLine): RolloutLine | undefined {
+  if (
+    record.type === 'session_meta' ||
+    record.type === 'turn_context' ||
+    record.type === 'compacted'
+  ) {
+    return record;
+  }
+
+  if (record.type === 'event_msg') {
+    const payload = record.payload as EventMsgPayload;
+    return RECOVERABLE_EVENT_TYPES.has(payload.type) ? record : undefined;
+  }
+
+  if (record.type !== 'response_item') {
+    return undefined;
+  }
+  const payload = record.payload as ResponseItemPayload;
+  if (!isToolCallPayload(payload)) {
+    return undefined;
+  }
+
+  const analyzed = analyzeToolCall(payload);
+  if (analyzed.name.toLowerCase() !== 'update_plan') {
+    return undefined;
+  }
+  const plan = parsePlanSteps(
+    analyzed.parsedArguments ?? parseArgumentsValue(payload.arguments)
+  );
+  if (!plan) {
+    return undefined;
+  }
+
+  return {
+    timestamp: record.timestamp,
+    type: 'event_msg',
+    payload: { type: 'plan_update', plan },
+  };
+}
+
+interface HistoryStateScan {
+  records: RolloutLine[];
+  malformedLines: number;
+}
+
+/**
+ * Stream the skipped byte range as bytes and JSON.parse only low-frequency
+ * state records. Non-matching lines are never decoded into strings or objects,
+ * which was the expensive part of the old full-file first read.
+ */
+async function readSkippedHistoryState(
+  rolloutPath: string,
+  fromOffset: number,
+  toOffset: number
+): Promise<HistoryStateScan> {
+  if (toOffset <= fromOffset) {
+    return { records: [], malformedLines: 0 };
+  }
+
+  const records: RolloutLine[] = [];
+  let malformedLines = 0;
+  let lineFragments: Buffer[] = [];
+  let lineBytes = 0;
+  let markerTail = Buffer.alloc(0);
+  let candidate = false;
+  let rejected = false;
+  let scannedBytes = 0;
+
+  const resetLine = (): void => {
+    lineFragments = [];
+    lineBytes = 0;
+    markerTail = Buffer.alloc(0);
+    candidate = false;
+    rejected = false;
+  };
+
+  const appendFragment = (fragment: Buffer): void => {
+    if (fragment.length === 0 || rejected) {
+      return;
+    }
+
+    lineBytes += fragment.length;
+    if (lineBytes > MAX_INCREMENTAL_READ_BYTES) {
+      if (candidate) {
+        throw new Error(
+          `Rollout state record exceeds the ${MAX_INCREMENTAL_READ_BYTES}-byte limit: ${rolloutPath}`
+        );
+      }
+      // State markers occur in the JSON envelope or at the start of an
+      // update_plan source cell. Do not retain an unbounded non-state line.
+      rejected = true;
+      lineFragments = [];
+      markerTail = Buffer.alloc(0);
+      return;
+    }
+
+    if (!candidate) {
+      candidate = HISTORY_STATE_MARKERS.some(
+        (marker) => fragment.indexOf(marker) >= 0
+      );
+      if (!candidate && markerTail.length > 0) {
+        const boundaryProbe = Buffer.concat([
+          markerTail,
+          fragment.subarray(0, HISTORY_MARKER_OVERLAP),
+        ]);
+        candidate = HISTORY_STATE_MARKERS.some(
+          (marker) => boundaryProbe.indexOf(marker) >= 0
+        );
+      }
+    }
+
+    if (fragment.length >= HISTORY_MARKER_OVERLAP) {
+      markerTail = Buffer.from(
+        fragment.subarray(fragment.length - HISTORY_MARKER_OVERLAP)
+      );
+    } else {
+      const combinedTail = Buffer.concat([markerTail, fragment]);
+      markerTail = Buffer.from(
+        combinedTail.subarray(
+          Math.max(0, combinedTail.length - HISTORY_MARKER_OVERLAP)
+        )
+      );
+    }
+    lineFragments.push(fragment);
+  };
+
+  const finishLine = (): void => {
+    if (candidate && !rejected) {
+      try {
+        const line = lineFragments.length === 1
+          ? lineFragments[0]
+          : Buffer.concat(lineFragments, lineBytes);
+        const recovered = recoverHistoryStateRecord(
+          JSON.parse(line.toString('utf8')) as RolloutLine
+        );
+        if (recovered) {
+          records.push(recovered);
+        }
+      } catch {
+        malformedLines++;
+      }
+    }
+    resetLine();
+  };
+
+  const input = fs.createReadStream(rolloutPath, {
+    start: fromOffset,
+    end: toOffset - 1,
+  });
+  try {
+    for await (const value of input) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      scannedBytes += chunk.length;
+      let fragmentStart = 0;
+      for (;;) {
+        const newline = chunk.indexOf(0x0a, fragmentStart);
+        if (newline < 0) {
+          appendFragment(chunk.subarray(fragmentStart));
+          break;
+        }
+        appendFragment(chunk.subarray(fragmentStart, newline));
+        finishLine();
+        fragmentStart = newline + 1;
+        if (fragmentStart >= chunk.length) {
+          break;
+        }
+      }
+    }
+    const expectedBytes = toOffset - fromOffset;
+    if (scannedBytes !== expectedBytes) {
+      throw new Error(
+        `Unexpected end of rollout state scan at offset ${fromOffset + scannedBytes}.`
+      );
+    }
+  } finally {
+    input.destroy();
+  }
+
+  return { records, malformedLines };
+}
+
+/**
  * Read the span this pass needs.
  *
  * Reading a whole rollout cost 292ms of blocked event loop and a 124MB RSS
@@ -1020,9 +1321,9 @@ function hasTokenCount(records: readonly RolloutLine[]): boolean {
  * and first entry into the overview, once per session. The first pass over a
  * large file therefore reads a bounded head and tail instead.
  *
- * Only `session_meta` is kept from the head. Replaying arbitrary head records
- * would strand tool calls whose completions fell in the skipped middle, leaving
- * them "running" forever and pinning the turn phase.
+ * Only state records are kept from the head and skipped middle. Replaying
+ * arbitrary tool calls would strand calls whose completions fell outside the
+ * bounded windows, leaving them "running" forever and pinning the turn phase.
  */
 async function readRolloutBatch(
   rolloutPath: string,
@@ -1060,15 +1361,26 @@ async function readRolloutBatch(
     return readWholeSpan(0);
   }
 
+  const headState = head.records
+    .map(recoverHistoryStateRecord)
+    .filter((record): record is RolloutLine => record !== undefined);
+  const middleState = await readSkippedHistoryState(
+    rolloutPath,
+    head.nextOffset,
+    tail.recordsStartOffset
+  );
+
   return {
     records: [
-      ...head.records.filter((record) => record?.type === 'session_meta'),
+      ...headState,
+      ...middleState.records,
       ...tail.records,
     ],
     nextOffset: tail.nextOffset,
     // The file did not shrink; this span was bounded deliberately.
     truncated: false,
-    malformedLines: tail.malformedLines,
+    malformedLines:
+      head.malformedLines + middleState.malformedLines + tail.malformedLines,
     partialHistory: true,
   };
 }
@@ -1226,6 +1538,38 @@ export async function parseRolloutFile(
     }
   };
 
+  const recordWebSearch = (item: Record<string, unknown>): void => {
+    const callId = openExecCallId;
+    if (
+      !callId ||
+      item.type !== 'Extension' ||
+      item.kind !== 'web.search'
+    ) {
+      return;
+    }
+    const call = runningCalls.get(callId);
+    if (!call || call.name.toLowerCase() !== 'web__run') {
+      return;
+    }
+
+    const action = isRecord(item.action) ? item.action : undefined;
+    const actionQueries = Array.isArray(action?.queries)
+      ? action.queries
+      : [];
+    const query =
+      stringValue(item.query) ??
+      stringValue(action?.query) ??
+      actionQueries.find((candidate): candidate is string =>
+        typeof candidate === 'string'
+      );
+    if (!query) {
+      return;
+    }
+
+    call.summary = sanitizeDisplayText(query, MAX_TOOL_SUMMARY_LENGTH);
+    call.target = sanitizeDisplayText(query, MAX_TOOL_TARGET_LENGTH);
+  };
+
   const addToolCall = (
     toolName: string,
     callId: string,
@@ -1361,6 +1705,7 @@ export async function parseRolloutFile(
       const contextModel =
         payload.model ?? payload.collaboration_mode?.settings?.model;
       const reasoningEffort =
+        payload.effort ??
         payload.reasoning_effort ??
         payload.collaboration_mode?.settings?.reasoning_effort;
 
@@ -1479,12 +1824,15 @@ export async function parseRolloutFile(
         planProgress = createPlanProgress(plan, timestamp);
       }
     } else if (payload.type === 'item_completed') {
-      // Only the command records are read. The rest of the unified item
-      // stream does duplicate the response_item records this parser already
-      // consumes, and counting them twice is what the ignore list prevented.
+      // Unified items enrich the still-open call but never create another
+      // call: counting them would duplicate the response_item stream.
       const item = (payload as { item?: unknown }).item;
-      if (isRecord(item) && item.type === 'CommandExecution') {
-        recordCommandExecution(item);
+      if (isRecord(item)) {
+        if (item.type === 'CommandExecution') {
+          recordCommandExecution(item);
+        } else if (item.type === 'Extension' && item.kind === 'web.search') {
+          recordWebSearch(item);
+        }
       }
     } else if (payload.type === 'token_count') {
       if (payload.info) {
@@ -1574,6 +1922,12 @@ export async function parseRolloutFile(
         stringValue(
           threadSettings?.collaboration_mode?.settings?.reasoning_effort
         );
+      const settingsApprovalPolicy = stringValue(
+        threadSettings?.approval_policy
+      );
+      const settingsSandboxMode =
+        stringValue(threadSettings?.sandbox_mode) ??
+        stringValue(threadSettings?.sandbox_policy?.type);
 
       if (settingsModel) {
         sessionModel = settingsModel;
@@ -1585,6 +1939,18 @@ export async function parseRolloutFile(
         sessionReasoningEffort = settingsEffort;
         if (session) {
           session.reasoningEffort = settingsEffort;
+        }
+      }
+      if (settingsApprovalPolicy) {
+        sessionApprovalPolicy = settingsApprovalPolicy;
+        if (session) {
+          session.approvalPolicy = settingsApprovalPolicy;
+        }
+      }
+      if (settingsSandboxMode) {
+        sessionSandboxMode = settingsSandboxMode;
+        if (session) {
+          session.sandboxMode = settingsSandboxMode;
         }
       }
       const serviceTier = threadSettings?.service_tier;

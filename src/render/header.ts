@@ -265,9 +265,14 @@ function renderExpandedLayout(
   // mode removes, which is the case with no other on-screen evidence.
   const toolDetailsNotice = toolsLine ? null : renderToolDetailsNotice(width);
 
+  const runtimeSandbox = data.session?.sandboxMode;
+  const accessUnknown =
+    data.partialHistory === true && runtimeSandbox === undefined;
   const fullAccess =
-    (data.session?.sandboxMode ?? data.config.sandbox_mode) ===
-    'danger-full-access';
+    runtimeSandbox === 'danger-full-access' ||
+    (!data.partialHistory &&
+      runtimeSandbox === undefined &&
+      data.config.sandbox_mode === 'danger-full-access');
 
   /**
    * One rung of the layout ladder, from most to least informative. The ladder
@@ -289,9 +294,14 @@ function renderExpandedLayout(
     // whole category to go — but it is also where the sandbox badge lives, so
     // that badge moves up to row 1 rather than disappearing with it.
     const keepEnv = Boolean(envLine) && !compression.dropEnv;
+    const movedAccessBadge = fullAccess
+      ? theme.error('[FULL ACCESS]')
+      : accessUnknown
+        ? colors.dim('[ACCESS ?]')
+        : null;
     lines.push(
       buildRow1(
-        !keepEnv && fullAccess ? theme.error('[FULL ACCESS]') : null
+        !keepEnv ? movedAccessBadge : null
       )
     );
     if (keepEnv && envLine) {

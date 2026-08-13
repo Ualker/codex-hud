@@ -203,6 +203,11 @@ try {
       alignToLineStart: true,
     });
     assert.deepEqual(aligned.records, [{ second: 2 }, { third: 3 }]);
+    assert.equal(
+      aligned.recordsStartOffset,
+      Buffer.byteLength('{"first":1}\n'),
+      'the aligned batch exposes the absolute first-record boundary'
+    );
     assert.equal(aligned.malformedLines, 0, 'the leading fragment is not malformed');
     assert.equal(
       aligned.nextOffset,

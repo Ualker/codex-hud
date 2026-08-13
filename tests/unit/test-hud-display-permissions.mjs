@@ -125,6 +125,93 @@ assert.doesNotMatch(
 );
 assert.match(runtimeEnvironmentLine, /MCP configured: 2/);
 
+const recoveredPartialLines = renderHud({
+  ...baseData,
+  partialHistory: true,
+  session: {
+    ...baseData.session,
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+  },
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+assert.ok(
+  recoveredPartialLines.some((line) => line.startsWith('[FULL ACCESS]')),
+  'recovered runtime state stays authoritative even when counters are partial'
+);
+
+const unknownPartialSession = { ...baseData.session };
+delete unknownPartialSession.model;
+delete unknownPartialSession.reasoningEffort;
+delete unknownPartialSession.approvalPolicy;
+delete unknownPartialSession.sandboxMode;
+delete unknownPartialSession.serviceTier;
+const unknownPartialLines = renderHud({
+  ...baseData,
+  partialHistory: true,
+  session: unknownPartialSession,
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+assert.match(
+  unknownPartialLines[0],
+  /^\[\?\]/,
+  'a partial rollout must not present the current config model as session fact'
+);
+const unknownEnvironmentLine = unknownPartialLines.find((line) =>
+  line.includes('Approval:')
+);
+assert.ok(unknownEnvironmentLine);
+assert.match(unknownEnvironmentLine, /Approval: \?/);
+assert.match(unknownEnvironmentLine, /Sandbox: \?/);
+assert.match(unknownEnvironmentLine, /Fast: \?/);
+assert.doesNotMatch(
+  unknownEnvironmentLine,
+  /ask for approval|workspace-write/,
+  'partial-history fallbacks carry an uncertainty marker instead of config values'
+);
+const compressedUnknownLines = renderHud({
+  ...baseData,
+  partialHistory: true,
+  session: unknownPartialSession,
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+  maxLines: 1,
+}).map(stripAnsi);
+assert.match(
+  compressedUnknownLines[0],
+  /\[ACCESS \?\]/,
+  'dropping the environment row moves an unknown-access badge to row one'
+);
+assert.doesNotMatch(compressedUnknownLines[0], /\[FULL ACCESS\]/);
+
+const unknownEffortSession = {
+  ...baseData.session,
+  model: 'gpt-5.6-session',
+};
+delete unknownEffortSession.reasoningEffort;
+const unknownEffortLines = renderHud({
+  ...baseData,
+  partialHistory: true,
+  session: unknownEffortSession,
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+assert.match(
+  unknownEffortLines[0],
+  /^\[gpt-5\.6-session \?\]/,
+  'a recovered model does not borrow a missing reasoning effort from config'
+);
+
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'on-request' }), 'ask for approval');
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'untrusted' }), 'ask for approval');
 assert.equal(getApprovalPolicyDisplay({ approval_policy: 'on-failure' }), 'approve for me');

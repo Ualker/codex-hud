@@ -171,6 +171,86 @@ try {
         ],
       },
     },
+    {
+      timestamp: '2026-07-12T00:00:08.210Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call_web_inline',
+        name: 'exec',
+        input: [
+          'const r = await tools.web__run({',
+          'search_query:[{q:"Codex HUD bounded rollout settings"}],',
+          'response_length:"short"}); text(r);',
+        ].join(''),
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:00:08.220Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'call_web_inline',
+        output: 'search complete',
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:00:08.230Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call_web_extension',
+        name: 'exec',
+        input: 'const request = makeRequest(); const r = await tools.web__run(request); text(r);',
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:00:08.240Z',
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        item: {
+          type: 'Extension',
+          kind: 'web.search',
+          query: 'site:developers.openai.com/codex hooks subagent notifications ...',
+          action: {
+            type: 'search',
+            queries: [
+              'site:developers.openai.com/codex hooks subagent notifications',
+              'site:developers.openai.com/codex multi-agent subagent hooks',
+            ],
+          },
+        },
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:00:08.250Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'call_web_extension',
+        output: 'search complete',
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:00:08.260Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        call_id: 'call_web_malformed',
+        name: 'exec',
+        input: 'const r = await tools.web__run({search_query:[{q":"Malformed but visible query"}]}); text(r);',
+      },
+    },
+    {
+      timestamp: '2026-07-12T00:00:08.270Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        call_id: 'call_web_malformed',
+        output: 'Script failed',
+      },
+    },
     functionCall(
       '2026-07-12T00:00:08.300Z',
       'call_exit_without_wall_time',
@@ -271,6 +351,27 @@ try {
     kind: 'completed',
     wallTimeMs: 200,
   });
+
+  const inlineWeb = calls.call_web_inline;
+  assert.equal(inlineWeb.name, 'web__run');
+  assert.equal(inlineWeb.summary, 'Codex HUD bounded rollout settings');
+  assert.equal(inlineWeb.target, 'Codex HUD bounded rollout settings');
+
+  const extensionWeb = calls.call_web_extension;
+  assert.equal(extensionWeb.name, 'web__run');
+  assert.equal(
+    extensionWeb.summary,
+    'site:developers.openai.com/codex hooks subagent notifications ...'
+  );
+  assert.match(
+    extensionWeb.target,
+    /^site:developers\.openai\.com\/codex hooks subagent notifications/
+  );
+
+  const malformedWeb = calls.call_web_malformed;
+  assert.equal(malformedWeb.name, 'web__run');
+  assert.equal(malformedWeb.summary, 'Malformed but visible query');
+  assert.equal(malformedWeb.target, 'Malformed but visible query');
 
   const noWallTime = calls.call_exit_without_wall_time;
   assert.equal(noWallTime.status, 'error');
