@@ -27,6 +27,25 @@ const defaultLine = stripAnsi(renderToolsLine(toolActivity, 120) ?? '');
 assert.match(defaultLine, /exec_command: curl/);
 assert.doesNotMatch(defaultLine, /Authorization|internal\.test|secret|-H/);
 
+const webLine = stripAnsi(renderToolsLine({
+  ...toolActivity,
+  recentCalls: [
+    {
+      id: 'web-1',
+      name: 'web__run',
+      status: 'running',
+      timestamp: new Date(Date.now() - 1000),
+      summary: 'site:developers.openai.com/codex hooks',
+      target: 'site:developers.openai.com/codex hooks',
+    },
+  ],
+}) ?? '');
+assert.match(
+  webLine,
+  /web__run: site:developers\.openai\.com\/codex hooks/,
+  'web searches expose their sanitized query in targets mode'
+);
+
 process.env.CODEX_HUD_TOOL_DETAILS = 'full';
 const fullLine = stripAnsi(renderToolsLine(toolActivity, 120) ?? '');
 assert.match(fullLine, /Authorization/);

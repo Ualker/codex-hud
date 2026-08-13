@@ -112,6 +112,59 @@ interface TopLevelSplit {
   separators: string[];
 }
 
+/** Return the closing brace of a shell `name() { ... }` definition. */
+function shellFunctionEnd(command: string, start: number): number | undefined {
+  const match = /^(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{/
+    .exec(command.slice(start));
+  if (!match) {
+    return undefined;
+  }
+
+  const openBrace = start + match[0].lastIndexOf('{');
+  let depth = 1;
+  let quote: "'" | '"' | '`' | null = null;
+  let inComment = false;
+  for (let index = openBrace + 1; index < command.length; index++) {
+    const char = command[index];
+
+    if (inComment) {
+      if (char === '\n') {
+        inComment = false;
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === '\\' && quote !== "'" && index + 1 < command.length) {
+        index++;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '#') {
+      inComment = true;
+      continue;
+    }
+    if (char === '\\' && index + 1 < command.length) {
+      index++;
+      continue;
+    }
+    if (char === '{') {
+      depth++;
+    } else if (char === '}') {
+      depth--;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Split on top-level `&&`, `||`, `|`, `;` while honoring quotes. */
 function splitTopLevel(command: string): TopLevelSplit {
   const segments: string[] = [];
@@ -131,6 +184,18 @@ function splitTopLevel(command: string): TopLevelSplit {
         quote = null;
       }
       continue;
+    }
+
+    // A function definition declares a later command; it is not itself the
+    // command being run. Skip the whole body so its first internal command
+    // cannot leak into the display head either.
+    if (current.trim().length === 0) {
+      const functionEnd = shellFunctionEnd(command, index);
+      if (functionEnd !== undefined) {
+        current = '';
+        index = functionEnd;
+        continue;
+      }
     }
 
     if (char === "'" || char === '"' || char === '`') {
@@ -186,7 +251,10 @@ function baseName(token: string): string {
 
 /** Normalize a candidate program token; empty result means "skip token". */
 function programName(token: string): string {
-  const cleaned = token.replace(/^[\\(]+/, '').replace(/\)+$/, '');
+  const cleaned = token
+    .replace(/\(\)$/, '')
+    .replace(/^[\\(]+/, '')
+    .replace(/\)+$/, '');
   // Whatever survives the stripping is printed as a program name, so a token
   // made only of whitespace is not one. A line continuation used to leave the
   // newline itself here, and it reached the pane as a `↵` cell where a

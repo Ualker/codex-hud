@@ -300,6 +300,11 @@ export interface EventMsgPayload {
     model_provider_id?: string;
     service_tier?: string | null;
     reasoning_effort?: string;
+    approval_policy?: string;
+    sandbox_mode?: string;
+    sandbox_policy?: {
+      type?: string;
+    };
     collaboration_mode?: {
       settings?: {
         model?: string;
@@ -328,6 +333,8 @@ export interface TurnContextPayload {
   };
   model?: string;
   reasoning_effort?: string;
+  /** codex-cli 0.147 writes the effective effort under this top-level key. */
+  effort?: string;
   collaboration_mode?: {
     settings?: {
       model?: string;

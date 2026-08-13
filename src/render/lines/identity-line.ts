@@ -65,14 +65,32 @@ export function renderIdentityLine(
   const configHealth = data.collectorHealth?.environment;
   const configKnown =
     configHealth === undefined || configHealth.lastSuccessAt !== undefined;
-  const modelName = data.session?.model ?? getModelDisplayName(data.config);
-  const reasoningEffort = data.session?.reasoningEffort ?? data.config.model_reasoning_effort;
-  const showReasoningEffort = Boolean((data.session?.model ?? data.config.model) && reasoningEffort);
+  const partialRuntime = data.partialHistory === true;
+  const runtimeModel = data.session?.model;
+  const modelUnknown = partialRuntime && runtimeModel === undefined;
+  const modelName = modelUnknown
+    ? '?'
+    : runtimeModel ?? getModelDisplayName(data.config);
+  const runtimeReasoningEffort = data.session?.reasoningEffort;
+  const reasoningUnknown =
+    partialRuntime && runtimeModel !== undefined && runtimeReasoningEffort === undefined;
+  const reasoningEffort =
+    runtimeReasoningEffort ??
+    (partialRuntime ? undefined : data.config.model_reasoning_effort);
+  const showReasoningEffort = Boolean(
+    !modelUnknown &&
+    (runtimeModel ?? data.config.model) &&
+    (reasoningEffort || reasoningUnknown)
+  );
   // Same marker the truncation helpers use for "there is more than this".
-  const identityName = data.session?.model === undefined && !configKnown
+  const identityName = modelUnknown
+    ? '?'
+    : data.session?.model === undefined && !configKnown
     ? '…'
     : sanitizeTerminalText(
-        showReasoningEffort ? `${modelName} ${reasoningEffort}` : modelName
+        showReasoningEffort
+          ? `${modelName} ${reasoningEffort ?? '?'}`
+          : modelName
       ) || 'default';
   let contextDisplay = '';
 

@@ -46,6 +46,23 @@ const cases = [
   // which the pane printed as a lone `↵` between two real commands.
   ['env \\\n  A=1 \\\n  /bin/echo hi', 'echo'],
   ['printf a \\\n  b\nmake test', 'printf ; make test'],
+  // Shell function definitions are declarations, not commands. The complete
+  // body is skipped, and later invocations never keep a dangling `(`.
+  [
+    [
+      'canary_root="$(mktemp -d /tmp/canary.XXXXXX)"',
+      'run_canary() {',
+      '  cmux-codex-wrapper "$1"',
+      '  printf "%s\\n" "$?"',
+      '}',
+      'run_canary one &',
+      'run_canary two &',
+      'wait "$!"',
+    ].join('\n'),
+    'run_canary ; run_canary ; wait',
+  ],
+  ['run_canary() {\n  printf ok\n}', undefined],
+  ['function cleanup() { rm -f /tmp/x; }\ncleanup', 'cleanup'],
 ];
 
 // Whatever a head contains reaches the pane verbatim, so no control character

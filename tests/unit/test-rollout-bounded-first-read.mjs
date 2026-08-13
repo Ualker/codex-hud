@@ -39,6 +39,44 @@ const tokenCount = (total) => ({
   },
 });
 
+const turnContext = ({
+  approval = 'never',
+  sandbox = 'danger-full-access',
+  model = 'gpt-5.6-sol',
+  effort = 'max',
+  nestedEffort = 'low',
+  instructions,
+} = {}) => ({
+  timestamp: '2026-08-12T01:30:00.000Z',
+  type: 'turn_context',
+  payload: {
+    approval_policy: approval,
+    sandbox_policy: { type: sandbox },
+    model,
+    effort,
+    collaboration_mode: {
+      settings: {
+        model,
+        reasoning_effort: nestedEffort,
+        ...(instructions ? { developer_instructions: instructions } : {}),
+      },
+    },
+  },
+});
+
+const updatePlan = (statuses) => ({
+  timestamp: '2026-08-12T01:31:00.000Z',
+  type: 'response_item',
+  payload: {
+    type: 'custom_tool_call',
+    call_id: 'middle-plan',
+    name: 'exec',
+    input: `const r = await tools.update_plan({plan:${JSON.stringify(
+      statuses.map((status, index) => ({ step: `step ${index + 1}`, status }))
+    )}}); text(r);`,
+  },
+});
+
 /** A record big enough to push the file past the head+tail budget quickly. */
 const filler = (index) => ({
   timestamp: '2026-08-12T01:00:00.000Z',
@@ -78,6 +116,13 @@ try {
   write(big, [
     sessionMeta('019f1111-a111-7111-8111-111111111111'),
     ...midCalls,
+    turnContext(),
+    {
+      timestamp: '2026-08-12T01:30:30.000Z',
+      type: 'compacted',
+      payload: {},
+    },
+    updatePlan(['completed', 'in_progress', 'pending']),
     // 40 fillers ≈ 2.6MB, comfortably past the 64KB head + 2MB tail budget.
     ...Array.from({ length: 40 }, (_, i) => filler(100 + i)),
     {
@@ -116,6 +161,28 @@ try {
     '019f1111-a111-7111-8111-111111111111',
     'session_meta is recovered from the head even though the middle is skipped'
   );
+  assert.deepEqual(
+    {
+      model: result.session?.model,
+      reasoningEffort: result.session?.reasoningEffort,
+      approvalPolicy: result.session?.approvalPolicy,
+      sandboxMode: result.session?.sandboxMode,
+    },
+    {
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'max',
+      approvalPolicy: 'never',
+      sandboxMode: 'danger-full-access',
+    },
+    'skipped-middle turn_context state is recovered without replaying tools'
+  );
+  assert.equal(
+    result.compactCount,
+    1,
+    'skipped-middle compactions remain an accurate lower-bound component'
+  );
+  assert.equal(result.planProgress?.completedSteps, 1);
+  assert.equal(result.planProgress?.totalSteps, 3);
   assert.equal(
     result.tokenUsage?.last_token_usage?.total_tokens,
     154940,
@@ -170,6 +237,82 @@ try {
     incremental.partialHistory,
     true,
     'partialHistory is sticky across later incremental parses'
+  );
+
+  // ---- a turn_context cut by the tail boundary is still recovered --------
+  // This is the live failure shape: the 2 MB tail begins inside the latest
+  // turn_context, so the tail reader discards its leading fragment.
+  const boundary = rolloutPath('019f4444-d444-7444-8444-444444444444');
+  const tailBytes = 2 * 1024 * 1024;
+  const boundaryContext = turnContext({
+    model: 'gpt-5.6-boundary',
+    effort: 'xhigh',
+    nestedEffort: 'low',
+    instructions: 'i'.repeat(32 * 1024),
+  });
+  const prefixRecords = [
+    sessionMeta('019f4444-d444-7444-8444-444444444444'),
+    turnContext({
+      approval: 'on-request',
+      sandbox: 'workspace-write',
+      model: 'gpt-5.5-old',
+      effort: 'low',
+    }),
+    filler(900),
+  ];
+  const suffixRecords = [
+    tokenCount(9001),
+    {
+      timestamp: '2026-08-12T02:00:01.000Z',
+      type: 'event_msg',
+      payload: { type: 'task_complete', turn_id: 'boundary-turn' },
+    },
+  ];
+  const serialize = (record) => `${JSON.stringify(record)}\n`;
+  const prefixText = prefixRecords.map(serialize).join('');
+  const contextText = serialize(boundaryContext);
+  const suffixText = suffixRecords.map(serialize).join('');
+  const paddingRecord = filler(901);
+  paddingRecord.payload.content[0].text = '';
+  const emptyPaddingText = serialize(paddingRecord);
+  const desiredBytesAfterContextStart = tailBytes + 1024;
+  const paddingLength =
+    desiredBytesAfterContextStart -
+    Buffer.byteLength(contextText) -
+    Buffer.byteLength(emptyPaddingText) -
+    Buffer.byteLength(suffixText);
+  assert.ok(paddingLength > 0, 'boundary fixture needs positive tail padding');
+  paddingRecord.payload.content[0].text = 'p'.repeat(paddingLength);
+  const boundaryText =
+    prefixText + contextText + serialize(paddingRecord) + suffixText;
+  fs.writeFileSync(boundary, boundaryText, 'utf8');
+
+  const boundaryStart = Buffer.byteLength(prefixText);
+  const tailStart = fs.statSync(boundary).size - tailBytes;
+  assert.ok(tailStart > boundaryStart);
+  assert.ok(
+    tailStart < boundaryStart + Buffer.byteLength(contextText),
+    'the bounded tail must start inside the latest turn_context line'
+  );
+
+  const boundaryParser = new RolloutParser(10);
+  boundaryParser.setRolloutPath(boundary);
+  const boundaryResult = await boundaryParser.parse();
+  assert.equal(boundaryResult.partialHistory, true);
+  assert.deepEqual(
+    {
+      model: boundaryResult.session?.model,
+      reasoningEffort: boundaryResult.session?.reasoningEffort,
+      approvalPolicy: boundaryResult.session?.approvalPolicy,
+      sandboxMode: boundaryResult.session?.sandboxMode,
+    },
+    {
+      model: 'gpt-5.6-boundary',
+      reasoningEffort: 'xhigh',
+      approvalPolicy: 'never',
+      sandboxMode: 'danger-full-access',
+    },
+    'the crossing turn_context must override stale head settings'
   );
 
   // ---- a small rollout is still read whole --------------------------------
