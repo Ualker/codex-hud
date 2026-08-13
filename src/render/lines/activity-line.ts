@@ -1107,11 +1107,28 @@ export function renderSessionDetailLine(
   data: HudData,
   width: number = Number.POSITIVE_INFINITY
 ): string | null {
+  // The session id is the only value on this row the user can act on:
+  // `codex resume|fork|archive|delete|unarchive` all take the UUID. Abbreviated
+  // to `019ff4e2…2ecc` it could be read but neither typed nor copied, so the
+  // full id is shown whenever the row has room and the short form is kept only
+  // as the narrow-pane fallback.
+  const full = buildSessionDetailParts(data, width, false);
+  if (full !== null) {
+    return full;
+  }
+  return buildSessionDetailParts(data, width, true);
+}
+
+function buildSessionDetailParts(
+  data: HudData,
+  width: number,
+  abbreviateSessionId: boolean
+): string | null {
   const optionalParts: string[] = [];
-  
+
   // Always show session info if we have a session
   const session = data.session;
-  
+
   // Show working directory
   const cwd = sanitizeTerminalText(
     session?.cwd || data.project.cwd
@@ -1138,13 +1155,16 @@ export function renderSessionDetailLine(
   }
 
   // Show session ID if available
+  let sessionPart: string | undefined;
   if (session?.id) {
-    optionalParts.push(
+    const id = sanitizeTerminalText(session.id);
+    sessionPart =
       colors.dim('Session: ') +
-      theme.info(formatSessionId(sanitizeTerminalText(session.id)))
-    );
+      theme.info(abbreviateSessionId ? formatSessionId(id) : id);
+    optionalParts.push(sessionPart);
   }
-  
+
+
   // Show CLI version if available
   if (session?.cliVersion) {
     optionalParts.push(
@@ -1177,6 +1197,15 @@ export function renderSessionDetailLine(
       break;
     }
     selected.push(part);
+  }
+  if (
+    !abbreviateSessionId &&
+    sessionPart !== undefined &&
+    !selected.includes(sessionPart)
+  ) {
+    // The full id did not fit. Rather than spend the row on the static cells
+    // that outlived it, let the caller retry with the abbreviated form.
+    return null;
   }
   return truncateAnsi(
     (selected.length > 0 ? selected : [optionalParts[0] ?? '']).join(separator),

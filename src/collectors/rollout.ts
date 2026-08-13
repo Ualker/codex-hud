@@ -23,7 +23,8 @@ import type {
 } from '../types.js';
 import { readCompleteJsonl } from '../utils/jsonl-tail.js';
 import { extractCommandHead } from '../utils/command-head.js';
-import { EXECUTION_TOOL_NAMES } from '../utils/tool-names.js';
+import { EXECUTION_TOOL_NAMES, runsShellCommand } from '../utils/tool-names.js';
+import { findJsStringContaining, parseJsLiteral } from '../utils/js-literal.js';
 
 /**
  * Result of parsing a rollout file
@@ -190,6 +191,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * `CommandExecution.cwd` is a `file://` URL; every other path the HUD handles
+ * is a plain filesystem path, so it is normalized on the way in.
+ */
+function decodeFileUrlPath(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value.slice('file://'.length)) || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const KNOWN_TOP_LEVEL_TYPES = new Set([
@@ -706,6 +719,13 @@ export function normalizeCustomToolName(
 function analyzeToolCall(payload: ResponseItemPayload): {
   name: string;
   details: ToolDisplayDetails;
+  /**
+   * The decoded arguments, for callers that need more than the display
+   * summary. `update_plan` used to re-read `payload.arguments`, which a
+   * custom tool call never has — the plan lives in `input` — so the plan row
+   * never rendered once codex moved every tool behind `exec`.
+   */
+  parsedArguments?: unknown;
 } {
   if (payload.type === 'tool_search_call') {
     return {
@@ -721,12 +741,11 @@ function analyzeToolCall(payload: ResponseItemPayload): {
     sanitizeDisplayText(payload.name ?? 'unknown', 80) ?? 'unknown';
 
   if (payload.type !== 'custom_tool_call') {
+    const parsedArguments = parseArgumentsValue(payload.arguments);
     return {
       name: protocolName,
-      details: summarizeToolArguments(
-        protocolName,
-        parseArgumentsValue(payload.arguments)
-      ),
+      details: summarizeToolArguments(protocolName, parsedArguments),
+      parsedArguments,
     };
   }
 
@@ -750,10 +769,32 @@ function analyzeToolCall(payload: ResponseItemPayload): {
 
   const invocation = invocations[0];
   const argumentSource = extractCustomInvocationArgument(source, invocation);
-  const parsedArgument = parseJsonValue(argumentSource);
+  // The argument is JavaScript source, not JSON: `{cmd: "…", workdir: "…"}`
+  // has unquoted keys, so strict parsing failed on every call ever made by
+  // codex-cli 0.147 and the tool row lost its commands. JSON is still tried
+  // first for the protocols that do send it.
+  const parsedArgument =
+    parseJsonValue(argumentSource) ?? parseJsLiteral(argumentSource);
+  const details = summarizeToolArguments(invocation.name, parsedArgument);
+  if (
+    details.summary === undefined &&
+    invocation.name.toLowerCase() === 'apply_patch'
+  ) {
+    // `tools.apply_patch(patch)` passes a variable, so there is no literal to
+    // read; the patch body is still in the script as a plain string.
+    const patch = findJsStringContaining(source, '*** Begin Patch');
+    if (patch) {
+      return {
+        name: invocation.name,
+        details: summarizeToolArguments(invocation.name, { patch }),
+        parsedArguments: { patch },
+      };
+    }
+  }
   return {
     name: invocation.name,
-    details: summarizeToolArguments(invocation.name, parsedArgument),
+    details,
+    parsedArguments: parsedArgument,
   };
 }
 
@@ -1124,6 +1165,67 @@ export async function parseRolloutFile(
     turnActivity = null;
   }
 
+  // codex emits one `item_completed`/CommandExecution per command a script
+  // runs, strictly between the tool call and its output, so the open call is
+  // the one they belong to — no id join is needed. This stream is the only
+  // place an exit code appears: the `exec` script that wrapped the command
+  // reports "Script completed" even when the command inside it exits 1, which
+  // is why failures used to render as ✓.
+  let openExecCallId: string | null = null;
+  const execFailures = new Map<string, number>();
+
+  const recordCommandExecution = (item: Record<string, unknown>): void => {
+    const callId = openExecCallId;
+    if (!callId) {
+      return;
+    }
+    const call = runningCalls.get(callId);
+    if (!call) {
+      return;
+    }
+
+    const exitCode = item.exit_code;
+    if (typeof exitCode === 'number' && exitCode !== 0) {
+      // Keep the first failure: it is the one that explains the rest. The
+      // exit code belongs to whichever call was open — a `wait` whose cell
+      // failed did fail — even when the command text below does not.
+      if (!execFailures.has(callId)) {
+        execFailures.set(callId, exitCode);
+      }
+    }
+
+    if (!runsShellCommand(call.name)) {
+      return;
+    }
+
+    const parsedCommands = Array.isArray(item.parsed_cmd) ? item.parsed_cmd : [];
+    const firstParsed = parsedCommands.find(isRecord);
+    const rawCommand =
+      stringValue(firstParsed?.cmd) ??
+      (Array.isArray(item.command)
+        ? item.command.filter((part): part is string => typeof part === 'string').pop()
+        : undefined);
+    if (rawCommand && !call.summary) {
+      call.summary = sanitizeDisplayText(rawCommand, MAX_TOOL_SUMMARY_LENGTH);
+    }
+    if (rawCommand && !call.target) {
+      const head = extractCommandHead(rawCommand);
+      if (head) {
+        call.target = sanitizeDisplayText(head, MAX_TOOL_TARGET_LENGTH);
+      }
+    }
+    if (!call.workdir) {
+      // `cwd` arrives as a file URL.
+      const cwd = stringValue(item.cwd);
+      const decoded = cwd?.startsWith('file://')
+        ? decodeFileUrlPath(cwd)
+        : cwd;
+      if (decoded) {
+        call.workdir = sanitizeDisplayText(decoded, MAX_WORKDIR_LENGTH);
+      }
+    }
+  };
+
   const addToolCall = (
     toolName: string,
     callId: string,
@@ -1160,9 +1262,21 @@ export async function parseRolloutFile(
       return;
     }
     const completion = parseToolCompletion(runningCall.name, output);
-    runningCall.status = completion.failed ? 'error' : 'completed';
+    // A command that exited non-zero inside the script is a failure even
+    // though the script itself succeeded; the envelope cannot see it.
+    const execExitCode = execFailures.get(callId);
+    execFailures.delete(callId);
+    runningCall.status =
+      completion.failed || execExitCode !== undefined ? 'error' : 'completed';
     runningCall.duration = timestamp.getTime() - runningCall.timestamp.getTime();
-    runningCall.result = completion.result;
+    runningCall.result =
+      execExitCode !== undefined && completion.result?.exitCode === undefined
+        ? {
+            ...completion.result,
+            kind: 'exited',
+            exitCode: execExitCode,
+          }
+        : completion.result;
     runningCalls.delete(callId);
 
     const index = toolActivity.recentCalls.findIndex(
@@ -1299,10 +1413,12 @@ export async function parseRolloutFile(
         (payload.name || payload.type === 'tool_search_call')
       ) {
         lastToolActivityTime = timestamp;
-        const { name: toolName, details } = analyzeToolCall(payload);
+        const { name: toolName, details, parsedArguments } =
+          analyzeToolCall(payload);
         const callId =
           payload.call_id ?? payload.id ?? `call_${timestamp.getTime()}`;
         addToolCall(toolName, callId, timestamp, details);
+        openExecCallId = callId;
         turnActivity = transitionTurn(
           turnActivity,
           'running-tool',
@@ -1311,7 +1427,7 @@ export async function parseRolloutFile(
 
         if (toolName.toLowerCase() === 'update_plan') {
           const plan = parsePlanSteps(
-            parseArgumentsValue(payload.arguments)
+            parsedArguments ?? parseArgumentsValue(payload.arguments)
           );
           if (plan) {
             planProgress = createPlanProgress(plan, timestamp);
@@ -1319,6 +1435,9 @@ export async function parseRolloutFile(
         }
       } else if (isToolCallOutputPayload(payload) && payload.call_id) {
         lastToolActivityTime = timestamp;
+        if (openExecCallId === payload.call_id) {
+          openExecCallId = null;
+        }
         completeToolCall(payload.call_id, timestamp, payload.output);
         if (
           turnActivity?.phase === 'running-tool' &&
@@ -1358,6 +1477,14 @@ export async function parseRolloutFile(
       const plan = parsePlanSteps({ plan: payload.plan });
       if (plan) {
         planProgress = createPlanProgress(plan, timestamp);
+      }
+    } else if (payload.type === 'item_completed') {
+      // Only the command records are read. The rest of the unified item
+      // stream does duplicate the response_item records this parser already
+      // consumes, and counting them twice is what the ignore list prevented.
+      const item = (payload as { item?: unknown }).item;
+      if (isRecord(item) && item.type === 'CommandExecution') {
+        recordCommandExecution(item);
       }
     } else if (payload.type === 'token_count') {
       if (payload.info) {

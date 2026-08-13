@@ -39,9 +39,13 @@ visible even when there are more sessions than rows. Each row ends with the
 tmux session hosting it — the name `tmux ls` and the session chooser use, so a
 row you want to reach is one you can address; sessions found by the rollout scan
 alone fall back to their session ID. A model column appears only when the
-listed sessions do not all run the same model. While the HUD pane is focused,
-`t` cycles the tool-detail level (`targets` → `full` → `off`) and briefly
-confirms the new level.
+listed sessions do not all run the same model. The account's quota window is
+listed below the sessions, because it is the one number that applies to every
+row at once; it takes a row from the list only once usage is high enough to be
+a warning. The scan runs when the mode is entered, so the session this HUD is
+bound to is listed immediately and the others join it a moment later. While the
+HUD pane is focused, `t` cycles the tool-detail level (`targets` → `full` →
+`off`) and briefly confirms the new level.
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -117,8 +121,8 @@ rather than rendering a short frame that could be mistaken for a failure.
 | **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources |
 | **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; the quota window and its reset time are stated whenever the pane has a row to spare, and highlighted from 70% usage onward, while a window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote, not from whatever the bound session last happened to see |
 | **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex records this build does not recognize. A collector that has not finished its first run is silent — only something that stopped working is a warning |
-| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents |
-| **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible |
+| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents. A command that exits non-zero is marked `✗` with its exit code, including when Codex ran it inside a script that itself succeeded |
+| **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible. The ID is printed in full whenever the row has room, because it is what `codex resume`, `fork`, `archive`, and `delete` take; narrower panes fall back to the abbreviated form |
 
 The layout adapts in both directions. With rows to spare it keeps the turn row
 alongside the running-tool row, because they count different things: the turn
@@ -145,6 +149,12 @@ such as `npm test` or `sed && rg` — never flags, paths, or argument values.
 File tools show only sanitized targets. `full` enables sanitized, bounded
 command summaries; `off` hides the tool line. Raw stdout/stderr and raw tool
 arguments are never retained or displayed.
+
+Codex CLI 0.147 runs every tool through a single `exec` tool whose argument is a
+JavaScript program rather than JSON, and reports the command's exit status only
+in a separate record. The HUD reads both, so commands, working directories,
+patched file names, plan steps, and non-zero exits are recovered from that shape
+as well as from the older one.
 
 The renderer measures terminal cells for CJK text, emoji, combining characters,
 and ANSI. By default, the pane uses one sixth of the terminal height (bounded to
@@ -176,6 +186,15 @@ codex-resume                 # Resume last session
 Running `codex` without Codex CLI arguments reconnects to the latest HUD tmux
 session in the same directory when one exists. Use `codex-hud --new-session` to
 force a separate session.
+
+The install aliases `codex` to this wrapper, so it has to be careful about what
+it hosts. A prompt, the interactive flags, `resume`, and `fork` start a session
+with a HUD. Codex subcommands that do not open a session — `exec`, `login`,
+`mcp`, `completion`, `apply`, `doctor`, `update`, `--version`, and the rest —
+run in place and keep their own stdout, so `codex exec "…" | jq` and
+`codex completion zsh >> ~/.zshrc` behave exactly as they would without the
+wrapper. `codex help` reaches the Codex CLI's own help; `codex-hud --help`
+documents the wrapper.
 
 <details>
 <summary>More commands</summary>

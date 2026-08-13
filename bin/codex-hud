@@ -186,7 +186,32 @@ LEGACY_SESSION_PREFIX="codex-hud-${SESSION_HASH}"
 SESSION_PREFIX="codex-hud-${PROJECT_SLUG}-${SESSION_HASH}"
 SESSION_NAME="${SESSION_PREFIX}-$(date +%Y%m%d%H%M%S)-$$"
 
+prepare_cmux_codex_hook_router() {
+    [[ -n "${CMUX_SURFACE_ID:-}" && "${CMUX_CODEX_HOOKS_DISABLED:-}" != "1" ]] || return 0
+
+    local hook_router="${CMUX_CODEX_HOOK_ROUTER:-${HOME:-/Users/zyb}/.cmux/hooks/cmux-live-tmux-context.sh}"
+    [[ -x "$hook_router" && "$hook_router" != "$SCRIPT_DIR/codex-hud" ]] || return 0
+
+    # Make every cmux wrapper invocation pass through the user-owned inject
+    # guard, even when the launching shell still carries the app-bundled CLI.
+    # Preserve one explicit real CLI so the router cannot recurse into itself.
+    local current_bundled_cli="${CMUX_BUNDLED_CLI_PATH:-}"
+    local current_real_cli="${CMUX_LIVE_TMUX_CONTEXT_REAL_CLI:-}"
+    if [[ -z "$current_real_cli" || "$current_real_cli" == "$hook_router" || ! -x "$current_real_cli" ]]; then
+        if [[ -n "$current_bundled_cli" && "$current_bundled_cli" != "$hook_router" && -x "$current_bundled_cli" ]]; then
+            current_real_cli="$current_bundled_cli"
+        elif [[ -x "/Applications/cmux.app/Contents/Resources/bin/cmux" ]]; then
+            current_real_cli="/Applications/cmux.app/Contents/Resources/bin/cmux"
+        fi
+    fi
+    if [[ -n "$current_real_cli" && "$current_real_cli" != "$hook_router" ]]; then
+        export CMUX_LIVE_TMUX_CONTEXT_REAL_CLI="$current_real_cli"
+    fi
+    export CMUX_BUNDLED_CLI_PATH="$hook_router"
+}
+
 resolve_codex_cli() {
+    prepare_cmux_codex_hook_router
     local cmux_shim="${CMUX_CODEX_WRAPPER_SHIM:-}"
     if [[ -n "$cmux_shim" ]]; then
         if [[ -x "$cmux_shim" && "$cmux_shim" != "$SCRIPT_DIR/codex-hud" ]]; then
@@ -200,8 +225,9 @@ resolve_codex_cli() {
         # lifecycle hooks by launching the raw Codex binary.
         local cmux_wrapper=""
         local cmux_candidate=""
-        if [[ -n "${CMUX_BUNDLED_CLI_PATH:-}" ]]; then
-            cmux_candidate="$(dirname "$CMUX_BUNDLED_CLI_PATH")/cmux-codex-wrapper"
+        local cmux_wrapper_cli="${CMUX_LIVE_TMUX_CONTEXT_REAL_CLI:-${CMUX_BUNDLED_CLI_PATH:-}}"
+        if [[ -n "$cmux_wrapper_cli" ]]; then
+            cmux_candidate="$(dirname "$cmux_wrapper_cli")/cmux-codex-wrapper"
             if [[ -x "$cmux_candidate" ]]; then
                 cmux_wrapper="$cmux_candidate"
             fi
@@ -816,6 +842,30 @@ create_session() {
     SESSION_READY="true"
 }
 
+# Codex subcommands that do not open an interactive session.
+#
+# The installer aliases `codex` to this wrapper, so every one of these used to
+# be answered by starting a tmux session instead: `codex exec "..." > out.txt`
+# wrote nothing and left a detached Codex running, `codex completion zsh`
+# produced no script, and `codex --version` opened a HUD. They are forwarded to
+# the real CLI in place, which is what the wrapper already does when it is
+# invoked from inside a codex-hud session.
+#
+# `resume` and `fork` are deliberately absent: both open an interactive session
+# and are worth a HUD (the installed `codex-resume` alias depends on it).
+is_passthrough_command() {
+    case "$1" in
+        exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|exec-server|\
+        remote-control|app|completion|update|doctor|sandbox|debug|apply|a|\
+        archive|delete|unarchive|cloud|features|help|--version|-V)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Main function
 main() {
     local codex_args=()
@@ -852,6 +902,13 @@ main() {
             resolve_codex_cli
             exec "$CODEX_CLI_PATH" "${codex_args[@]}"
         fi
+    fi
+
+    # A non-interactive Codex subcommand belongs to the CLI, not to a HUD:
+    # hosting it in a tmux pane detaches its output from the caller's stdout.
+    if [[ "${#codex_args[@]}" -gt 0 ]] && is_passthrough_command "${codex_args[0]}"; then
+        resolve_codex_cli
+        exec "$CODEX_CLI_PATH" "${codex_args[@]}"
     fi
 
     # Check dependencies
@@ -913,7 +970,11 @@ Usage: codex-hud [options] [codex options...]
 This wrapper launches Codex in a tmux session with a real-time status bar
 showing model info, git status, project info, token usage, and more.
 
-All arguments are passed through to the codex command.
+A prompt and the interactive flags start a session with a HUD. Codex
+subcommands that do not open a session (exec, login, mcp, completion, apply,
+doctor, update, --version, ...) run in place and keep their stdout, so they
+still work in pipes and scripts. Use 'codex help' for the Codex CLI's own help;
+'--help' below documents this wrapper.
 
 Options:
   -h, --help          Show this help message

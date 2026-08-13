@@ -570,16 +570,6 @@ function collectData(): HudData {
     },
   };
 
-  if (displayMode === 'overview') {
-    return {
-      ...baseData,
-      displayMode,
-      overview: overviewCache.get(),
-      // Lets the overview mark the row this HUD is bound to.
-      overviewSelfSessionId: sessionFinder.getCurrentSession()?.sessionId,
-    };
-  }
-
   const session = sessionFinder.getCurrentSession();
   const rolloutData = rolloutParser.getCached();
 
@@ -590,19 +580,40 @@ function collectData(): HudData {
     rolloutData?.compactCount,
     rolloutData?.lastCompactTime
   );
+  const rateLimits = preferFreshestRateLimits(
+    rolloutData?.rateLimits,
+    rolloutData?.rateLimitsAt,
+    accountLimitsCache.get()
+  );
+  const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
+
+  if (displayMode === 'overview') {
+    return {
+      ...baseData,
+      displayMode,
+      overview: overviewCache.get(),
+      // Lets the overview mark the row this HUD is bound to.
+      overviewSelfSessionId: session?.sessionId,
+      // The overview states the account quota, which belongs to every row at
+      // once, and lists the bound session before the scan finishes. Both read
+      // the same already-collected values the single view uses; leaving them
+      // off made both features render nothing in a real pane while unit
+      // fixtures that supplied them by hand still passed.
+      session: boundSession,
+      turnActivity: rolloutData?.turnActivity ?? undefined,
+      contextUsage,
+      rateLimits,
+    };
+  }
 
   return {
     ...baseData,
-    session: rolloutData?.session ?? session?.metadata ?? undefined,
+    session: boundSession,
     toolActivity: rolloutData?.toolActivity ?? undefined,
     agentActivity: cachedAgentActivity,
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
-    rateLimits: preferFreshestRateLimits(
-      rolloutData?.rateLimits,
-      rolloutData?.rateLimitsAt,
-      accountLimitsCache.get()
-    ),
+    rateLimits,
     turnActivity: rolloutData?.turnActivity ?? undefined,
     protocolHealth: rolloutData?.protocolHealth,
     partialHistory: rolloutData?.partialHistory,

@@ -442,25 +442,49 @@ function renderOverviewLayout(
   width: number,
   maxLines: number
 ): string[] {
-  const allSessions = data.overview?.sessions;
+  const scanned = (data.overview?.updatedAt?.getTime() ?? 0) > 0;
+  let allSessions = data.overview?.sessions;
+  let scanning = false;
   if (!allSessions || allSessions.length === 0) {
-    // The snapshot refreshes asynchronously, so the first toggle paints before
-    // any scan has finished. "No active sessions" is a claim about the world;
-    // until a scan has completed, the honest statement is that we are looking.
-    const scanned = (data.overview?.updatedAt?.getTime() ?? 0) > 0;
-    return [
-      colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
-    ];
+    // The snapshot refreshes asynchronously, and the overview cache is cold
+    // until the first toggle, so the scan is on screen for a few seconds every
+    // time. The session this HUD is bound to needs no scan — it is already on
+    // the rest of the pane — and one real row beats a screen of blanks.
+    const self = boundSessionAsOverviewItem(data);
+    if (!scanned && self) {
+      allSessions = [self];
+      scanning = true;
+    } else {
+      return [
+        colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
+      ];
+    }
   }
+
+  // The weekly quota is the one number that describes the whole fleet rather
+  // than any single row, and the overview is where the fleet is. Pressure
+  // takes a row from the session list the way it does in the single view;
+  // a calm reading only fills a row nothing else wanted.
+  const now = Date.now();
+  const quotaAlert = renderRateLimitLine(data, width, now);
+  const quotaCalm = renderRateLimitLine(data, width, now, {
+    includeBelowPressure: true,
+  });
+  const scanningNote = scanning
+    ? colors.dim('Looking for other sessions…')
+    : null;
+  // The rows are clipped by the viewport, not here, so that its "+N hidden"
+  // stamp keeps counting what it actually dropped. Reserving a line therefore
+  // means telling orderForViewport that the budget is one smaller.
+  const reserved = (quotaAlert ? 1 : 0) + (scanningNote ? 1 : 0);
   const overview = {
     sessions: orderForViewport(
       allSessions,
       data.overviewSelfSessionId,
-      maxLines
+      Math.max(1, maxLines - reserved)
     ),
   };
 
-  const now = Date.now();
   const formatAge = (timestamp: Date | undefined): string =>
     timestamp ? formatCompactAge(now - timestamp.getTime()) : '--';
   const phaseLabel = (
@@ -541,7 +565,7 @@ function renderOverviewLayout(
     ? Math.max(...modelDisplays.map((display) => visualLength(display)))
     : 0;
 
-  return overview.sessions.map((session, index) => {
+  const rows = overview.sessions.map((session, index) => {
     const parts = [
       padEnd(theme.projectName(projectNames[index]), projectColumnWidth),
       ...(showModel ? [padEnd(modelDisplays[index], modelColumnWidth)] : []),
@@ -562,6 +586,45 @@ function renderOverviewLayout(
       width
     );
   });
+
+  if (scanningNote) {
+    rows.push(scanningNote);
+  }
+  if (quotaAlert) {
+    // A quota this high outlives the sessions it would be listed under, and
+    // the bottom of an overflowing list is exactly where the viewport clips.
+    return [quotaAlert, ...rows];
+  }
+  if (quotaCalm && rows.length < maxLines) {
+    rows.push(quotaCalm);
+  }
+  return rows;
+}
+
+/**
+ * The bound session as an overview row.
+ *
+ * Every column the overview shows for it is already collected for the single
+ * view, so it can be listed before any scan has run. The tmux address is not
+ * among them — that comes from the scan — and the row falls back to the short
+ * id until the real snapshot replaces it.
+ */
+function boundSessionAsOverviewItem(
+  data: HudData
+): SessionOverviewItem | null {
+  const session = data.session;
+  if (!session) {
+    return null;
+  }
+  return {
+    id: session.id,
+    cwd: session.cwd ?? data.project.cwd,
+    projectName: data.project.projectName,
+    model: session.model,
+    turnActivity: data.turnActivity,
+    lastActivityAt: data.turnActivity?.lastActivityAt,
+    contextUsage: data.contextUsage,
+  };
 }
 
 /**
