@@ -138,6 +138,14 @@ function splitTopLevel(command: string): TopLevelSplit {
       current += char;
       continue;
     }
+    // A backslash before a newline is a line continuation: it joins the lines
+    // and contributes no token of its own. Keeping the pair left a segment
+    // whose first token was the newline itself, which reached the pane as a
+    // `↵` cell where a program name belonged.
+    if (char === '\\' && next === '\n') {
+      index++;
+      continue;
+    }
     if (char === '\\' && index + 1 < command.length) {
       current += char + command[++index];
       continue;
@@ -178,8 +186,12 @@ function baseName(token: string): string {
 
 /** Normalize a candidate program token; empty result means "skip token". */
 function programName(token: string): string {
-  let cleaned = token.replace(/^[\\(]+/, '').replace(/\)+$/, '');
-  if (!cleaned || cleaned.startsWith('<') || cleaned.startsWith('>')) {
+  const cleaned = token.replace(/^[\\(]+/, '').replace(/\)+$/, '');
+  // Whatever survives the stripping is printed as a program name, so a token
+  // made only of whitespace is not one. A line continuation used to leave the
+  // newline itself here, and it reached the pane as a `↵` cell where a
+  // command belonged.
+  if (!cleaned.trim() || cleaned.startsWith('<') || cleaned.startsWith('>')) {
     return '';
   }
   return baseName(cleaned);

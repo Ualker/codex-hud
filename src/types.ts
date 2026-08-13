@@ -117,10 +117,10 @@ export interface SessionOverviewItem {
   cwd?: string;
   /**
    * tmux session hosting this Codex session, when it runs under a codex-hud
-   * pane. It is the only field on the row the user can act on: with several
-   * sessions open in one project every other column reads the same, and a
-   * session id matches nothing they can type. Absent for rows found by the
-   * rollout scan alone.
+   * pane. With several sessions open in one project every other column reads
+   * the same, and this is the address that switches to one: the session id
+   * resumes a session but cannot select a live pane. Absent for rows found by
+   * the rollout scan alone.
    */
   tmuxSession?: string;
   model?: string;

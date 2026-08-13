@@ -41,7 +41,27 @@ const cases = [
   // Empty input has no head.
   ['', undefined],
   ['   ', undefined],
+  // A backslash before a newline continues the line; it is not a command of
+  // its own. Keeping the pair made the newline itself the head of a segment,
+  // which the pane printed as a lone `↵` between two real commands.
+  ['env \\\n  A=1 \\\n  /bin/echo hi', 'echo'],
+  ['printf a \\\n  b\nmake test', 'printf ; make test'],
 ];
+
+// Whatever a head contains reaches the pane verbatim, so no control character
+// may survive the extraction.
+for (const [command] of cases) {
+  const head = extractCommandHead(command);
+  if (head === undefined) {
+    continue;
+  }
+  assert.equal(
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f]/.test(head),
+    false,
+    `head of ${JSON.stringify(command)} is printable: ${JSON.stringify(head)}`
+  );
+}
 
 for (const [command, expected] of cases) {
   assert.equal(

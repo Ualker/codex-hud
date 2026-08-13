@@ -152,7 +152,10 @@ try {
     })),
     [
       { id: 'call_legacy_read', name: 'read', status: 'completed', target: 'README.md' },
-      { id: 'call_custom_exec', name: 'exec_command', status: 'completed', target: undefined },
+      // `{ cmd: "pwd" }` is a JavaScript object literal, not JSON. This used to
+      // expect `undefined` because strict parsing threw on every such argument
+      // and the tool row showed bare tool names for the whole session.
+      { id: 'call_custom_exec', name: 'exec_command', status: 'completed', target: 'pwd' },
       { id: 'call_wait', name: 'wait', status: 'completed', target: undefined },
       { id: 'call_multi_exec', name: 'exec', status: 'error', target: undefined },
     ]

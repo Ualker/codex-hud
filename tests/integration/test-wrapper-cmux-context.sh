@@ -30,6 +30,11 @@ cat > "$FAKE_BIN_DIR/cmux-codex-wrapper" <<'FAKE'
 exit 0
 FAKE
 
+cat > "$FAKE_BIN_DIR/cmux" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
@@ -56,6 +61,7 @@ chmod +x \
   "$FAKE_BIN_DIR/codex" \
   "$FAKE_BIN_DIR/cmux-codex-shim" \
   "$FAKE_BIN_DIR/cmux-codex-wrapper" \
+  "$FAKE_BIN_DIR/cmux" \
   "$FAKE_BIN_DIR/node" \
   "$FAKE_BIN_DIR/npm" \
   "$FAKE_BIN_DIR/tput"
@@ -85,6 +91,7 @@ export CMUX_CODEX_WRAPPER_SHIM="$FAKE_BIN_DIR/cmux-codex-shim"
 export CMUX_CODEX_PID="stale-codex-pid"
 export CMUX_CODEX_HOOK_CMUX_BIN="/tmp/stale-cmux"
 export CMUX_AGENT_LAUNCH_KIND="stale-launch-kind"
+export CMUX_CODEX_HOOK_ROUTER="$TEST_TMP_DIR/missing-live-router"
 
 "$ROOT_DIR/bin/codex-hud" --new-session >"$TEST_TMP_DIR/wrapper.log" 2>&1
 
@@ -185,6 +192,39 @@ fi
 if [[ "$launch_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* || \
       "$launch_line" == *"capability-current"* ]]; then
   echo "expected legacy tmux launch to use the cmux shim without exposing capability" >&2
+  cat "$TMUX_LOG_FILE" >&2
+  exit 1
+fi
+
+# The HUD must force cmux wrapper injection through the user-owned router even
+# when the launching shell still exposes the app-style bundled CLI path.
+: > "$TMUX_LOG_FILE"
+export TMUX_SUPPORTS_NEW_SESSION_ENV="1"
+fake_live_router="$TEST_TMP_DIR/user-hooks/cmux-live-tmux-context.sh"
+mkdir -p "${fake_live_router%/*}"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$fake_live_router"
+chmod 755 "$fake_live_router"
+export CMUX_CODEX_HOOK_ROUTER="$fake_live_router"
+export CMUX_BUNDLED_CLI_PATH="$FAKE_BIN_DIR/cmux"
+export CMUX_CODEX_WRAPPER_SHIM="$FAKE_BIN_DIR/cmux-codex-shim"
+unset CMUX_LIVE_TMUX_CONTEXT_REAL_CLI
+"$ROOT_DIR/bin/codex-hud" --new-session >"$TEST_TMP_DIR/wrapper-inject-router.log" 2>&1
+
+new_session_line=$(grep '^new-session ' "$TMUX_LOG_FILE")
+launch_line=$(grep '^respawn-pane .*@codex_hud_client_attached' "$TMUX_LOG_FILE")
+for expected in \
+  "CMUX_BUNDLED_CLI_PATH=$fake_live_router" \
+  "CMUX_LIVE_TMUX_CONTEXT_REAL_CLI=$FAKE_BIN_DIR/cmux" \
+  "CMUX_CODEX_HOOK_ROUTER=$fake_live_router"; do
+  if [[ "$new_session_line" != *"-e $expected"* ]]; then
+    echo "expected durable Codex inject routing environment: $expected" >&2
+    cat "$TMUX_LOG_FILE" >&2
+    exit 1
+  fi
+done
+if [[ "$launch_line" != *"$FAKE_BIN_DIR/cmux-codex-shim"* || \
+      "$launch_line" == *"capability-current"* ]]; then
+  echo "expected durable inject routing to preserve the cmux shim without exposing capability" >&2
   cat "$TMUX_LOG_FILE" >&2
   exit 1
 fi
