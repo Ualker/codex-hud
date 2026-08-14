@@ -195,4 +195,29 @@ const render = (data, maxLines) =>
   );
 }
 
+// Approval is the actionable state of an otherwise open tool call. It keeps
+// the turn row when space is tight, and neither that row nor the optional tool
+// detail pretends the call is advancing with an animated spinner.
+{
+  const data = makeData({ agentCount: 2, planSteps: 7 });
+  data.turnActivity = {
+    ...data.turnActivity,
+    phase: 'awaiting-approval',
+  };
+  const lines = render(data, 7);
+  assert.ok(
+    lines.some((line) => line.includes('Approval needed')),
+    'approval survives the same crowded frame that drops ordinary turn detail'
+  );
+  assert.equal(
+    lines.some((line) => line.includes('Running tool')),
+    false
+  );
+  const tool = lines.find((line) => line.includes('exec_command'));
+  if (tool) {
+    assert.match(tool, /⏸/, 'a visible suspended tool uses the fixed pause icon');
+    assert.doesNotMatch(tool, /[◐◓◑◒]/, 'no spinner frame remains');
+  }
+}
+
 console.log('test-layout-turn-with-tool: PASS');

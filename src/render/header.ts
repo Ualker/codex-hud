@@ -225,13 +225,34 @@ function renderExpandedLayout(
   const buildUsageRows = (rateLimitLine: string | null): string[] => {
     const rows: string[] = [];
     if (tokenLine) {
-      const combined = rateLimitLine
-        ? `${tokenLine} ${colors.dim(icons.pipe)} ${rateLimitLine}`
-        : tokenLine;
+      const usageSeparator = ` ${colors.dim(icons.pipe)} `;
+      let displayedTokenLine = tokenLine;
+      let combined = rateLimitLine
+        ? `${displayedTokenLine}${usageSeparator}${rateLimitLine}`
+        : displayedTokenLine;
+      if (rateLimitLine && visualLength(combined) > width) {
+        const tokenBudget =
+          width - visualLength(usageSeparator) - visualLength(rateLimitLine);
+        // Near the real 146-column geometry, dropping token breakdown cells
+        // saves a whole row and keeps the account quota visible. Below this
+        // floor the context gauge itself would be sacrificed to a calm quota,
+        // so the two signals stay on separate rows and the layout ladder picks.
+        if (tokenBudget >= 80) {
+          const compressedTokenLine = renderTokenLine(data, tokenBudget);
+          if (compressedTokenLine) {
+            const compressed =
+              `${compressedTokenLine}${usageSeparator}${rateLimitLine}`;
+            if (visualLength(compressed) <= width) {
+              displayedTokenLine = compressedTokenLine;
+              combined = compressed;
+            }
+          }
+        }
+      }
       if (visualLength(combined) <= width) {
         rows.push(combined);
       } else {
-        rows.push(tokenLine);
+        rows.push(displayedTokenLine);
         if (rateLimitLine) {
           rows.push(rateLimitLine);
         }
@@ -246,7 +267,8 @@ function renderExpandedLayout(
     data.toolActivity,
     width,
     Date.now(),
-    data.partialHistory
+    data.partialHistory,
+    data.turnActivity?.phase === 'awaiting-approval'
   );
   const hasRunningTool = Boolean(
     data.toolActivity?.recentCalls.some(
@@ -254,6 +276,8 @@ function renderExpandedLayout(
     )
   );
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
+  const awaitingApproval =
+    data.turnActivity?.phase === 'awaiting-approval';
   const agentLines = renderAgentLines(data.agentActivity, width);
   const agentSummaryLine = renderAgentSummaryLine(data.agentActivity, width);
   const planLine = renderTodosLine(data.planProgress, width);
@@ -327,7 +351,10 @@ function renderExpandedLayout(
       compression.keepTurnWithTool && hasRunningTool && turnLine && toolsLine
     );
     if (hasRunningTool && toolsLine && !showTurnWithTool) {
-      lines.push(toolsLine);
+      // A suspended call is detail about the approval wait, not the primary
+      // state. When one row must win, keep the action the user can take and
+      // drop the paused tool detail instead of showing a fake running spinner.
+      lines.push(awaitingApproval && turnLine ? turnLine : toolsLine);
     } else if (turnLine) {
       lines.push(turnLine);
     } else if (bindingHintLine) {
@@ -361,8 +388,9 @@ function renderExpandedLayout(
   // while keeping a static config row that had not changed all session.
   const steps: LayoutVariant[] = [
     { showCalmQuota: true, keepTurnWithTool: true },
-    { keepTurnWithTool: true },
-    {},
+    { showCalmQuota: true, keepTurnWithTool: true, dropSession: true },
+    { showCalmQuota: true, dropSession: true },
+    { keepTurnWithTool: true, dropSession: true },
     { dropSession: true },
     { dropSession: true, collapseAgents: true },
     { dropSession: true, collapseAgents: true, dropEnv: true },
@@ -507,6 +535,8 @@ function renderOverviewLayout(
     }
     const phase = session.turnActivity?.phase;
     switch (phase) {
+      case 'awaiting-approval':
+        return theme.warning('Approval');
       case 'running-tool':
         return theme.toolRunning('Tool');
       case 'thinking':

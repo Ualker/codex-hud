@@ -10,6 +10,8 @@ import type { SessionOverviewItem } from '../types.js';
 
 function phaseRank(activity: SessionOverviewItem['turnActivity']): number {
   switch (activity?.phase) {
+    case 'awaiting-approval':
+      return -1;
     case 'running-tool':
     case 'thinking':
       return 0;

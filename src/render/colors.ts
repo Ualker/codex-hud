@@ -131,6 +131,7 @@ export const icons = {
   cross: ASCII_MODE ? 'X' : '✗',
   running: ASCII_MODE ? '|' : '◐',       // In-progress spinner character
   spinner: ASCII_MODE ? ['|', '/', '-', '\\'] : ['◐', '◓', '◑', '◒'],
+  pause: ASCII_MODE ? 'II' : '⏸',
   
   // Info
   // Text-style glyph: emoji have ambiguous VS16 widths in some terminals

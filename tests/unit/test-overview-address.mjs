@@ -136,4 +136,21 @@ const view = (sessions, selfSessionId) =>
   assert.ok(marked.includes('codex-hud-b-2'), 'and it names its own address');
 }
 
+// A pane-confirmed approval replaces the generic Tool phase so the overview
+// says which session needs the user rather than merely listing it as busy.
+{
+  const lines = view([
+    session('019ff4e2-aaaa-7aaa-8aaa-aaaaaaaaaaaa', {
+      tmuxSession: 'codex-hud-prj-approval',
+      turnActivity: {
+        phase: 'awaiting-approval',
+        since: ago(120_000),
+        lastActivityAt: ago(60_000),
+      },
+    }),
+  ]);
+  assert.ok(lines[0].includes('Approval'));
+  assert.equal(lines[0].includes('Tool'), false);
+}
+
 console.log('test-overview-address: PASS');

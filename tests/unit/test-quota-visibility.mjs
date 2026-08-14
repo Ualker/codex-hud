@@ -135,6 +135,23 @@ const render = (data, width, maxLines) =>
   );
 }
 
+// ---- a near-pressure weekly quota outranks static session identity --------
+// At the real 146x7 pane geometry, the full token row and the quota miss a
+// one-row merge by only a couple of cells. The renderer can drop low-priority
+// token breakdown cells (or the static Dir/Session row) instead of hiding the
+// live account state because 69% happens to sit one point below the warning
+// threshold.
+{
+  const lines = render(busySession(limits(69)), 146, 7);
+  const quotaLine = lines.find((line) => line.includes('7d limit 69%'));
+  assert.ok(quotaLine, '69% weekly quota survives a 146x7 busy frame');
+  assert.ok(lines.length <= 7, 'the quota does not overflow the viewport');
+  assert.ok(
+    quotaLine.includes('Ctx:'),
+    'the token row compresses and shares a row with the quota'
+  );
+}
+
 // ---- pressure is never optional -------------------------------------------
 {
   const busy = render(busySession(limits(92)), 100, 7);

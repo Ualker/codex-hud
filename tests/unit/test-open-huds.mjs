@@ -61,6 +61,7 @@ try {
             sessionId: 'session-a',
             rolloutPath: '/tmp/a.jsonl',
             cwd: '/work/a',
+            approvalNeeded: true,
           }),
           encode({
             tmuxSession: 'codex-hud-b',
@@ -79,6 +80,7 @@ try {
       sessionId: 'session-a',
       rolloutPath: '/tmp/a.jsonl',
       cwd: '/work/a',
+      approvalNeeded: true,
     });
     assert.deepEqual(
       parsed[1],
@@ -166,7 +168,7 @@ try {
     const log = path.join(tempRoot, 'publish.log');
     const publishBody = `
       const { publishHudBinding } = await import(${JSON.stringify(modulePath)});
-      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a');
+      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a', true);
       await publishHudBinding('codex-hud-a', null, null, '/work/a');
       process.stdout.write('ok');
     `;
@@ -186,6 +188,7 @@ try {
         sessionId: 'session-a',
         rolloutPath: '/tmp/a.jsonl',
         cwd: '/work/a',
+        approvalNeeded: true,
       },
       'every field travels together in one write'
     );
