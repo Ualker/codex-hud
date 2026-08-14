@@ -400,6 +400,7 @@ export interface RateLimitWindow {
 // ============================================================================
 
 export type TurnPhase =
+  | 'awaiting-approval'
   | 'thinking'
   | 'running-tool'
   | 'responding'

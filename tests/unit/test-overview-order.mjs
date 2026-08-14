@@ -33,6 +33,15 @@ assert.deepEqual(
   'working sessions outrank an idle one no matter how recent'
 );
 
+assert.deepEqual(
+  order([
+    item('running-recent', { phase: 'running-tool', ageMinutes: 0 }),
+    item('approval-old', { phase: 'awaiting-approval', ageMinutes: 90 }),
+  ]),
+  ['approval-old', 'running-recent'],
+  'a session blocked on the user leads ordinary background work'
+);
+
 // Recency outranks context fullness. Ranking the fullest session first pushed
 // the one you touched a minute ago below an older, fuller one — and on a
 // seven-row pane that means below the fold.

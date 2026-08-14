@@ -295,6 +295,12 @@ function turnPhasePresentation(
   nowMs: number
 ): { label: string; icon: string; color: (text: string) => string } {
   switch (activity.phase) {
+    case 'awaiting-approval':
+      return {
+        label: 'Approval needed',
+        icon: icons.pause,
+        color: theme.warning,
+      };
     case 'thinking':
       return {
         label: `Thinking ${formatAge(nowMs - activity.since.getTime())}`,
@@ -613,11 +619,14 @@ function toolCallHasDetail(call: ToolCall): boolean {
 function renderToolCallDetail(
   call: ToolCall,
   maxWidth: number,
-  nowMs: number
+  nowMs: number,
+  paused: boolean = false
 ): string {
   const status = call.status === 'running' ? 'running' : presentationStatus(call);
   const icon = status === 'running'
-    ? getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length)
+    ? paused
+      ? icons.pause
+      : getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length)
     : status === 'error'
       ? icons.cross
       : status === 'yielded'
@@ -804,7 +813,8 @@ export function renderToolsLine(
   toolActivity: ToolActivity | undefined,
   width: number = Number.POSITIVE_INFINITY,
   nowMs: number = Date.now(),
-  partialHistory: boolean = false
+  partialHistory: boolean = false,
+  paused: boolean = false
 ): string | null {
   if (toolDetailsMode() === 'off') {
     return null;
@@ -861,7 +871,7 @@ export function renderToolsLine(
     const finishedWidth = Number.isFinite(detailArea)
       ? Math.max(20, detailArea - currentWidth)
       : Number.POSITIVE_INFINITY;
-    parts.push(renderToolCallDetail(current, currentWidth, nowMs));
+    parts.push(renderToolCallDetail(current, currentWidth, nowMs, paused));
     parts.push(renderToolCallDetail(detailedFinished, finishedWidth, nowMs));
   } else {
     if (current) {
@@ -869,7 +879,7 @@ export function renderToolsLine(
       const detailWidth = Number.isFinite(width)
         ? Math.max(20, Math.min(84, width - totalReserve))
         : Number.POSITIVE_INFINITY;
-      parts.push(renderToolCallDetail(current, detailWidth, nowMs));
+      parts.push(renderToolCallDetail(current, detailWidth, nowMs, paused));
     }
     if (showDetailedFinished && detailedFinished) {
       const totalReserve = totalPart ? visualLength(totalPart) + 3 : 0;
@@ -1212,4 +1222,3 @@ function buildSessionDetailParts(
     width
   );
 }
-

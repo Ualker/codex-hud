@@ -28,7 +28,7 @@ const cases = [
   ['ps aux | grep node', 'ps | grep'],
   ['cd /repo && npm run test:unit', 'npm run test:unit'],
   ['mkdir -p out; cp a out/', 'mkdir ; cp'],
-  ['printf a\nprintf b', 'printf ; printf'],
+  ['printf a\nprintf b', 'printf ×2'],
   // More than three segments truncate with an ellipsis marker.
   ['a && b && c && d', 'a && b && c …'],
   // Redirections do not split segments.
@@ -59,10 +59,20 @@ const cases = [
       'run_canary two &',
       'wait "$!"',
     ].join('\n'),
-    'run_canary ; run_canary ; wait',
+    'run_canary ×2 ; wait',
   ],
   ['run_canary() {\n  printf ok\n}', undefined],
   ['function cleanup() { rm -f /tmp/x; }\ncleanup', 'cleanup'],
+  // Shell control-flow words and test expressions describe syntax, not the
+  // program doing the work. Keep the real commands that follow them.
+  [
+    'set -e; if [ -f /tmp/ready ]; then tmux capture-pane -p -t %1; tmux capture-pane -p -t %2; fi',
+    'tmux capture-pane ×2',
+  ],
+  ['if grep -q needle file; then echo found; fi', 'grep ; echo'],
+  ['while test -f /tmp/busy; do sleep 1; done', 'sleep'],
+  ['until [[ -e /tmp/ready ]]; do make test; done', 'make test'],
+  ['export FOO=bar; cd /repo; npm test', 'npm test'],
 ];
 
 // Whatever a head contains reaches the pane verbatim, so no control character

@@ -58,6 +58,31 @@ const SCRIPT_INTERPRETERS = new Set([
 
 const SHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'fish', 'ksh']);
 
+// These tokens describe shell grammar rather than an executable. Prefix
+// keywords can share a segment with the command they guard (`if grep ...`),
+// while closing/compound keywords carry no command at all.
+const CONTROL_FLOW_PREFIXES = new Set([
+  'if',
+  'then',
+  'elif',
+  'else',
+  'do',
+  'while',
+  'until',
+  '!',
+]);
+const CONTROL_FLOW_ONLY = new Set([
+  'fi',
+  'done',
+  'esac',
+  'for',
+  'select',
+  'case',
+  'in',
+]);
+const SHELL_TEST_COMMANDS = new Set(['[', '[[', 'test']);
+const MULTI_SEGMENT_NOISE = new Set(['cd', 'set', 'export']);
+
 const MAX_SEGMENTS = 3;
 const MAX_RECURSION = 2;
 const SAFE_SUBCOMMAND_PATTERN = /^[\w@.:+-]+$/;
@@ -283,6 +308,17 @@ function segmentHead(segment: string, depth: number): string | undefined {
     }
     const lowerName = name.toLowerCase();
 
+    if (CONTROL_FLOW_PREFIXES.has(lowerName)) {
+      index++;
+      continue;
+    }
+    if (
+      CONTROL_FLOW_ONLY.has(lowerName) ||
+      SHELL_TEST_COMMANDS.has(lowerName)
+    ) {
+      return undefined;
+    }
+
     if (WRAPPER_COMMANDS.has(lowerName)) {
       index++;
       while (index < tokens.length && tokens[index].startsWith('-')) {
@@ -385,7 +421,11 @@ function commandHead(command: string, depth: number): string | undefined {
   }
 
   const { segments, separators } = splitTopLevel(trimmed);
-  const heads: { head: string; separatorBefore?: string }[] = [];
+  const heads: {
+    head: string;
+    separatorBefore?: string;
+    count: number;
+  }[] = [];
 
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index].trim();
@@ -396,13 +436,31 @@ function commandHead(command: string, depth: number): string | undefined {
     if (!head) {
       continue;
     }
-    // `cd` before the real command is navigation noise, not the action.
-    if (head.toLowerCase() === 'cd' && segments.length > 1) {
+    // Navigation and shell setup before the real command are not the action.
+    if (
+      MULTI_SEGMENT_NOISE.has(head.toLowerCase()) &&
+      segments.length > 1
+    ) {
+      continue;
+    }
+
+    const separatorBefore = index > 0 ? separators[index - 1] : undefined;
+    const previous = heads[heads.length - 1];
+    // Repeated sequential commands are common in generated shell snippets.
+    // Keep the count, but do not collapse pipelines or fallbacks where the
+    // repeated program names describe distinct data-flow stages.
+    if (
+      previous?.head === head &&
+      separatorBefore !== '|' &&
+      separatorBefore !== '||'
+    ) {
+      previous.count++;
       continue;
     }
     heads.push({
       head,
-      separatorBefore: index > 0 ? separators[index - 1] : undefined,
+      separatorBefore,
+      count: 1,
     });
   }
 
@@ -417,6 +475,9 @@ function commandHead(command: string, depth: number): string | undefined {
       output += ` ${entry.separatorBefore ?? '&&'} `;
     }
     output += entry.head;
+    if (entry.count > 1) {
+      output += ` ×${entry.count}`;
+    }
   });
   if (heads.length > MAX_SEGMENTS) {
     output += ' …';

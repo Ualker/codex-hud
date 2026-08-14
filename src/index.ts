@@ -32,6 +32,7 @@ import {
   type AccountRateLimits,
 } from './collectors/account-limits.js';
 import { compareOverviewSessions } from './collectors/overview-order.js';
+import { ApprovalDetector } from './collectors/approval-detector.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import {
@@ -61,6 +62,7 @@ import type {
   CollectorHealth,
   CollectorHealthMap,
   ProjectInfo,
+  TurnActivity,
 } from './types.js';
 
 // Session start time
@@ -107,6 +109,7 @@ let accountLimitsRefreshTimer: NodeJS.Timeout | null = null;
 let overviewRefreshTimer: NodeJS.Timeout | null = null;
 let agentRefreshTimer: NodeJS.Timeout | null = null;
 let rolloutFallbackTimer: NodeJS.Timeout | null = null;
+let approvalRefreshTimer: NodeJS.Timeout | null = null;
 
 // Display mode (single vs overview)
 let displayMode: HudDisplayMode =
@@ -218,9 +221,25 @@ function recordCollectorError(
 }
 
 const HUD_TMUX_SESSION = process.env.CODEX_HUD_TMUX_SESSION || undefined;
+const approvalDetector = new ApprovalDetector({
+  mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
+});
+
+function withApprovalPhase(
+  activity: TurnActivity | null | undefined,
+  approvalNeeded: boolean
+): TurnActivity | undefined {
+  if (!activity) {
+    return undefined;
+  }
+  return approvalNeeded && activity.phase === 'running-tool'
+    ? { ...activity, phase: 'awaiting-approval' }
+    : activity;
+}
 
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
+  approvalDetector.reset();
   // Let other HUDs' overviews see this binding. A session bound before its
   // first turn has no rollout yet, which is exactly the case file timestamps
   // cannot represent.
@@ -228,7 +247,8 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
     HUD_TMUX_SESSION,
     session?.sessionId ?? null,
     rolloutSession?.path ?? null,
-    HUD_CWD
+    HUD_CWD,
+    false
   ).catch(() => {
     // The overview degrades to the mtime scan; never fail a binding on this.
   });
@@ -366,8 +386,8 @@ async function refreshOverviewData(): Promise<SessionOverview> {
   // The tmux session name is where the user goes to reach a row; carry it
   // across from the binding scan for every session it covers, including the
   // ones the rollout scan already found.
-  const tmuxSessionById = new Map(
-    openBindings.map((binding) => [binding.sessionId, binding.tmuxSession])
+  const bindingById = new Map(
+    openBindings.map((binding) => [binding.sessionId, binding])
   );
   const boundWithoutRollout: OpenHudBinding[] = [];
   for (const binding of openBindings) {
@@ -426,13 +446,19 @@ async function refreshOverviewData(): Promise<SessionOverview> {
     );
     const cwd = result.session?.cwd;
     const id = result.session?.id ?? sessionFile.sessionId;
+    const binding =
+      bindingById.get(id) ?? bindingById.get(sessionFile.sessionId);
+    const turnActivity = withApprovalPhase(
+      result.turnActivity,
+      binding?.approvalNeeded === true
+    );
     sessions.push({
       id,
       cwd,
       projectName: cwd ? path.basename(cwd) : undefined,
-      tmuxSession: tmuxSessionById.get(id) ?? tmuxSessionById.get(sessionFile.sessionId),
+      tmuxSession: binding?.tmuxSession,
       model: result.session?.model,
-      turnActivity: result.turnActivity ?? undefined,
+      turnActivity,
       lastActivityAt:
         result.lastEventTime ?? result.turnActivity?.lastActivityAt,
       contextUsage,
@@ -476,6 +502,58 @@ const overviewCache = new AsyncSnapshotCache<SessionOverview>(
     staleAfterMs: OVERVIEW_CACHE_TTL_MS * 3,
   }
 );
+
+async function publishCurrentHudBinding(): Promise<void> {
+  const session = sessionFinder.getCurrentSession();
+  const rolloutSession =
+    session && fs.existsSync(session.path) ? session : null;
+  await publishHudBinding(
+    HUD_TMUX_SESSION,
+    session?.sessionId ?? null,
+    rolloutSession?.path ?? null,
+    HUD_CWD,
+    approvalDetector.isApprovalNeeded()
+  );
+}
+
+/**
+ * Approval probing stays outside both the render clock and rollout parser.
+ * The detector performs no tmux capture until the persisted structure has
+ * stalled; it also owns the ten-second low-frequency gate after that point.
+ */
+async function refreshApprovalState(): Promise<void> {
+  const rolloutData = rolloutParser.getCached();
+  const runtimePolicy = rolloutData?.session?.approvalPolicy;
+  const staticPolicy = rolloutData?.partialHistory
+    ? undefined
+    : slowProjectCache.get().config.approval_policy;
+  const changed = await approvalDetector.refresh({
+    turnActivity: rolloutData?.turnActivity,
+    toolActivity: rolloutData?.toolActivity,
+    lastEventAt: rolloutData?.lastEventTime,
+    approvalPolicy: runtimePolicy ?? staticPolicy,
+  });
+  if (!changed) {
+    return;
+  }
+
+  // Publish first so this HUD and every other overview read the same state.
+  // A failed publish only delays overview propagation; the owning single view
+  // already renders from the local detector cache.
+  try {
+    await publishCurrentHudBinding();
+  } catch {
+    // The overview falls back to rollout-only state.
+  }
+  if (displayMode === 'overview') {
+    try {
+      await overviewCache.refresh(true);
+    } catch {
+      // Keep the previous overview snapshot.
+    }
+  }
+  renderNow();
+}
 
 /**
  * Parse rollout updates outside the render clock. Returns false when there is
@@ -586,6 +664,10 @@ function collectData(): HudData {
     accountLimitsCache.get()
   );
   const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
+  const turnActivity = withApprovalPhase(
+    rolloutData?.turnActivity,
+    approvalDetector.isApprovalNeeded()
+  );
 
   if (displayMode === 'overview') {
     return {
@@ -600,7 +682,7 @@ function collectData(): HudData {
       // off made both features render nothing in a real pane while unit
       // fixtures that supplied them by hand still passed.
       session: boundSession,
-      turnActivity: rolloutData?.turnActivity ?? undefined,
+      turnActivity,
       contextUsage,
       rateLimits,
     };
@@ -614,7 +696,7 @@ function collectData(): HudData {
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
     rateLimits,
-    turnActivity: rolloutData?.turnActivity ?? undefined,
+    turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
     partialHistory: rolloutData?.partialHistory,
     contextUsage,
@@ -623,7 +705,12 @@ function collectData(): HudData {
 }
 
 function isWorkingPhase(phase: string | undefined): boolean {
-  return phase !== undefined && phase !== 'idle' && phase !== 'aborted';
+  return (
+    phase !== undefined &&
+    phase !== 'awaiting-approval' &&
+    phase !== 'idle' &&
+    phase !== 'aborted'
+  );
 }
 
 /**
@@ -633,11 +720,14 @@ function isWorkingPhase(phase: string | undefined): boolean {
 function computeCadence(nowMs: number = Date.now()): CadencePlan {
   const rolloutData = rolloutParser.getCached();
   const session = sessionFinder.getCurrentSession();
+  const approvalNeeded = approvalDetector.isApprovalNeeded();
   const hasRunningTool =
-    rolloutData?.toolActivity?.recentCalls.some(
+    !approvalNeeded && (rolloutData?.toolActivity?.recentCalls.some(
       (call) => call.status === 'running'
-    ) ?? false;
-  const hasActiveTurn = isWorkingPhase(rolloutData?.turnActivity?.phase);
+    ) ?? false);
+  const hasActiveTurn = isWorkingPhase(
+    withApprovalPhase(rolloutData?.turnActivity, approvalNeeded)?.phase
+  );
   const hasActiveAgent = (cachedAgentActivity?.visibleAgentCount ?? 0) > 0;
   let lastActivityMs = Math.max(
     lastWakeSignalMs,
@@ -731,6 +821,9 @@ async function shutdown(): Promise<void> {
   }
   if (rolloutFallbackTimer) {
     clearInterval(rolloutFallbackTimer);
+  }
+  if (approvalRefreshTimer) {
+    clearInterval(approvalRefreshTimer);
   }
   sessionFinder.stop();
   await Promise.allSettled([
@@ -829,6 +922,9 @@ function startCollectorTimers(): void {
     }
     lastRolloutSweepMs = now;
     void refreshRolloutOnly();
+  }, 1000);
+  approvalRefreshTimer = setInterval(() => {
+    void refreshApprovalState();
   }, 1000);
 }
 
@@ -933,6 +1029,7 @@ async function main(): Promise<void> {
     await sessionFinder.noteRolloutAppeared(rolloutPath);
     void sessionFinder.check();
     await refreshRolloutAndAgents();
+    void refreshApprovalState();
     if (displayMode === 'overview') {
       // Respect the snapshot TTL: with a working session watcher these
       // events can arrive in bursts across every active session.

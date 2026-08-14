@@ -49,6 +49,7 @@ interface BoundPayload {
   sessionId: string;
   rolloutPath?: string;
   cwd?: string;
+  approvalNeeded?: boolean;
 }
 
 export interface OpenHudBinding {
@@ -61,6 +62,8 @@ export interface OpenHudBinding {
    * and the dashboard's leading column is the project name.
    */
   cwd?: string;
+  /** The owning HUD confirmed an approval prompt in its current main pane. */
+  approvalNeeded?: boolean;
 }
 
 function tmux(args: readonly string[]): Promise<string | null> {
@@ -94,7 +97,8 @@ export function publishHudBinding(
   tmuxSession: string | undefined,
   sessionId: string | null,
   rolloutPath: string | null,
-  cwd: string
+  cwd: string,
+  approvalNeeded: boolean = false
 ): Promise<void> {
   if (!tmuxSession) {
     return Promise.resolve();
@@ -106,6 +110,7 @@ export function publishHudBinding(
         sessionId,
         ...(rolloutPath ? { rolloutPath } : {}),
         ...(cwd ? { cwd } : {}),
+        ...(approvalNeeded ? { approvalNeeded: true } : {}),
       }
     : null;
   const value = payload
@@ -128,7 +133,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
     if (typeof parsed !== 'object' || parsed === null) {
       return null;
     }
-    const { tmuxSession, sessionId, rolloutPath, cwd } =
+    const { tmuxSession, sessionId, rolloutPath, cwd, approvalNeeded } =
       parsed as Record<string, unknown>;
     if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
       return null;
@@ -143,6 +148,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
         ? { rolloutPath }
         : {}),
       ...(typeof cwd === 'string' && cwd ? { cwd } : {}),
+      ...(approvalNeeded === true ? { approvalNeeded: true } : {}),
     };
   } catch {
     // A HUD from a different build, or a hand-edited option.
