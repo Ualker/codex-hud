@@ -1171,6 +1171,9 @@ export class SessionFinder {
   private checkQueuedForce = false;
   private targetCwd: string | null = null;
   private currentThreadId: string | null = null;
+  private currentPaneId: string | null = null;
+  private acceptedSnapshotThreadId: string | null = null;
+  private snapshotNonceHighWater: bigint | null = null;
   private targetStartTime: Date | null = null;
   private lastFullResolveAt = 0;
   private fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
@@ -1236,7 +1239,7 @@ export class SessionFinder {
   private async runCheck(force: boolean): Promise<SessionFile | null> {
     const now = Date.now();
     const current = this.currentSession;
-    const currentExists = current ? fs.existsSync(current.path) || isLogBackedSession(current) : false;
+    let currentExists = current ? fs.existsSync(current.path) || isLogBackedSession(current) : false;
 
     if (current && currentExists) {
       try {
@@ -1255,10 +1258,11 @@ export class SessionFinder {
     }
     this.lastFullResolveAt = now;
 
-    const previousPath = current && currentExists ? current.path : null;
+    let previousPath = current && currentExists ? current.path : null;
 
     const mainPaneId = process.env.CODEX_HUD_MAIN_PANE;
     if (!mainPaneId) {
+      this.observePane(null);
       this.currentThreadId = null;
       this.runtimeHookOverrides = [];
       this.runtimeHooksEnabled = null;
@@ -1266,6 +1270,14 @@ export class SessionFinder {
         this.resolveNextSession(this.findFallbackSession(), currentExists),
         previousPath
       );
+    }
+
+    // A SessionFinder normally lives for one pane, but reset pane-scoped
+    // snapshot/process state if its target changes. The old session must not
+    // be retained merely because its rollout still exists.
+    if (this.observePane(mainPaneId)) {
+      currentExists = false;
+      previousPath = null;
     }
 
     const binding = await this.resolvePaneThreadBinding(mainPaneId, now);
@@ -1288,8 +1300,8 @@ export class SessionFinder {
       }
     }
 
-    const paneSnapshot = findSnapshotForPane(mainPaneId);
-    if (!paneSnapshot || !this.isFreshPaneSnapshot(paneSnapshot)) {
+    const threadId = this.resolveSnapshotThread(mainPaneId);
+    if (!threadId) {
       this.currentThreadId = null;
       return this.applyResolveBackoff(
         this.resolveNextSession(this.findPaneLaunchSession(), currentExists),
@@ -1297,7 +1309,6 @@ export class SessionFinder {
       );
     }
 
-    const threadId = paneSnapshot.threadId;
     if (
       this.currentSession &&
       this.currentSession.sessionId === threadId &&
@@ -1359,13 +1370,23 @@ export class SessionFinder {
 
   /**
    * Fast path for a rollout file appearing on disk (file-watcher event).
-   * A thread we currently rank as log-only just became an established
-   * session (typically the first user message of a /new session); re-rank
-   * it immediately instead of waiting out the facts TTL and poll interval.
+   * A thread we currently rank as log-only, or previously accepted from an
+   * exact pane snapshot, just became an established session (typically the
+   * first user message of a /new session); re-resolve it immediately instead
+   * of waiting out the facts TTL and poll interval.
    */
   async noteRolloutAppeared(rolloutPath: string): Promise<void> {
     const parsed = parseRolloutFilename(path.basename(rolloutPath));
     if (!parsed) {
+      return;
+    }
+
+    if (parsed.sessionId === this.acceptedSnapshotThreadId) {
+      // The exact pane snapshot can precede the rollout and disappear before
+      // the first user message creates it. Bypass resolve backoff for that one
+      // already-authorized thread; process/log binding still runs first.
+      this.threadFactsCache.delete(parsed.sessionId);
+      await this.check(true);
       return;
     }
 
@@ -1390,6 +1411,50 @@ export class SessionFinder {
 
   getRuntimeHooksEnabled(): boolean | null {
     return this.runtimeHooksEnabled;
+  }
+
+  /**
+   * Reset state whose meaning is scoped to one tmux pane. Returns true only
+   * for a direct non-null pane switch, where an existing session must not be
+   * used as the fallback for the new pane.
+   */
+  private observePane(mainPaneId: string | null): boolean {
+    if (this.currentPaneId === mainPaneId) {
+      return false;
+    }
+
+    const paneChanged = this.currentPaneId !== null && mainPaneId !== null;
+    this.currentPaneId = mainPaneId;
+    this.currentThreadId = null;
+    this.acceptedSnapshotThreadId = null;
+    this.snapshotNonceHighWater = null;
+    this.boundViaProcess = false;
+    this.cachedPanePid = null;
+    this.runtimeHookOverrides = [];
+    this.runtimeHooksEnabled = null;
+    return paneChanged;
+  }
+
+  /**
+   * Keep the newest accepted snapshot identity even if its file is removed.
+   * Older snapshots left behind by previous threads can never roll the pane
+   * back; only a strictly newer nonce can move the exact binding forward.
+   */
+  private resolveSnapshotThread(mainPaneId: string): string | null {
+    const snapshot = findSnapshotForPane(mainPaneId);
+    if (!snapshot || !this.isFreshPaneSnapshot(snapshot)) {
+      return this.acceptedSnapshotThreadId;
+    }
+
+    if (
+      this.snapshotNonceHighWater === null ||
+      snapshot.nonce > this.snapshotNonceHighWater
+    ) {
+      this.snapshotNonceHighWater = snapshot.nonce;
+      this.acceptedSnapshotThreadId = snapshot.threadId;
+    }
+
+    return this.acceptedSnapshotThreadId;
   }
 
   /**

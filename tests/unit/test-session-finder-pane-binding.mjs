@@ -497,6 +497,167 @@ try {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
     process.env.CODEX_HOME = home;
     delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const oldThread = '019d7296-3ef8-7292-a039-fdf7ecd4f53e';
+    const newThread = '019d7297-3ef8-7292-a039-fdf7ecd4f53e';
+    const targetStartTime = new Date();
+    const oldRollout = writeRollout(home, {
+      sessionId: oldThread,
+      cwd,
+      modifiedAt: new Date(Date.now() - 60_000),
+    });
+    const newRollout = writeRollout(home, {
+      sessionId: newThread,
+      cwd,
+      fileOffsetMinutes: 1,
+      modifiedAt: new Date(),
+    });
+    const oldSnapshot = writeSnapshot(
+      home,
+      oldThread,
+      '%70',
+      snapshotNonce(targetStartTime)
+    );
+
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+    const initial = await finder.check();
+    assert.ok(initial, 'expected the initial pane snapshot to resolve');
+    assert.equal(
+      initial.path,
+      fs.realpathSync(oldRollout),
+      'the initial snapshot should establish the old thread binding'
+    );
+
+    const newSnapshot = writeSnapshot(
+      home,
+      newThread,
+      '%70',
+      snapshotNonce(new Date(targetStartTime.getTime() + 1_000))
+    );
+    const advanced = await finder.check(true);
+    assert.ok(advanced, 'expected a strictly newer pane snapshot to resolve');
+    assert.equal(
+      advanced.path,
+      fs.realpathSync(newRollout),
+      'a higher snapshot nonce should advance the exact thread binding'
+    );
+
+    fs.unlinkSync(newSnapshot);
+    const retained = await finder.check(true);
+    assert.ok(retained, 'expected the advanced binding to survive snapshot cleanup');
+    assert.equal(
+      retained.path,
+      fs.realpathSync(newRollout),
+      'an older snapshot left on disk must not roll the pane back'
+    );
+    assert.ok(
+      fs.existsSync(oldSnapshot),
+      'the older snapshot fixture must remain on disk'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+
+    const exactThread = '019d7298-3ef8-7292-a039-fdf7ecd4f53e';
+    const unrelatedThread = '019d7299-3ef8-7292-a039-fdf7ecd4f53e';
+    const targetStartTime = new Date();
+    const snapshotPath = writeSnapshot(
+      home,
+      exactThread,
+      '%70',
+      snapshotNonce(targetStartTime)
+    );
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+
+    assert.equal(
+      await finder.check(),
+      null,
+      'an exact pane snapshot may arrive before its rollout is visible'
+    );
+    fs.unlinkSync(snapshotPath);
+
+    writeRollout(home, {
+      sessionId: unrelatedThread,
+      cwd,
+      modifiedAt: new Date(),
+    });
+    const exactRollout = writeRollout(home, {
+      sessionId: exactThread,
+      cwd,
+      fileOffsetMinutes: 1,
+      modifiedAt: new Date(),
+    });
+    await finder.noteRolloutAppeared(exactRollout);
+
+    const resolved = finder.getCurrentSession();
+    assert.ok(resolved, 'expected the delayed exact rollout to resolve immediately');
+    assert.equal(
+      resolved.path,
+      fs.realpathSync(exactRollout),
+      'snapshot loss must not replace the accepted exact thread with a closer unrelated rollout'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
+
+    const paneOneThread = '019d729a-3ef8-7292-a039-fdf7ecd4f53e';
+    const paneTwoThread = '019d729b-3ef8-7292-a039-fdf7ecd4f53e';
+    const targetStartTime = new Date();
+    const paneOneRollout = writeRollout(home, {
+      sessionId: paneOneThread,
+      cwd,
+      modifiedAt: new Date(Date.now() - 60_000),
+    });
+    const paneTwoRollout = writeRollout(home, {
+      sessionId: paneTwoThread,
+      cwd,
+      fileOffsetMinutes: 1,
+      modifiedAt: new Date(),
+    });
+    writeSnapshot(
+      home,
+      paneOneThread,
+      '%70',
+      snapshotNonce(new Date(targetStartTime.getTime() + 2_000))
+    );
+    writeSnapshot(
+      home,
+      paneTwoThread,
+      '%72',
+      snapshotNonce(new Date(targetStartTime.getTime() + 1_000))
+    );
+
+    const finder = new SessionFinder(cwd, undefined, targetStartTime);
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+    const paneOne = await finder.check();
+    assert.ok(paneOne, 'expected pane one to establish a binding');
+    assert.equal(paneOne.path, fs.realpathSync(paneOneRollout));
+
+    process.env.CODEX_HUD_MAIN_PANE = '%72';
+    const paneTwo = await finder.check(true);
+    assert.ok(paneTwo, 'expected the same finder to resolve after a pane switch');
+    assert.equal(
+      paneTwo.path,
+      fs.realpathSync(paneTwoRollout),
+      'pane changes must reset snapshot high-water state even when the new nonce is lower'
+    );
+  }
+
+  {
+    const home = makeTempCodexHome();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+    process.env.CODEX_HOME = home;
+    delete process.env.CODEX_SESSIONS_PATH;
 
     const paneOneThread = '019d7291-a135-7fe1-b46f-8f3eca4fa451';
     const paneTwoThread = '019d7295-3ef8-7292-a039-fdf7ecd4f53e';
