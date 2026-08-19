@@ -62,6 +62,15 @@ export interface RolloutParseResult {
    * survives every later incremental parse.
    */
   partialHistory: boolean;
+  /**
+   * No runtime-state record can have been missed: the bounded first read
+   * scans the skipped middle for state markers, so with zero malformed lines
+   * and no forced truncation, "not found" means "not in the file". Lets a
+   * bounded session stop hedging runtime facts (Fast/sandbox/model) that a
+   * later turn may never arrive to confirm. False once any line failed to
+   * parse — that line could have been the state record.
+   */
+  runtimeStateComplete: boolean;
 }
 
 export interface RolloutParseOutput {
@@ -1424,6 +1433,7 @@ export async function parseRolloutFile(
   let lastAssistantMessageTime: Date | null = null;
   let lastEventTime: Date | null = null;
   let partialHistory = false;
+  let batchWasTruncated = false;
   const protocolHealth: ProtocolHealth = {
     unknownTopLevelTypes: {},
     unknownResponseTypes: {},
@@ -1448,6 +1458,8 @@ export async function parseRolloutFile(
     lastAssistantMessageTime,
     lastEventTime,
     partialHistory,
+    runtimeStateComplete:
+      protocolHealth.malformedLines === 0 && !batchWasTruncated,
   });
 
   if (!fs.existsSync(rolloutPath)) {
@@ -1465,6 +1477,7 @@ export async function parseRolloutFile(
   // permanently by advancing the cursor to EOF.
   const batch = await readRolloutBatch(rolloutPath, fromOffset);
   partialHistory = batch.partialHistory;
+  batchWasTruncated = batch.truncated;
   protocolHealth.malformedLines += batch.malformedLines;
   if (batch.truncated) {
     runningCalls.clear();
@@ -2238,6 +2251,10 @@ export class RolloutParser {
       // Sticky: a bounded first read keeps every later incremental result
       // honest about its lower-bound counters.
       result.partialHistory ||= this.cachedResult.partialHistory;
+      // Completeness only survives if every earlier pass was also complete: a
+      // malformed line seen an hour ago could have been the state record this
+      // pass did not find.
+      result.runtimeStateComplete &&= this.cachedResult.runtimeStateComplete;
 
       result.lastToolActivityTime ??=
         this.cachedResult.lastToolActivityTime;

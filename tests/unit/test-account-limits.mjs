@@ -36,11 +36,38 @@ function window(usedPercent) {
 }
 
 /**
+ * The snapshot codex writes once the weekly window is spent: a different
+ * limit_id, both windows null, and a zeroed credit pool. Measured live on
+ * 2026-08-19, the first turn after exhaustion recorded exactly this.
+ */
+function exhaustedSnapshot() {
+  return {
+    limit_id: 'premium',
+    limit_name: null,
+    primary: null,
+    secondary: null,
+    credits: { has_credits: false, unlimited: false, balance: '0' },
+    individual_limit: null,
+    spend_control_reached: null,
+    plan_type: null,
+    rate_limit_reached_type: null,
+  };
+}
+
+/**
  * Write a rollout whose last token_count reports `usedPercent`, aged
  * `ageMinutes` in the past. `padBytes` pushes that record out of the tail when
- * a case needs a file the bounded read cannot reach into.
+ * a case needs a file the bounded read cannot reach into. `trailingSnapshot`
+ * appends one more token_count after it, for the degenerate-record cases.
  */
-function writeRollout(codexHome, id, ageMinutes, usedPercent, padBytes = 0) {
+function writeRollout(
+  codexHome,
+  id,
+  ageMinutes,
+  usedPercent,
+  padBytes = 0,
+  trailingSnapshot = null
+) {
   const at = new Date(Date.now() - ageMinutes * 60_000);
   const dir = path.join(
     codexHome,
@@ -95,6 +122,19 @@ function writeRollout(codexHome, id, ageMinutes, usedPercent, padBytes = 0) {
           type: 'message',
           role: 'assistant',
           content: [{ type: 'output_text', text: 'x'.repeat(padBytes) }],
+        },
+      })
+    );
+  }
+  if (trailingSnapshot) {
+    lines.push(
+      JSON.stringify({
+        timestamp: new Date(at.getTime() + 60_000).toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: null,
+          rate_limits: trailingSnapshot,
         },
       })
     );
@@ -163,6 +203,53 @@ try {
     const codexHome = path.join(tempRoot, 'empty');
     fs.mkdirSync(path.join(codexHome, 'sessions'), { recursive: true });
     assert.equal(scan(codexHome), null);
+  }
+
+  {
+    // Once the weekly window is spent, the next turn writes a snapshot with
+    // no windows at all. It is the newest record in the file, so the backward
+    // walk used to stop on it and report a quota with nothing in it — the
+    // quota row then went dark at exactly 100% used. Keep walking to the
+    // reading that still states the number.
+    const codexHome = path.join(tempRoot, 'exhausted');
+    writeRollout(
+      codexHome,
+      '019f7777-a777-7777-8777-777777777777',
+      20,
+      100,
+      0,
+      exhaustedSnapshot()
+    );
+
+    const found = scan(codexHome);
+    assert.equal(
+      found?.limits?.primary?.used_percent,
+      100,
+      'a windowless snapshot does not shadow the informative one behind it'
+    );
+    assert.equal(found?.limits?.limit_id, 'codex');
+  }
+
+  {
+    // The degenerate record must not win across files either: it is newer
+    // than every real reading on the machine.
+    const codexHome = path.join(tempRoot, 'exhausted-across-files');
+    writeRollout(codexHome, '019f8888-b888-7888-8888-888888888888', 90, 96);
+    writeRollout(
+      codexHome,
+      '019f9999-c999-7999-8999-999999999999',
+      5,
+      null,
+      0,
+      exhaustedSnapshot()
+    );
+
+    const found = scan(codexHome);
+    assert.equal(
+      found?.limits?.primary?.used_percent,
+      96,
+      'the newest informative snapshot wins over a newer empty one'
+    );
   }
 
   {
@@ -237,6 +324,48 @@ try {
     )?.primary?.used_percent,
     5,
     'a snapshot from a different account never substitutes'
+  );
+
+  // A windowless snapshot states nothing, so it cannot outrank one that does
+  // — in either direction, and regardless of which is newer. The limit_id
+  // guard must not fire here: one account writes several ids ("codex" for the
+  // weekly window, "premium" for credits), so a different id on an empty
+  // snapshot is not evidence of a different account.
+  const emptyAccount = {
+    limits: {
+      limit_id: 'premium',
+      primary: null,
+      secondary: null,
+      credits: { has_credits: false, unlimited: false, balance: '0' },
+    },
+    observedAt: new Date('2026-08-19T12:00:00.000Z'),
+  };
+  assert.equal(
+    preferFreshestRateLimits(
+      sessionLimits,
+      new Date('2026-08-11T03:36:00.000Z'),
+      emptyAccount
+    )?.primary?.used_percent,
+    9,
+    'a newer empty account snapshot never replaces a stated session reading'
+  );
+  assert.equal(
+    preferFreshestRateLimits(
+      emptyAccount.limits,
+      new Date('2026-08-19T12:00:00.000Z'),
+      account
+    )?.primary?.used_percent,
+    37,
+    'an empty session snapshot yields to the account reading that states one'
+  );
+  assert.equal(
+    preferFreshestRateLimits(
+      { limit_id: 'codex', rate_limit_reached_type: 'weekly' },
+      new Date('2026-08-19T12:00:00.000Z'),
+      account
+    )?.rate_limit_reached_type,
+    'weekly',
+    'a reached flag is a statement even with no window percentages'
   );
 
   console.log('test-account-limits: PASS');

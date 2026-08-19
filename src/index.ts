@@ -33,6 +33,7 @@ import {
 } from './collectors/account-limits.js';
 import { compareOverviewSessions } from './collectors/overview-order.js';
 import { ApprovalDetector } from './collectors/approval-detector.js';
+import { StallDetector } from './collectors/stall-detector.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import {
@@ -224,22 +225,40 @@ const HUD_TMUX_SESSION = process.env.CODEX_HUD_TMUX_SESSION || undefined;
 const approvalDetector = new ApprovalDetector({
   mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
 });
+const stallDetector = new StallDetector({
+  mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
+});
 
-function withApprovalPhase(
+/**
+ * Overlay the pane detectors' findings on the parsed phase. Approval wins:
+ * it is the state the user can act on. The interrupted overlay applies only
+ * to the phases the stall detector probes, so a stale flag can never repaint
+ * a genuinely progressing turn.
+ */
+function withDetectorPhases(
   activity: TurnActivity | null | undefined,
-  approvalNeeded: boolean
+  approvalNeeded: boolean,
+  likelyInterrupted: boolean = false
 ): TurnActivity | undefined {
   if (!activity) {
     return undefined;
   }
-  return approvalNeeded && activity.phase === 'running-tool'
-    ? { ...activity, phase: 'awaiting-approval' }
-    : activity;
+  if (approvalNeeded && activity.phase === 'running-tool') {
+    return { ...activity, phase: 'awaiting-approval' };
+  }
+  if (
+    likelyInterrupted &&
+    (activity.phase === 'thinking' || activity.phase === 'responding')
+  ) {
+    return { ...activity, phase: 'interrupted' };
+  }
+  return activity;
 }
 
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
   approvalDetector.reset();
+  stallDetector.reset();
   // Let other HUDs' overviews see this binding. A session bound before its
   // first turn has no rollout yet, which is exactly the case file timestamps
   // cannot represent.
@@ -448,7 +467,9 @@ async function refreshOverviewData(): Promise<SessionOverview> {
     const id = result.session?.id ?? sessionFile.sessionId;
     const binding =
       bindingById.get(id) ?? bindingById.get(sessionFile.sessionId);
-    const turnActivity = withApprovalPhase(
+    // Only the approval overlay: interrupted state is main-pane evidence the
+    // owning HUD holds and does not publish.
+    const turnActivity = withDetectorPhases(
       result.turnActivity,
       binding?.approvalNeeded === true
     );
@@ -517,22 +538,33 @@ async function publishCurrentHudBinding(): Promise<void> {
 }
 
 /**
- * Approval probing stays outside both the render clock and rollout parser.
- * The detector performs no tmux capture until the persisted structure has
- * stalled; it also owns the ten-second low-frequency gate after that point.
+ * Pane probing (approval waits and stream-error stalls) stays outside both
+ * the render clock and rollout parser. Each detector performs no tmux capture
+ * until the persisted structure has stalled; each owns its own low-frequency
+ * gate after that point.
  */
-async function refreshApprovalState(): Promise<void> {
+async function refreshPaneDetectors(): Promise<void> {
   const rolloutData = rolloutParser.getCached();
   const runtimePolicy = rolloutData?.session?.approvalPolicy;
-  const staticPolicy = rolloutData?.partialHistory
-    ? undefined
-    : slowProjectCache.get().config.approval_policy;
-  const changed = await approvalDetector.refresh({
-    turnActivity: rolloutData?.turnActivity,
-    toolActivity: rolloutData?.toolActivity,
-    lastEventAt: rolloutData?.lastEventTime,
-    approvalPolicy: runtimePolicy ?? staticPolicy,
-  });
+  // A complete state scan makes the config fallback safe even on a bounded
+  // history: absence of a runtime policy record is then a fact, not a gap.
+  const staticPolicy =
+    rolloutData?.partialHistory && !rolloutData.runtimeStateComplete
+      ? undefined
+      : slowProjectCache.get().config.approval_policy;
+  const [approvalChanged, stallChanged] = await Promise.all([
+    approvalDetector.refresh({
+      turnActivity: rolloutData?.turnActivity,
+      toolActivity: rolloutData?.toolActivity,
+      lastEventAt: rolloutData?.lastEventTime,
+      approvalPolicy: runtimePolicy ?? staticPolicy,
+    }),
+    stallDetector.refresh({
+      turnActivity: rolloutData?.turnActivity,
+      lastEventAt: rolloutData?.lastEventTime,
+    }),
+  ]);
+  const changed = approvalChanged || stallChanged;
   if (!changed) {
     return;
   }
@@ -664,9 +696,10 @@ function collectData(): HudData {
     accountLimitsCache.get()
   );
   const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
-  const turnActivity = withApprovalPhase(
+  const turnActivity = withDetectorPhases(
     rolloutData?.turnActivity,
-    approvalDetector.isApprovalNeeded()
+    approvalDetector.isApprovalNeeded(),
+    stallDetector.isLikelyInterrupted()
   );
 
   if (displayMode === 'overview') {
@@ -699,17 +732,21 @@ function collectData(): HudData {
     turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
     partialHistory: rolloutData?.partialHistory,
+    runtimeStateComplete: rolloutData?.runtimeStateComplete,
     contextUsage,
     displayMode,
   };
 }
 
 function isWorkingPhase(phase: string | undefined): boolean {
+  // A confirmed-interrupted turn is dead, not working: it must not pin the
+  // base cadence (or the overview's "working" rank) the way a live one does.
   return (
     phase !== undefined &&
     phase !== 'awaiting-approval' &&
     phase !== 'idle' &&
-    phase !== 'aborted'
+    phase !== 'aborted' &&
+    phase !== 'interrupted'
   );
 }
 
@@ -726,7 +763,11 @@ function computeCadence(nowMs: number = Date.now()): CadencePlan {
       (call) => call.status === 'running'
     ) ?? false);
   const hasActiveTurn = isWorkingPhase(
-    withApprovalPhase(rolloutData?.turnActivity, approvalNeeded)?.phase
+    withDetectorPhases(
+      rolloutData?.turnActivity,
+      approvalNeeded,
+      stallDetector.isLikelyInterrupted()
+    )?.phase
   );
   const hasActiveAgent = (cachedAgentActivity?.visibleAgentCount ?? 0) > 0;
   let lastActivityMs = Math.max(
@@ -924,7 +965,7 @@ function startCollectorTimers(): void {
     void refreshRolloutOnly();
   }, 1000);
   approvalRefreshTimer = setInterval(() => {
-    void refreshApprovalState();
+    void refreshPaneDetectors();
   }, 1000);
 }
 
@@ -1029,7 +1070,7 @@ async function main(): Promise<void> {
     await sessionFinder.noteRolloutAppeared(rolloutPath);
     void sessionFinder.check();
     await refreshRolloutAndAgents();
-    void refreshApprovalState();
+    void refreshPaneDetectors();
     if (displayMode === 'overview') {
       // Respect the snapshot TTL: with a working session watcher these
       // events can arrive in bursts across every active session.

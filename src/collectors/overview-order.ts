@@ -17,7 +17,10 @@ function phaseRank(activity: SessionOverviewItem['turnActivity']): number {
       return 0;
     case 'responding':
       return 1;
+    // Both are dead turns that need a human restart; they outrank idle but
+    // must not displace live work.
     case 'aborted':
+    case 'interrupted':
       return 2;
     case 'idle':
     default:

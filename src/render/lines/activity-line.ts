@@ -325,6 +325,14 @@ function turnPhasePresentation(
         icon: icons.cross,
         color: theme.error,
       };
+    case 'interrupted':
+      // Backed by a confirmed error banner on the main pane; the freshness
+      // suffix alongside says how long the turn has been silent.
+      return {
+        label: 'Turn likely interrupted',
+        icon: icons.cross,
+        color: theme.error,
+      };
     case 'idle':
       return {
         label: 'Idle · waiting for you',
@@ -351,12 +359,27 @@ export function renderTurnActivityLine(
     eventAgeMs >= 5000
       ? colors.dim(` · event ${formatAge(eventAgeMs)} ago`)
       : '';
-  return truncateAnsi(
-    presentation.color(
-      `${presentation.icon} ${presentation.label}`
-    ) + freshness,
-    width
+  // The last turn's wall time is parsed from every task_complete but never
+  // reached the screen: it is the anchor for "how long does a turn here
+  // usually take". Idle is where that question gets asked, and the cell is
+  // the first to go when the row is too narrow.
+  const lastTurn =
+    activity.phase === 'idle' &&
+    activity.lastTurnDurationMs !== undefined &&
+    Number.isFinite(activity.lastTurnDurationMs) &&
+    activity.lastTurnDurationMs >= 0
+      ? colors.dim(
+          ` · last turn ${formatToolDuration(activity.lastTurnDurationMs)}`
+        )
+      : '';
+  const base = presentation.color(
+    `${presentation.icon} ${presentation.label}`
   );
+  let line = base + lastTurn + freshness;
+  if (lastTurn && Number.isFinite(width) && visualLength(line) > width) {
+    line = base + freshness;
+  }
+  return truncateAnsi(line, width);
 }
 
 function formatRateWindow(windowMinutes: number | undefined): string {
@@ -445,6 +468,17 @@ export function renderRateLimitLine(
     (window) =>
       window.used_percent !== undefined && !isExpiredWindow(window, nowMs)
   );
+  // Last-resort signal for the degenerate snapshot codex writes once the
+  // weekly window is spent: no windows, no reached flag, a zeroed credit
+  // pool. Gated on the snapshot carrying no window at all — a plan without
+  // credits would otherwise show a standing false alarm beside a healthy
+  // weekly gauge.
+  const credits = limits?.credits;
+  const creditsExhausted =
+    liveWindows.length === 0 &&
+    !reached &&
+    credits?.has_credits === false &&
+    credits.unlimited !== true;
   // A gauge that only lights up once the tank is nearly empty is not a gauge.
   // Measured on this account: the weekly window went 1% -> 48% in two days
   // while the row stayed hidden, and the previous window was last seen at 88%.
@@ -456,7 +490,10 @@ export function renderRateLimitLine(
         (window) =>
           (window.used_percent ?? 0) >= RATE_LIMIT_PRESSURE_PERCENT
       );
-  if (!limits || (!reached && shownWindows.length === 0)) {
+  if (
+    !limits ||
+    (!reached && shownWindows.length === 0 && !creditsExhausted)
+  ) {
     return null;
   }
 
@@ -484,6 +521,9 @@ export function renderRateLimitLine(
   }
   if (reached) {
     parts.push(theme.error('limit reached'));
+  }
+  if (creditsExhausted) {
+    parts.push(theme.error('credits: 0'));
   }
   return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
 }

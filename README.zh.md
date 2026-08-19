@@ -90,7 +90,8 @@ codex
 | `codex-hud-sync` | 重新构建并刷新当前 checkout 的别名 |
 | `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
 | `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
-| `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias |
+| `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias，并打印最近的 HUD 诊断日志 |
+| `codex-hud --kill` | 终止当前目录最新的会话（`--all`：本目录全部会话） |
 | `codex-hud --reload` | 必要时先重建，再重启当前目录最新会话的 HUD pane |
 | `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
 | `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
@@ -115,9 +116,9 @@ Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in
 |----|------|
 | **标题** | 模型 + effort、项目名、git 分支，以及绑定的 Codex 会话已运行多久。首轮采集完成前模型显示为 `[…]`、不显示时长，因为此时两者都还不知道 |
 | **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先（徽章已蕴含的单元不再重复显示，默认态 `Fast: off` 弱化为 dim）；随后是 MCP、Codex skill、hook、AGENTS.md 和配置来源 |
-| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、累计消耗、compact 次数；只要版面还有空行就显示限额窗口及其 reset 时刻，使用率达到 70% 后转为高亮告警；reset 时刻已过的限额快照直接不显示，不再重放。限额是账号级状态，取本机任一 Codex 会话写下的最新快照，而不是绑定会话碰巧最后看到的那一份 |
+| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、累计消耗、compact 次数；只要版面还有空行就显示限额窗口及其 reset 时刻，使用率达到 70% 后转为高亮告警；reset 时刻已过的限额快照直接不显示，不再重放。限额是账号级状态，取本机任一 Codex 会话写下的、**确实报出了读数的**最新快照，而不是绑定会话碰巧最后看到的那一份——窗口耗尽后 Codex 会写出不含任何窗口的快照，直接取最新的那份会让配额行在 100% 时反而消失。若快照没有任何窗口但信用额度为空，则显示 `credits: 0` |
 | **健康** | Git、会话日志、agent、项目扫描、配置、概览采集以及 HUD 自身显示的状态（自然语言描述），以及本版本无法识别的 Codex 记录条数。尚未完成首轮的采集器保持沉默，只有跑过又停了才算告警 |
-| **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent。命令非零退出会标记为 `✗` 并显示退出码——包括 Codex 把它放在一段自身执行成功的脚本里运行的情况 |
+| **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent；空闲会话还会显示上一轮耗时。命令非零退出会标记为 `✗` 并显示退出码——包括 Codex 把它放在一段自身执行成功的脚本里运行的情况。stream error 只画在 Codex TUI 上、不写入会话日志，被它打断的回合会永远停在 `Thinking`；静默数分钟后 HUD 会去主 pane 查错误横幅，只有确认存在才显示 `✗ Turn likely interrupted` |
 | **Session** | 工作目录、Session ID、CLI 版本；排在计划和工具历史之后，小 pane 优先保留动态信息。Session ID 在行宽允许时完整显示——`codex resume`、`fork`、`archive`、`delete` 接受的正是它；pane 更窄时才回退为缩写形式 |
 
 版面是双向自适应的。有余量时会同时保留回合行与运行中工具行，因为两者计的不是同一个数：回合行是 Codex 连续执行工具的时长，工具行是当前这一条调用的时长。pane 放不下时按顺序整行舍弃低信号内容——先是低压限额读数，然后回合行，然后 Session 详情行，然后多条 agent 行折叠成一行 `◐ N agents` 计数，最后才是静态环境行（其 `[FULL ACCESS]` 徽章上移到标题行）——保证计划和 agent 等动态状态存活，而不是截断时恰好落在末尾的内容被丢弃。
@@ -164,7 +165,7 @@ Codex CLI 自己的帮助，`codex-hud --help` 是本 wrapper 的帮助。
 <summary>更多命令</summary>
 
 ```bash
-codex-hud --kill             # 终止当前目录的会话
+codex-hud --kill             # 终止当前目录最新的会话（--all：全部）
 codex-hud --list             # 列出所有 HUD 会话
 codex-hud --attach           # 复用已有会话
 codex-hud --new-session      # 强制新建会话
