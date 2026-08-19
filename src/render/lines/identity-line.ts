@@ -65,7 +65,10 @@ export function renderIdentityLine(
   const configHealth = data.collectorHealth?.environment;
   const configKnown =
     configHealth === undefined || configHealth.lastSuccessAt !== undefined;
-  const partialRuntime = data.partialHistory === true;
+  // A clean state scan makes a bounded history complete for runtime facts;
+  // see environment-line.ts for the reasoning.
+  const partialRuntime =
+    data.partialHistory === true && data.runtimeStateComplete !== true;
   const runtimeModel = data.session?.model;
   const modelUnknown = partialRuntime && runtimeModel === undefined;
   const modelName = modelUnknown

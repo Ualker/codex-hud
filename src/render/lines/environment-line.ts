@@ -32,7 +32,12 @@ export function renderEnvironmentLine(
   // Runtime turn_context state takes precedence over static config. A bounded
   // history with no recovered runtime value is unknown: falling back to the
   // current config can make an older full-access session look sandboxed.
-  const partialRuntime = data.partialHistory === true;
+  // Unless the state scan completed cleanly — then every runtime record in
+  // the file was seen, "not found" is definitive, and the config fallback is
+  // the truth. Without this, "Fast: ?" stood for 21 hours on an idle session
+  // whose file provably contained no thread_settings record.
+  const partialRuntime =
+    data.partialHistory === true && data.runtimeStateComplete !== true;
   const runtimeSandbox = data.session?.sandboxMode;
   const runtimeApprovalPolicy = data.session?.approvalPolicy;
   const sandbox =

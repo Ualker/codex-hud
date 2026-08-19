@@ -366,6 +366,52 @@ try {
     'the full re-read is not reported as partial'
   );
 
+  // ---- runtime state completeness ----------------------------------------
+  // A bounded read still scans the skipped span for state markers, so a
+  // runtime record it did not find is genuinely absent. Renderers use this to
+  // stop hedging facts (Fast/sandbox) that a session which never runs another
+  // turn would otherwise leave as "?" forever.
+  assert.equal(
+    smallResult.runtimeStateComplete,
+    true,
+    'a whole-file read misses nothing'
+  );
+
+  const completeParser = new RolloutParser(10);
+  completeParser.setRolloutPath(big);
+  const completeResult = await completeParser.parse();
+  assert.equal(completeResult.partialHistory, true);
+  assert.equal(
+    completeResult.runtimeStateComplete,
+    true,
+    'a bounded read whose state scan was clean is complete for runtime facts'
+  );
+
+  // A line that failed to parse could have been the state record, so the
+  // scan can no longer claim to have seen everything.
+  const malformed = rolloutPath('019f4444-d444-7444-8444-444444444444');
+  fs.writeFileSync(
+    malformed,
+    [
+      JSON.stringify(sessionMeta('019f4444-d444-7444-8444-444444444444')),
+      '{"timestamp":"2026-08-12T01:00:00.000Z","type":"event_msg","payl',
+      JSON.stringify(tokenCount(2048)),
+    ].join('\n') + '\n',
+    'utf8'
+  );
+  const malformedParser = new RolloutParser(10);
+  malformedParser.setRolloutPath(malformed);
+  const malformedResult = await malformedParser.parse();
+  assert.ok(
+    malformedResult.protocolHealth.malformedLines > 0,
+    'the fixture really does contain an unreadable line'
+  );
+  assert.equal(
+    malformedResult.runtimeStateComplete,
+    false,
+    'an unreadable line could have been the state record'
+  );
+
   console.log('test-rollout-bounded-first-read: PASS');
 } finally {
   const resolvedRoot = fs.realpathSync(tempRoot);

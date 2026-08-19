@@ -66,6 +66,30 @@ function parseTimestamp(raw: string | undefined): Date | null {
   return Number.isFinite(parsed.getTime()) ? parsed : null;
 }
 
+/**
+ * Whether a snapshot states anything the quota row could render.
+ *
+ * Codex 0.147 can write a degenerate snapshot: observed live, the first turn
+ * after the weekly window was exhausted recorded `limit_id:"premium"` with
+ * both windows null and zero credits. It was the newest snapshot on the
+ * machine, so "newest wins" put it in front of every informative reading and
+ * the quota row went dark at 100% used — the one moment it matters most.
+ * A snapshot with no window percentages and no reached flag must never shadow
+ * one that has them.
+ */
+export function hasRateLimitSignal(limits: RateLimitSnapshot): boolean {
+  if (
+    limits.primary?.used_percent !== undefined ||
+    limits.secondary?.used_percent !== undefined
+  ) {
+    return true;
+  }
+  return (
+    Boolean(limits.rate_limit_reached_type) ||
+    limits.spend_control_reached === true
+  );
+}
+
 /** The last rate-limit snapshot in one rollout's tail, if it has one. */
 async function readTailSnapshot(
   rolloutPath: string
@@ -90,6 +114,8 @@ async function readTailSnapshot(
   }
 
   // Walk backwards: the last snapshot in the file is the newest one it has.
+  // Degenerate snapshots keep the walk going — behind the windowless record a
+  // turn writes once the weekly limit is spent sits the reading that said so.
   for (let index = records.length - 1; index >= 0; index--) {
     const record = records[index];
     const payload = record?.payload;
@@ -97,6 +123,9 @@ async function readTailSnapshot(
       continue;
     }
     if (payload.type !== 'token_count' && payload.type !== 'rate_limit') {
+      continue;
+    }
+    if (!hasRateLimitSignal(payload.rate_limits)) {
       continue;
     }
     const observedAt = parseTimestamp(record.timestamp);
@@ -145,11 +174,15 @@ export async function findLatestAccountRateLimits(): Promise<AccountRateLimits |
 /**
  * Choose between the bound session's snapshot and the account-wide one.
  *
- * Newest wins, with two guards. A snapshot from a different `limit_id` is a
- * different account and never substitutes for the bound session's. And when
- * both name the same window, the account-wide reading is used even if it is
- * only marginally newer, because `used_percent` within one window only ever
- * grows: the newer reading is never the more optimistic mistake.
+ * Newest wins, with two guards. A snapshot from a different `limit_id` never
+ * substitutes for the bound session's — but only when both actually carry a
+ * reading: one account writes several limit_ids (observed live: "codex" for
+ * the weekly window, "premium" for the credit pool), so the id separates
+ * pools, not accounts, and a windowless snapshot has nothing the informative
+ * one could contradict. And when both name the same window, the account-wide
+ * reading is used even if it is only marginally newer, because `used_percent`
+ * within one window only ever grows: the newer reading is never the more
+ * optimistic mistake.
  */
 export function preferFreshestRateLimits(
   sessionLimits: RateLimitSnapshot | null | undefined,
@@ -161,6 +194,11 @@ export function preferFreshestRateLimits(
   }
   if (!sessionLimits) {
     return account.limits;
+  }
+  const sessionInformative = hasRateLimitSignal(sessionLimits);
+  const accountInformative = hasRateLimitSignal(account.limits);
+  if (sessionInformative !== accountInformative) {
+    return sessionInformative ? sessionLimits : account.limits;
   }
   const sessionLimitId = sessionLimits.limit_id;
   const accountLimitId = account.limits.limit_id;

@@ -91,7 +91,8 @@ After the first install, these are available in your shell:
 | `codex-hud-sync` | Rebuild and refresh aliases for the current checkout |
 | `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
 | `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
-| `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases |
+| `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases, and print the most recent HUD diagnostics |
+| `codex-hud --kill` | Kill the newest session in this directory (`--all`: every session here) |
 | `codex-hud --reload` | Rebuild when needed, then restart the newest session's HUD pane in this directory |
 | `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
 | `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
@@ -119,9 +120,9 @@ rather than rendering a short frame that could be mistaken for a failure.
 |------|-------|
 | **Header** | Model + effort, project, git branch, and how long the bound Codex session has run. Before the first collector round the model reads `[…]` and the duration is absent, because neither is known yet |
 | **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources |
-| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; the quota window and its reset time are stated whenever the pane has a row to spare, and highlighted from 70% usage onward, while a window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote, not from whatever the bound session last happened to see |
+| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; the quota window and its reset time are stated whenever the pane has a row to spare, and highlighted from 70% usage onward, while a window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote that actually states one — once a window is spent Codex writes windowless snapshots, and taking the newest of those blanked the row at exactly 100% used. A snapshot carrying no window at all but an empty credit pool reads `credits: 0` |
 | **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex records this build does not recognize. A collector that has not finished its first run is silent — only something that stopped working is a warning |
-| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents. A command that exits non-zero is marked `✗` with its exit code, including when Codex ran it inside a script that itself succeeded |
+| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents. An idle session also states how long its last turn took. A command that exits non-zero is marked `✗` with its exit code, including when Codex ran it inside a script that itself succeeded. A stream error is drawn only on the Codex TUI and never written to the session log, so a turn it kills would spin as `Thinking` forever; after minutes of silence the HUD checks the Codex pane for the error banner and, only if it is there, reads `✗ Turn likely interrupted` |
 | **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible. The ID is printed in full whenever the row has room, because it is what `codex resume`, `fork`, `archive`, and `delete` take; narrower panes fall back to the abbreviated form |
 
 The layout adapts in both directions. With rows to spare it keeps the turn row
@@ -200,7 +201,7 @@ documents the wrapper.
 <summary>More commands</summary>
 
 ```bash
-codex-hud --kill             # Kill session for current directory
+codex-hud --kill             # Kill the newest session here (--all: every one)
 codex-hud --list             # List all HUD sessions
 codex-hud --attach           # Attach to existing session
 codex-hud --new-session      # Force a new session

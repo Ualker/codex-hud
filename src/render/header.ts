@@ -290,11 +290,16 @@ function renderExpandedLayout(
   const toolDetailsNotice = toolsLine ? null : renderToolDetailsNotice(width);
 
   const runtimeSandbox = data.session?.sandboxMode;
+  // A bounded history whose state scan completed cleanly is not partial for
+  // runtime facts: absence of a sandbox record then means the session never
+  // wrote one, and the config value is the truth rather than a guess.
+  const runtimeFactsPartial =
+    data.partialHistory === true && data.runtimeStateComplete !== true;
   const accessUnknown =
-    data.partialHistory === true && runtimeSandbox === undefined;
+    runtimeFactsPartial && runtimeSandbox === undefined;
   const fullAccess =
     runtimeSandbox === 'danger-full-access' ||
-    (!data.partialHistory &&
+    (!runtimeFactsPartial &&
       runtimeSandbox === undefined &&
       data.config.sandbox_mode === 'danger-full-access');
 
@@ -545,6 +550,8 @@ function renderOverviewLayout(
         return theme.info('Responding');
       case 'aborted':
         return theme.error('Aborted');
+      case 'interrupted':
+        return theme.error('Interrupted');
       case 'idle':
         return theme.success('Idle');
       default:

@@ -405,7 +405,14 @@ export type TurnPhase =
   | 'running-tool'
   | 'responding'
   | 'idle'
-  | 'aborted';
+  | 'aborted'
+  /**
+   * Render-time overlay, never written by the parser: a stream error is drawn
+   * only on the Codex TUI, not into the rollout, so a turn it kills stays
+   * `thinking` forever. The stall detector sets this after confirming the
+   * error banner on the main pane.
+   */
+  | 'interrupted';
 
 export interface TurnActivity {
   phase: TurnPhase;
@@ -585,6 +592,15 @@ export interface HudData {
    * and must be rendered as such.
    */
   partialHistory?: boolean;
+  /**
+   * Every byte so far was examined for runtime-state records (the bounded
+   * first read scans the skipped middle for their markers) and none were lost
+   * to malformed lines. When true, a runtime fact the scan did not find is
+   * genuinely absent from the file, so renderers may fall back to config
+   * instead of hedging with "?" — a hedge that otherwise never resolves for a
+   * session that stays idle. Counters stay lower bounds regardless.
+   */
+  runtimeStateComplete?: boolean;
 
   // Display mode and overview data
   displayMode?: HudDisplayMode;

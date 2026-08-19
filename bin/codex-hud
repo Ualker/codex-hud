@@ -1024,9 +1024,9 @@ still work in pipes and scripts. Use 'codex help' for the Codex CLI's own help;
 
 Options:
   -h, --help          Show this help message
-  --self-check        Run environment diagnostics
+  --self-check        Run environment diagnostics (includes recent HUD log entries)
   --doctor            Alias for --self-check
-  --kill              Kill existing session for current directory
+  --kill [--all]      Kill the newest session in this directory (--all: every session here)
   --list              List all codex-hud sessions
   --reload [--all]    Restart the HUD pane (newest session; --all: every session in this directory)
   --toggle-mode       Toggle single/overview without focusing the HUD pane
@@ -1038,6 +1038,8 @@ HUD Pane Keys (click the HUD pane first):
   Ctrl+T              Toggle single/overview display
   t                   Cycle tool details: targets -> full -> off
   Ctrl+C              Close the HUD pane process
+  Note: wheel-scrolling the HUD pane enters tmux copy-mode, which freezes the
+  view on the current frame; press q there to resume live updates.
 
 Environment Variables:
   CODEX_HUD_POSITION  HUD pane position: bottom (default), top
@@ -1068,7 +1070,7 @@ Examples:
   codex-hud                    Start Codex with HUD
   codex-hud --model gpt-5      Start with specific model
   codex-hud "help me debug"    Start with initial prompt
-  codex-hud --kill             Kill existing session
+  codex-hud --kill             Kill the newest session here (--all: every one)
   codex-hud --reload           Reload only the HUD pane (newest session)
   codex-hud --reload --all     Reload the HUD pane of every session here
   codex-hud --toggle-mode      Toggle overview from the main shell
@@ -1153,7 +1155,44 @@ self_check() {
     else
         info "HUD build output is current"
     fi
-    
+
+    # Render errors and uncaught exceptions land in the diagnostics log (see
+    # src/utils/hud-log.ts for the resolution chain mirrored here), but until
+    # now nothing displayed it — and this command is where users look first
+    # when the HUD misbehaves. History is not a current fault, so log entries
+    # never count as self-check failures.
+    local log_file="${CODEX_HUD_LOG_FILE:-}"
+    if [[ "$(printf '%s' "$log_file" | tr '[:upper:]' '[:lower:]')" == "off" ]]; then
+        info "HUD diagnostics logging is disabled (CODEX_HUD_LOG_FILE=off)"
+    else
+        if [[ -z "$log_file" ]]; then
+            local log_candidates=()
+            if [[ "$OSTYPE" == darwin* ]]; then
+                log_candidates+=("$HOME/Library/Logs/codex-hud/hud.log")
+            fi
+            if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+                log_candidates+=("$XDG_STATE_HOME/codex-hud/hud.log")
+            else
+                log_candidates+=("$HOME/.local/state/codex-hud/hud.log")
+            fi
+            log_candidates+=("${TMPDIR:-/tmp}/codex-hud/hud.log")
+            local log_candidate
+            log_file="${log_candidates[0]}"
+            for log_candidate in "${log_candidates[@]}"; do
+                if [[ -f "$log_candidate" ]]; then
+                    log_file="$log_candidate"
+                    break
+                fi
+            done
+        fi
+        if [[ -s "$log_file" ]]; then
+            info "Recent HUD diagnostics ($log_file):"
+            tail -n 5 "$log_file" | cut -c 1-300 | sed 's/^/    /'
+        else
+            info "No HUD diagnostics logged ($log_file)"
+        fi
+    fi
+
     if [[ "$failures" -gt 0 ]]; then
         warn "Self-check found $failures issue(s)."
         exit 1
@@ -1162,11 +1201,20 @@ self_check() {
     info "Self-check passed."
 }
 
-# Kill existing session
+# Kill sessions for this directory. The default scope is the newest session
+# only — it used to be every session here while the help said "Kill existing
+# session" in the singular, so with two sessions open the old one could not be
+# killed without taking the current one down. `--all` restores the wide scope
+# explicitly, mirroring --reload/--reload --all. Each kill is named so the
+# blast radius is visible in the output.
 kill_session() {
+    local scope="${1:-newest}"
     local sessions
-    sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null \
-        | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" || true)
+    if [[ "$scope" == "all" ]]; then
+        sessions=$(find_all_hud_sessions)
+    else
+        sessions=$(find_existing_session)
+    fi
     if [[ -z "$sessions" ]]; then
         warn "No session found: $SESSION_PREFIX or $LEGACY_SESSION_PREFIX"
         return
@@ -1174,9 +1222,16 @@ kill_session() {
     while IFS= read -r session_name; do
         if [[ -n "$session_name" ]]; then
             tmux kill-session -t "$session_name"
+            info "Killed session: $session_name"
         fi
     done <<< "$sessions"
-    info "Session(s) for '$SESSION_PREFIX' killed."
+    if [[ "$scope" != "all" ]]; then
+        local remaining
+        remaining=$(find_all_hud_sessions | grep -c . || true)
+        if [[ "$remaining" -gt 0 ]]; then
+            info "$remaining other session(s) in this directory kept; use --kill --all to remove them too."
+        fi
+    fi
 }
 
 # List all codex-hud sessions
@@ -1371,7 +1426,11 @@ case "${1:-}" in
     --kill)
         # Need to check dependencies to ensure tmux is available
         if command_exists tmux; then
-            kill_session
+            if [[ "${2:-}" == "--all" ]]; then
+                kill_session all
+            else
+                kill_session
+            fi
         else
             error "tmux not installed"
         fi
