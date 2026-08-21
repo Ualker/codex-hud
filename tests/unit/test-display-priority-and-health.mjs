@@ -210,6 +210,35 @@ assert.doesNotMatch(health, /private details/);
   );
 }
 
+// ---- the build-updated notice --------------------------------------------
+// A pane runs the build it was spawned with; after a rebuild this line is
+// what says the running HUD and dist/ have diverged, and the fix is one
+// command. Absent by default so the row budget is untouched in the steady
+// state.
+{
+  const inlineLayout = { mode: 'expanded', showDuration: true, barWidth: 8 };
+  const updated = renderHud(
+    { ...data, hudBuildUpdated: true },
+    { width: 146, showDetails: true, layout: inlineLayout, maxLines: 12 }
+  ).map(stripAnsi);
+  assert.ok(
+    updated.some((line) =>
+      line.includes('HUD updated on disk · codex-hud --reload')
+    ),
+    'a rebuilt dist is announced on the pane'
+  );
+  const steady = renderHud(data, {
+    width: 146,
+    showDetails: true,
+    layout: inlineLayout,
+    maxLines: 12,
+  }).map(stripAnsi);
+  assert.ok(
+    !steady.some((line) => line.includes('HUD updated on disk')),
+    'no notice while the running build matches dist'
+  );
+}
+
 const overview = renderHud(
   {
     ...data,

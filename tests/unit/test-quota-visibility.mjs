@@ -105,6 +105,31 @@ const render = (data, width, maxLines) =>
   assert.ok(quota, 'a calm quota is stated when rows are free');
   assert.match(quota, /7d limit 47%/);
   assert.match(quota, /resets /, 'the reset is what makes the number actionable');
+  assert.doesNotMatch(
+    quota,
+    /resets in /,
+    'six days out, the absolute moment reads better for planning'
+  );
+}
+
+// ---- a reset within a day is a countdown, not a wall-clock time ------------
+// Measured live at 100% used with the reset later that same morning: the one
+// question is "how long until I can work again", and "resets 08/20 11:35"
+// left the subtraction to the user.
+{
+  const soon = render(
+    // renderHud stamps its own clock, so give the minute floor 45s of margin.
+    readySession(limits(100, { resetsIn: 2 * 3600 + 13 * 60 + 45 })),
+    146,
+    7
+  );
+  const quota = soon.find((line) => line.includes('7d limit'));
+  assert.ok(quota, 'an exhausted quota always renders');
+  assert.match(
+    quota,
+    /resets in 2h13m/,
+    'under a day out, the reset is stated as a countdown'
+  );
 }
 
 // ---- and it is the first thing to go when rows run out ---------------------

@@ -30,7 +30,14 @@ case "\$cmd" in
     fi
     ;;
   list-panes)
-    if [[ -n "\${STUB_PANES:-}" ]]; then
+    # The -a form is the session list's bulk query; the -t form is the
+    # pane-pid resolve the staleness marker walks. Two shapes, one stub.
+    # (No backquotes here: this heredoc is unquoted.)
+    if [[ "\$*" == *"-t"* ]]; then
+      if [[ -n "\${STUB_PANE_PIDS:-}" ]]; then
+        printf '%s\n' "\$STUB_PANE_PIDS"
+      fi
+    elif [[ -n "\${STUB_PANES:-}" ]]; then
       printf '%s\n' "\$STUB_PANES"
     fi
     ;;
@@ -38,6 +45,26 @@ esac
 exit 0
 FAKE
 chmod +x "$FAKE_BIN_DIR/tmux"
+
+# The staleness probe compares the HUD process age against dist mtime; both
+# sides are stubbed through ps (the full-table walk and the etime query).
+cat > "$FAKE_BIN_DIR/ps" <<FAKE
+#!/usr/bin/env bash
+case "\${1:-}" in
+  -axo)
+    if [[ -n "\${STUB_PS_TABLE:-}" ]]; then
+      printf '%s\n' "\$STUB_PS_TABLE"
+    fi
+    ;;
+  -p)
+    if [[ -n "\${STUB_ETIME:-}" ]]; then
+      printf '%s\n' "\$STUB_ETIME"
+    fi
+    ;;
+esac
+exit 0
+FAKE
+chmod +x "$FAKE_BIN_DIR/ps"
 
 export PATH="$FAKE_BIN_DIR:$PATH"
 export HOME="$TEST_HOME"
@@ -108,5 +135,32 @@ out="$(run_list "codex-hud-prj-2a51592d-20260812135511-57225|||attached" "")"
 assert_contains "$out" "codex-hud-prj-2a51592d-20260812135511-57225  ?  [attached]" \
   "an unknown directory is marked, not guessed"
 assert_contains "$out" "HUD: missing" "and an unknown HUD pane is reported as such"
+
+# A live HUD pane whose process predates dist/index.js is running a stale
+# build — the exact question asked after every rebuild. The probe walks the
+# pane's process tree for the HUD entrypoint and compares its age with the
+# build's mtime; five days of elapsed time is unambiguously older than a
+# dist built by this test run.
+session_row="codex-hud-prj-2a51592d-20260812135511-57225|%1|%2|attached"
+panes_live="%1|live|$TEST_HOME/Desktop/prj
+%2|live|$TEST_HOME/Desktop/prj"
+pane_pids="%1 4100
+%2 4200"
+ps_table="4200 1 node node $ROOT_DIR/dist/index.js"
+
+if [[ -f "$ROOT_DIR/dist/index.js" ]]; then
+  out="$(STUB_PANE_PIDS="$pane_pids" STUB_PS_TABLE="$ps_table" STUB_ETIME="05-00:00:00"     run_list "$session_row" "$panes_live")"
+  assert_contains "$out" "HUD: outdated (codex-hud --reload)"     "a HUD older than the build on disk is marked stale"
+
+  out="$(STUB_PANE_PIDS="$pane_pids" STUB_PS_TABLE="$ps_table" STUB_ETIME="0:01"     run_list "$session_row" "$panes_live")"
+  assert_missing "$out" "HUD: outdated"     "a HUD younger than the build is not marked"
+else
+  echo "SKIP: dist/index.js missing; staleness marker cases need a build" >&2
+fi
+
+# A probe that cannot resolve the HUD process stays silent: unmarked means
+# "not known stale", never "verified fresh".
+out="$(run_list "$session_row" "$panes_live")"
+assert_missing "$out" "HUD: outdated" "an unresolvable probe never marks"
 
 echo "test-list-sessions: PASS"

@@ -212,6 +212,15 @@ function renderExpandedLayout(
   const envLine = renderEnvironmentLine(data, width);
   // Collector/protocol warnings outrank ordinary usage details.
   const healthLine = renderHealthLine(data, width);
+  // The pane keeps rendering with whatever build it was spawned on; after a
+  // rebuild this is the one place that says so, and the fix is one command.
+  const buildLine =
+    data.hudBuildUpdated === true
+      ? truncateAnsi(
+          colors.dim('HUD updated on disk · codex-hud --reload'),
+          width
+        )
+      : null;
 
   // Context capacity is actionable and remains ahead of activity history.
   const tokenLine = renderTokenLine(data, width);
@@ -338,6 +347,9 @@ function renderExpandedLayout(
     }
     if (healthLine) {
       lines.push(healthLine);
+    }
+    if (buildLine) {
+      lines.push(buildLine);
     }
     lines.push(
       ...buildUsageRows(
@@ -552,6 +564,8 @@ function renderOverviewLayout(
         return theme.error('Aborted');
       case 'interrupted':
         return theme.error('Interrupted');
+      case 'exited':
+        return colors.dim('Exited');
       case 'idle':
         return theme.success('Idle');
       default:

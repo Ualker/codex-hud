@@ -253,6 +253,34 @@ try {
   }
 
   {
+    // An exhaustion window in progress: every new session's first turn writes
+    // only a degenerate snapshot, so degenerate-only files pile up in front of
+    // the last informative reading. A fixed six-file budget stopped exactly
+    // there and lost the one field that says when the quota comes back
+    // (`resets_at`); the walk now continues until a reading is found.
+    const codexHome = path.join(tempRoot, 'exhaustion-era');
+    for (let index = 0; index < 7; index++) {
+      writeRollout(
+        codexHome,
+        `019faaa${index}-d${index}${index}${index}-7${index}${index}${index}-8${index}${index}${index}-aaaaaaaaaaa${index}`,
+        5 + index * 5,
+        null,
+        0,
+        exhaustedSnapshot()
+      );
+    }
+    writeRollout(codexHome, '019fbbbb-eeee-7bbb-8bbb-bbbbbbbbbbbb', 90, 100);
+
+    const found = scan(codexHome);
+    assert.equal(
+      found?.limits?.primary?.used_percent,
+      100,
+      'seven degenerate-only rollouts must not bury the informative reading'
+    );
+    assert.equal(found?.limits?.limit_id, 'codex');
+  }
+
+  {
     // The scan reads a bounded tail, so a snapshot buried behind a megabyte of
     // transcript is simply not found — it must not throw or report garbage.
     const codexHome = path.join(tempRoot, 'buried');

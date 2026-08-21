@@ -87,6 +87,18 @@ assert.deepEqual(
   );
 }
 
+// An exited session is done until someone restarts it; even a stale idle
+// session outranks it, because idle is still reachable work.
+assert.deepEqual(
+  order([
+    item('exited-recent', { phase: 'exited', ageMinutes: 1 }),
+    item('idle-old', { ageMinutes: 120 }),
+    item('interrupted', { phase: 'interrupted', ageMinutes: 200 }),
+  ]),
+  ['interrupted', 'idle-old', 'exited-recent'],
+  'exited sinks below idle; dead-but-restartable turns stay above both'
+);
+
 // The comparator must be a consistent ordering, or Array#sort is free to do
 // anything at all with it.
 {

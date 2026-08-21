@@ -412,7 +412,15 @@ export type TurnPhase =
    * `thinking` forever. The stall detector sets this after confirming the
    * error banner on the main pane.
    */
-  | 'interrupted';
+  | 'interrupted'
+  /**
+   * Render-time overlay: the Codex process left the main pane (quit, crash,
+   * or the trust prompt declined) and the wrapper resumed the user's shell.
+   * Without it a dead pane reads as "Idle · waiting for you" — waiting for
+   * input nothing will ever consume. Set by the liveness probe; only ever
+   * overlays terminal phases, never a working one.
+   */
+  | 'exited';
 
 export interface TurnActivity {
   phase: TurnPhase;
@@ -578,6 +586,12 @@ export interface HudData {
   contextUsage?: ContextUsage;
   tokenUsage?: TokenUsageInfo;
   rateLimits?: RateLimitSnapshot;
+  /**
+   * Extrapolated exhaustion of the primary rate-limit window, from two
+   * in-process observations of the same window (collectors/quota-trend.ts).
+   * The quota row states it only while it precedes the reset.
+   */
+  quotaProjection?: { exhaustsAtMs: number };
   
   // Activity tracking
   toolActivity?: ToolActivity;
@@ -586,6 +600,18 @@ export interface HudData {
   turnActivity?: TurnActivity;
   protocolHealth?: ProtocolHealth;
   collectorHealth?: CollectorHealthMap;
+  /**
+   * dist/ changed after this HUD process loaded it: the pane is rendering
+   * with a build that no longer matches the one on disk, and the fix is one
+   * `codex-hud --reload`. Set by a slow mtime poll in the main loop.
+   */
+  hudBuildUpdated?: boolean;
+  /**
+   * The main pane's process tree no longer contains a Codex process: the
+   * session's pane is back at the user's shell. Confirmed by the liveness
+   * probe (collectors/codex-liveness.ts); absence means "alive or unknown".
+   */
+  codexExited?: boolean;
   /**
    * The rollout was large enough that its middle was skipped on the first
    * read, so cumulative counters (tool totals, compactions) are lower bounds

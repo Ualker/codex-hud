@@ -68,13 +68,20 @@ try {
             sessionId: 'session-b',
             cwd: '/work/b',
           }),
+          encode({
+            tmuxSession: 'codex-hud-c',
+            sessionId: 'session-c',
+            cwd: '/work/c',
+            likelyInterrupted: true,
+            codexExited: true,
+          }),
           '', // a tmux session with no HUD
         ]),
         listBody
       )
     );
 
-    assert.equal(parsed.length, 2, 'sessions with no HUD binding are skipped');
+    assert.equal(parsed.length, 3, 'sessions with no HUD binding are skipped');
     assert.deepEqual(parsed[0], {
       tmuxSession: 'codex-hud-a',
       sessionId: 'session-a',
@@ -86,6 +93,17 @@ try {
       parsed[1],
       { tmuxSession: 'codex-hud-b', sessionId: 'session-b', cwd: '/work/b' },
       'a bound session with no rollout keeps its identity'
+    );
+    assert.deepEqual(
+      parsed[2],
+      {
+        tmuxSession: 'codex-hud-c',
+        sessionId: 'session-c',
+        cwd: '/work/c',
+        likelyInterrupted: true,
+        codexExited: true,
+      },
+      'confirmed pane findings travel with the binding'
     );
   }
 
@@ -168,7 +186,7 @@ try {
     const log = path.join(tempRoot, 'publish.log');
     const publishBody = `
       const { publishHudBinding } = await import(${JSON.stringify(modulePath)});
-      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a', true);
+      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a', true, true, true);
       await publishHudBinding('codex-hud-a', null, null, '/work/a');
       process.stdout.write('ok');
     `;
@@ -189,6 +207,8 @@ try {
         rolloutPath: '/tmp/a.jsonl',
         cwd: '/work/a',
         approvalNeeded: true,
+        likelyInterrupted: true,
+        codexExited: true,
       },
       'every field travels together in one write'
     );

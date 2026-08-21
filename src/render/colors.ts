@@ -142,6 +142,7 @@ export const icons = {
   bullet: '▸',
   multiply: '×',
   refresh: '↻',  // For compact count indicator
+  arrow: ASCII_MODE ? '->' : '→',  // Trend / projection
   
   // Separators
   pipe: '|',
