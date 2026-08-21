@@ -1011,6 +1011,10 @@ Environment Variables:
   CODEX_HUD_TOOL_DETAILS Tool details: off, targets (default), or full
   CODEX_HUD_LOG_FILE  Append HUD diagnostics to this file (default: ~/Library/Logs/codex-hud/hud.log
                       on macOS, \$XDG_STATE_HOME/codex-hud/hud.log elsewhere; 'off' discards them)
+  CODEX_HUD_NOTIFY_CMD Shell command run when a session starts needing a human
+                      (approval-needed / turn-interrupted / limit-reached);
+                      event JSON on stdin and in CODEX_HUD_EVENT_JSON, the bare
+                      name in CODEX_HUD_EVENT. Transitions only. (default: unset)
   CODEX_HUD_SHOW_OTHER_AGENT_SKILLS Show non-Codex .agents skill count (default: 0)
   CODEX_HUD_ASCII      Use ASCII status glyphs (default: 0)
   NO_COLOR             Disable ANSI colors when set
@@ -1193,6 +1197,49 @@ kill_session() {
 # directory it is working in, and whether its HUD pane is still alive. With
 # several sessions open the bare tmux listing differs only by timestamp and
 # pid, which tells the user nothing about what they are looking at.
+# Seconds since a process started, parsed from `ps -o etime=`. That column is
+# locale-independent where `lstart` is not (this machine prints Chinese
+# weekday names), and macOS ps has no `etimes`. Forms: mm:ss, hh:mm:ss,
+# dd-hh:mm:ss.
+process_elapsed_seconds() {
+    local raw days=0 h m s
+    raw=$(ps -p "$1" -o etime= 2>/dev/null | tr -d ' ') || return 1
+    [[ -n "$raw" ]] || return 1
+    if [[ "$raw" == *-* ]]; then
+        days="${raw%%-*}"
+        raw="${raw#*-}"
+    fi
+    IFS=: read -r h m s <<< "$raw"
+    if [[ -z "${s:-}" ]]; then
+        s="$m"; m="$h"; h=0
+    fi
+    [[ "$days" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ && "$m" =~ ^[0-9]+$ && "$s" =~ ^[0-9]+$ ]] || return 1
+    echo $(( ((10#$days * 24 + 10#$h) * 60 + 10#$m) * 60 + 10#$s ))
+}
+
+file_mtime_epoch() {
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+
+# A pane keeps running whatever build it was spawned with, so after a rebuild
+# the sessions list is where "which HUDs predate dist?" gets answered. Any
+# probe failure stays silent: an unmarked row means "not known stale", never
+# "verified fresh".
+hud_outdated_marker() {
+    local session_name="$1" hud_pane="$2"
+    local hud_pid elapsed dist_mtime start_epoch
+    hud_pid=$(resolve_hud_node_pid "$session_name" "$hud_pane") || return 0
+    [[ "$hud_pid" =~ ^[0-9]+$ ]] || return 0
+    elapsed=$(process_elapsed_seconds "$hud_pid") || return 0
+    dist_mtime=$(file_mtime_epoch "$HUD_DIR/dist/index.js") || return 0
+    [[ "$dist_mtime" =~ ^[0-9]+$ ]] || return 0
+    start_epoch=$(( $(date +%s) - elapsed ))
+    # Two seconds of slack: a build and the spawn it precedes can share one.
+    if (( dist_mtime > start_epoch + 2 )); then
+        printf '  HUD: outdated (codex-hud --reload)'
+    fi
+}
+
 list_sessions() {
     local rows panes name main_pane hud_pane attached cwd hud_state
 
@@ -1220,7 +1267,7 @@ list_sessions() {
         fi
         hud_state=$(printf '%s\n' "$panes" | awk -F'|' -v p="$hud_pane" '$1 == p { print $2; exit }')
         case "$hud_state" in
-            live) hud_state="" ;;
+            live) hud_state="$(hud_outdated_marker "$name" "$hud_pane")" ;;
             dead) hud_state="  HUD: dead (codex-hud --reload)" ;;
             *)    hud_state="  HUD: missing" ;;
         esac

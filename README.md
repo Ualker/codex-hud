@@ -35,7 +35,11 @@ whichever of the two this session actually has. Overview lists sessions worked
 in the last 30 minutes — not only those mid-turn at that instant — sorted by
 live phase, then by how recently each was touched, with context remaining as the
 tiebreak. It marks the session this HUD is bound to with `▸`, and keeps that row
-visible even when there are more sessions than rows. Each row ends with the
+visible even when there are more sessions than rows. Pane findings the owning
+HUD confirms — an approval wait, a stream-error-interrupted turn, an exited
+Codex — travel with its published binding, so every dashboard shows
+`Approval`/`Interrupted`/`Exited` instead of a stale `Thinking` or `Idle`;
+exited sessions sort below idle ones. Each row ends with the
 tmux session hosting it — the name `tmux ls` and the session chooser use, so a
 row you want to reach is one you can address; sessions found by the rollout scan
 alone fall back to their session ID. A model column appears only when the
@@ -96,7 +100,7 @@ After the first install, these are available in your shell:
 | `codex-hud --reload` | Rebuild when needed, then restart the newest session's HUD pane in this directory |
 | `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
 | `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
-| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive |
+| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated` |
 | `codex-hud --hud-version` | Print the package version and checkout revision |
 
 ## What's on the HUD?
@@ -120,9 +124,9 @@ rather than rendering a short frame that could be mistaken for a failure.
 |------|-------|
 | **Header** | Model + effort, project, git branch, and how long the bound Codex session has run. Before the first collector round the model reads `[…]` and the duration is absent, because neither is known yet |
 | **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources |
-| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; the quota window and its reset time are stated whenever the pane has a row to spare, and highlighted from 70% usage onward, while a window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote that actually states one — once a window is spent Codex writes windowless snapshots, and taking the newest of those blanked the row at exactly 100% used. A snapshot carrying no window at all but an empty credit pool reads `credits: 0` |
-| **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex records this build does not recognize. A collector that has not finished its first run is silent — only something that stopped working is a warning |
-| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents. An idle session also states how long its last turn took. A command that exits non-zero is marked `✗` with its exit code, including when Codex ran it inside a script that itself succeeded. A stream error is drawn only on the Codex TUI and never written to the session log, so a turn it kills would spin as `Thinking` forever; after minutes of silence the HUD checks the Codex pane for the error banner and, only if it is there, reads `✗ Turn likely interrupted` |
+| **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; the quota window and its reset time are stated whenever the pane has a row to spare, and highlighted from 70% usage onward, while a window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote that actually states one — once a window is spent Codex writes windowless snapshots, and taking the newest of those blanked the row at exactly 100% used. A snapshot carrying no window at all but an empty credit pool reads `credits: 0`; during such an exhaustion stretch the scan keeps walking older files until it finds a reading that still states the reset time, instead of stopping at a fixed count of windowless ones. A reset less than a day away is stated as a countdown (`resets in 2h13m`); and once the window is half spent, two dated readings give the burn rate, so a pace that would exhaust it before the reset is stated on the row (`→ empty ~08/22`) |
+| **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex records this build does not recognize. A collector that has not finished its first run is silent — only something that stopped working is a warning. When `dist/` is rebuilt while a HUD is running, a dim `HUD updated on disk · codex-hud --reload` line appears here, because the pane keeps executing whatever build it was spawned with |
+| **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents. An idle session also states how long its last turn took. A command that exits non-zero is marked `✗` with its exit code, including when Codex ran it inside a script that itself succeeded. A stream error is drawn only on the Codex TUI and never written to the session log, so a turn it kills would spin as `Thinking` forever; after minutes of silence the HUD checks the Codex pane for the error banner and, only if it is there, reads `✗ Turn likely interrupted`. When Codex itself exits — quit, crash, or a declined trust prompt — the wrapper hands the pane back to your shell and nothing on disk says so; a quiet session's pane is probed for a live Codex process (Codex runs as a grandchild, so tmux's own pane command still reads as the shell), and a pane without one reads `○ Codex exited · run codex to restart` instead of claiming to wait for input nothing will consume |
 | **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible. The ID is printed in full whenever the row has room, because it is what `codex resume`, `fork`, `archive`, and `delete` take; narrower panes fall back to the abbreviated form |
 
 The layout adapts in both directions. With rows to spare it keeps the turn row
@@ -242,6 +246,7 @@ codex-hud --hud-version      # Print version and revision
 | `CODEX_HUD_LOG_FILE` | per-user default | Append HUD diagnostics (watcher/render/tracking errors) to this file. Defaults to `~/Library/Logs/codex-hud/hud.log` on macOS, `$XDG_STATE_HOME/codex-hud/hud.log` elsewhere; set `off` to discard them |
 | `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | Also show `.agents` skill count; `CODEX_HOME/skills` remains authoritative for Codex |
+| `CODEX_HUD_NOTIFY_CMD` | (unset) | Shell command run when a session starts needing a human: an approval wait, an interrupted turn, or a hit limit (`approval-needed` / `turn-interrupted` / `limit-reached`). The event JSON arrives on stdin and in `CODEX_HUD_EVENT_JSON`, the bare name in `CODEX_HUD_EVENT`. Fires on transitions only — the first observation after start or rebind seeds silently, and a flapping state is limited to one notification per five minutes. Example: `CODEX_HUD_NOTIFY_CMD='osascript -e "display notification \"$CODEX_HUD_EVENT\" with title \"codex-hud\""'` |
 | `CODEX_HUD_ASCII` | `0` | Use ASCII progress and status glyphs |
 | `NO_COLOR` | (unset) | Disable ANSI colors when set |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | Running-agent presentation timeout; positive safe integer milliseconds only |

@@ -50,6 +50,8 @@ interface BoundPayload {
   rolloutPath?: string;
   cwd?: string;
   approvalNeeded?: boolean;
+  likelyInterrupted?: boolean;
+  codexExited?: boolean;
 }
 
 export interface OpenHudBinding {
@@ -64,6 +66,15 @@ export interface OpenHudBinding {
   cwd?: string;
   /** The owning HUD confirmed an approval prompt in its current main pane. */
   approvalNeeded?: boolean;
+  /**
+   * The owning HUD confirmed a stream-error banner on its main pane. Same
+   * kind of evidence as `approvalNeeded` — pane text only the owning HUD can
+   * read — and the dashboard exists to say which session needs a human, so a
+   * dead turn must not keep reading as "Thinking" on every other HUD.
+   */
+  likelyInterrupted?: boolean;
+  /** The owning HUD confirmed the Codex process left the main pane. */
+  codexExited?: boolean;
 }
 
 function tmux(args: readonly string[]): Promise<string | null> {
@@ -98,7 +109,9 @@ export function publishHudBinding(
   sessionId: string | null,
   rolloutPath: string | null,
   cwd: string,
-  approvalNeeded: boolean = false
+  approvalNeeded: boolean = false,
+  likelyInterrupted: boolean = false,
+  codexExited: boolean = false
 ): Promise<void> {
   if (!tmuxSession) {
     return Promise.resolve();
@@ -111,6 +124,8 @@ export function publishHudBinding(
         ...(rolloutPath ? { rolloutPath } : {}),
         ...(cwd ? { cwd } : {}),
         ...(approvalNeeded ? { approvalNeeded: true } : {}),
+        ...(likelyInterrupted ? { likelyInterrupted: true } : {}),
+        ...(codexExited ? { codexExited: true } : {}),
       }
     : null;
   const value = payload
@@ -133,8 +148,15 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
     if (typeof parsed !== 'object' || parsed === null) {
       return null;
     }
-    const { tmuxSession, sessionId, rolloutPath, cwd, approvalNeeded } =
-      parsed as Record<string, unknown>;
+    const {
+      tmuxSession,
+      sessionId,
+      rolloutPath,
+      cwd,
+      approvalNeeded,
+      likelyInterrupted,
+      codexExited,
+    } = parsed as Record<string, unknown>;
     if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
       return null;
     }
@@ -149,6 +171,8 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
         : {}),
       ...(typeof cwd === 'string' && cwd ? { cwd } : {}),
       ...(approvalNeeded === true ? { approvalNeeded: true } : {}),
+      ...(likelyInterrupted === true ? { likelyInterrupted: true } : {}),
+      ...(codexExited === true ? { codexExited: true } : {}),
     };
   } catch {
     // A HUD from a different build, or a hand-edited option.

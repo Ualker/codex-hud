@@ -30,11 +30,23 @@ const LOOKBACK_DAYS = 8;
 const LOOKBACK_SECONDS = LOOKBACK_DAYS * 24 * 60 * 60;
 
 /**
- * Rollouts to open, newest first. Rate limits are rewritten on every turn, so
- * the newest few files hold every snapshot worth having; opening more only
- * finds older readings of the same number.
+ * Rollouts to open per batch, newest first. Rate limits are rewritten on
+ * every turn, so the newest few files usually hold every snapshot worth
+ * having — but "usually" broke during a real exhaustion window: once the
+ * weekly limit is spent, every new session's first turn writes only a
+ * degenerate snapshot (no windows, zero credits), and each of those files is
+ * newer than the last informative reading. A fixed six-file budget would have
+ * pushed the one snapshot that still stated `resets_at` out of reach after
+ * six new sessions; three had accumulated within two days when this was
+ * measured. The walk therefore continues past a batch that said nothing.
  */
-const MAX_FILES = 6;
+const SCAN_BATCH_FILES = 6;
+
+/**
+ * Hard cap on files opened in one scan. Only reached when many consecutive
+ * rollouts carry no informative snapshot; each costs one bounded tail read.
+ */
+const MAX_FILES_SEARCHED = 24;
 
 /**
  * Bytes to read from the end of each rollout. `token_count` records are small
@@ -147,25 +159,37 @@ export async function findLatestAccountRateLimits(): Promise<AccountRateLimits |
       LOOKBACK_SECONDS,
       undefined,
       LOOKBACK_DAYS
-    ).slice(0, MAX_FILES);
+    ).slice(0, MAX_FILES_SEARCHED);
   } catch {
     return null;
   }
 
-  const snapshots = await Promise.all(
-    candidates.map((candidate) => readTailSnapshot(candidate.path))
-  );
-
   let newest: AccountRateLimits | null = null;
-  for (const snapshot of snapshots) {
-    if (!snapshot) {
-      continue;
-    }
+  for (let start = 0; start < candidates.length; start += SCAN_BATCH_FILES) {
+    // Candidates are mtime-descending and a record cannot be newer than its
+    // file's mtime, so once the snapshot in hand outdates every remaining
+    // file, no further read can improve on it. In the common case the newest
+    // file holds the newest reading and the scan still stops after one batch.
     if (
-      !newest ||
-      snapshot.observedAt.getTime() > newest.observedAt.getTime()
+      newest &&
+      candidates[start].modifiedAt.getTime() <= newest.observedAt.getTime()
     ) {
-      newest = snapshot;
+      break;
+    }
+    const batch = candidates.slice(start, start + SCAN_BATCH_FILES);
+    const snapshots = await Promise.all(
+      batch.map((candidate) => readTailSnapshot(candidate.path))
+    );
+    for (const snapshot of snapshots) {
+      if (!snapshot) {
+        continue;
+      }
+      if (
+        !newest ||
+        snapshot.observedAt.getTime() > newest.observedAt.getTime()
+      ) {
+        newest = snapshot;
+      }
     }
   }
   return newest;

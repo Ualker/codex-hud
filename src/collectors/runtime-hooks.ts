@@ -228,6 +228,17 @@ function extractCommandHookOverrides(
   return { overrides, hooksEnabledDirective };
 }
 
+/**
+ * Whether a `ps` command line is a Codex invocation — either the binary or
+ * the `node .../bin/codex` script form. Calibrated live: on this machine
+ * Codex runs as `node /Users/.../bin/codex`, a grandchild of the pane shell,
+ * so tmux's `pane_current_command` reads "zsh" for the whole session and only
+ * a process-tree walk with this matcher can tell alive from exited.
+ */
+export function isCodexProcessCommand(command: string): boolean {
+  return codexArgumentsStart(command) !== null;
+}
+
 export interface CodexRuntimeHookState {
   overrides: string[];
   enabled: boolean | null;

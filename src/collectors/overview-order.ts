@@ -23,6 +23,11 @@ function phaseRank(activity: SessionOverviewItem['turnActivity']): number {
     case 'interrupted':
       return 2;
     case 'idle':
+      return 3;
+    // The pane is back at a shell; the session is done until someone
+    // restarts it. Below idle: an idle session is still reachable work.
+    case 'exited':
+      return 4;
     default:
       return 3;
   }

@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import {
   collectGitStatusAsync,
   emptyGitStatus,
@@ -32,8 +33,10 @@ import {
   type AccountRateLimits,
 } from './collectors/account-limits.js';
 import { compareOverviewSessions } from './collectors/overview-order.js';
+import { QuotaTrendTracker } from './collectors/quota-trend.js';
 import { ApprovalDetector } from './collectors/approval-detector.js';
 import { StallDetector } from './collectors/stall-detector.js';
+import { CodexLivenessProbe } from './collectors/codex-liveness.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import {
@@ -49,7 +52,11 @@ import {
   renderFallbackFrame,
   revealStatusHint,
 } from './render/index.js';
-import { cycleToolDetailsMode } from './render/lines/activity-line.js';
+import {
+  cycleToolDetailsMode,
+  rateLimitAlertKind,
+} from './render/lines/activity-line.js';
+import { HudNotifier } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
 import { calculateContextUsage } from './context-usage.js';
 import type {
@@ -68,6 +75,38 @@ import type {
 
 // Session start time
 const SESSION_START = new Date();
+
+/**
+ * The build this process is running, frozen at spawn. Nine rounds of
+ * rebuilds made "are the running HUDs current?" a literal user question that
+ * took process-age-versus-mtime forensics to answer; a slow mtime poll on
+ * this file answers it on the pane instead. A failed initial stat disables
+ * the check rather than ever guessing.
+ */
+const HUD_ENTRY_PATH = fileURLToPath(import.meta.url);
+const initialBuildMtimeMs: number | null = (() => {
+  try {
+    return fs.statSync(HUD_ENTRY_PATH).mtimeMs;
+  } catch {
+    return null;
+  }
+})();
+let hudBuildUpdated = false;
+const BUILD_CHECK_INTERVAL_MS = 60_000;
+let lastBuildCheckMs = Date.now();
+
+function checkBuildFreshness(): void {
+  if (initialBuildMtimeMs === null) {
+    return;
+  }
+  try {
+    hudBuildUpdated =
+      fs.statSync(HUD_ENTRY_PATH).mtimeMs !== initialBuildMtimeMs;
+  } catch {
+    // Mid-rebuild the file can be briefly absent; that proves nothing about
+    // which build is newer, so keep the previous answer.
+  }
+}
 
 // Refresh intervals come from the cadence policy (utils/idle-policy.ts);
 // this is only the fallback used when a render tick itself throws.
@@ -228,6 +267,12 @@ const approvalDetector = new ApprovalDetector({
 const stallDetector = new StallDetector({
   mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
 });
+const codexLiveness = new CodexLivenessProbe({
+  mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
+});
+// Edge-triggered outbound notifications (CODEX_HUD_NOTIFY_CMD); inert unless
+// the user configured a command.
+const notifier = new HudNotifier();
 
 /**
  * Overlay the pane detectors' findings on the parsed phase. Approval wins:
@@ -238,7 +283,8 @@ const stallDetector = new StallDetector({
 function withDetectorPhases(
   activity: TurnActivity | null | undefined,
   approvalNeeded: boolean,
-  likelyInterrupted: boolean = false
+  likelyInterrupted: boolean = false,
+  codexExited: boolean = false
 ): TurnActivity | undefined {
   if (!activity) {
     return undefined;
@@ -252,6 +298,18 @@ function withDetectorPhases(
   ) {
     return { ...activity, phase: 'interrupted' };
   }
+  // Only terminal phases: a probe answer is at most a minute old, and a
+  // working phase means the rollout is being written right now — the fresher
+  // evidence wins. An interrupted turn whose process then left is "exited";
+  // that is the more current fact.
+  if (
+    codexExited &&
+    (activity.phase === 'idle' ||
+      activity.phase === 'aborted' ||
+      activity.phase === 'interrupted')
+  ) {
+    return { ...activity, phase: 'exited' };
+  }
   return activity;
 }
 
@@ -259,6 +317,8 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
   approvalDetector.reset();
   stallDetector.reset();
+  codexLiveness.reset();
+  notifier.reset();
   // Let other HUDs' overviews see this binding. A session bound before its
   // first turn has no rollout yet, which is exactly the case file timestamps
   // cannot represent.
@@ -267,6 +327,8 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
     session?.sessionId ?? null,
     rolloutSession?.path ?? null,
     HUD_CWD,
+    false,
+    false,
     false
   ).catch(() => {
     // The overview degrades to the mtime scan; never fail a binding on this.
@@ -348,6 +410,9 @@ const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
   () => findLatestAccountRateLimits(),
   { ttlMs: ACCOUNT_LIMITS_TTL_MS, staleAfterMs: ACCOUNT_LIMITS_TTL_MS * 10 }
 );
+// Two observed readings of the current quota window; the burn-rate slope
+// between them projects the exhaustion the level alone cannot warn about.
+const quotaTrend = new QuotaTrendTracker();
 const gitCache = new AsyncSnapshotCache(
   emptyGitStatus(),
   () => collectGitStatusAsync(HUD_CWD),
@@ -467,11 +532,15 @@ async function refreshOverviewData(): Promise<SessionOverview> {
     const id = result.session?.id ?? sessionFile.sessionId;
     const binding =
       bindingById.get(id) ?? bindingById.get(sessionFile.sessionId);
-    // Only the approval overlay: interrupted state is main-pane evidence the
-    // owning HUD holds and does not publish.
+    // Both pane-detector findings travel through the binding: without the
+    // interrupted flag a confirmed-dead turn kept reading as "Thinking" on
+    // every dashboard — including this HUD's own, which contradicted the
+    // single view one keypress away.
     const turnActivity = withDetectorPhases(
       result.turnActivity,
-      binding?.approvalNeeded === true
+      binding?.approvalNeeded === true,
+      binding?.likelyInterrupted === true,
+      binding?.codexExited === true
     );
     sessions.push({
       id,
@@ -533,7 +602,9 @@ async function publishCurrentHudBinding(): Promise<void> {
     session?.sessionId ?? null,
     rolloutSession?.path ?? null,
     HUD_CWD,
-    approvalDetector.isApprovalNeeded()
+    approvalDetector.isApprovalNeeded(),
+    stallDetector.isLikelyInterrupted(),
+    codexLiveness.isCodexGone()
   );
 }
 
@@ -552,7 +623,7 @@ async function refreshPaneDetectors(): Promise<void> {
     rolloutData?.partialHistory && !rolloutData.runtimeStateComplete
       ? undefined
       : slowProjectCache.get().config.approval_policy;
-  const [approvalChanged, stallChanged] = await Promise.all([
+  const [approvalChanged, stallChanged, livenessChanged] = await Promise.all([
     approvalDetector.refresh({
       turnActivity: rolloutData?.turnActivity,
       toolActivity: rolloutData?.toolActivity,
@@ -563,8 +634,12 @@ async function refreshPaneDetectors(): Promise<void> {
       turnActivity: rolloutData?.turnActivity,
       lastEventAt: rolloutData?.lastEventTime,
     }),
+    codexLiveness.refresh({
+      turnActivity: rolloutData?.turnActivity,
+      lastEventAt: rolloutData?.lastEventTime,
+    }),
   ]);
-  const changed = approvalChanged || stallChanged;
+  const changed = approvalChanged || stallChanged || livenessChanged;
   if (!changed) {
     return;
   }
@@ -672,6 +747,7 @@ function collectData(): HudData {
     git: gitCache.get(),
     project: slowData.project,
     sessionStart: SESSION_START,
+    ...(hudBuildUpdated ? { hudBuildUpdated: true } : {}),
     collectorHealth: {
       ...collectorHealth,
       ...slowCollectorHealth,
@@ -690,16 +766,23 @@ function collectData(): HudData {
     rolloutData?.compactCount,
     rolloutData?.lastCompactTime
   );
+  const accountLimits = accountLimitsCache.get();
   const rateLimits = preferFreshestRateLimits(
     rolloutData?.rateLimits,
     rolloutData?.rateLimitsAt,
-    accountLimitsCache.get()
+    accountLimits
   );
+  // Pure memory: both sources feed the trend so the baseline builds from
+  // every dated reading, not just whichever snapshot wins the display.
+  quotaTrend.observe(rolloutData?.rateLimits, rolloutData?.rateLimitsAt);
+  quotaTrend.observe(accountLimits?.limits, accountLimits?.observedAt);
+  const quotaProjection = quotaTrend.project(rateLimits) ?? undefined;
   const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
   const turnActivity = withDetectorPhases(
     rolloutData?.turnActivity,
     approvalDetector.isApprovalNeeded(),
-    stallDetector.isLikelyInterrupted()
+    stallDetector.isLikelyInterrupted(),
+    codexLiveness.isCodexGone()
   );
 
   if (displayMode === 'overview') {
@@ -718,6 +801,8 @@ function collectData(): HudData {
       turnActivity,
       contextUsage,
       rateLimits,
+      quotaProjection,
+      ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),
     };
   }
 
@@ -729,8 +814,10 @@ function collectData(): HudData {
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
     rateLimits,
+    quotaProjection,
     turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
+    ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),
     partialHistory: rolloutData?.partialHistory,
     runtimeStateComplete: rolloutData?.runtimeStateComplete,
     contextUsage,
@@ -746,7 +833,8 @@ function isWorkingPhase(phase: string | undefined): boolean {
     phase !== 'awaiting-approval' &&
     phase !== 'idle' &&
     phase !== 'aborted' &&
-    phase !== 'interrupted'
+    phase !== 'interrupted' &&
+    phase !== 'exited'
   );
 }
 
@@ -817,8 +905,23 @@ async function mainLoop(): Promise<void> {
   }
 
   try {
-    renderToStdout(collectData());
+    const data = collectData();
+    renderToStdout(data);
     delete collectorHealth.renderer;
+    // Observed after the frame so a notification can never precede the pane
+    // stating the same thing. Rising edges only; see notify.ts.
+    notifier.observe(
+      {
+        'approval-needed': approvalDetector.isApprovalNeeded(),
+        'turn-interrupted': stallDetector.isLikelyInterrupted(),
+        'limit-reached': rateLimitAlertKind(data.rateLimits, Date.now()) !== null,
+      },
+      {
+        sessionId: sessionFinder.getCurrentSession()?.sessionId,
+        tmuxSession: HUD_TMUX_SESSION,
+        cwd: HUD_CWD,
+      }
+    );
     const plan = computeCadence();
     sessionFinder.setDeepIdle(plan.deepIdle);
     setTimeout(mainLoop, plan.renderMs);
@@ -919,6 +1022,11 @@ function startCollectorTimers(): void {
   }, 1000);
   projectRefreshTimer = setInterval(() => {
     void refreshSlowProject();
+    const now = Date.now();
+    if (now - lastBuildCheckMs >= BUILD_CHECK_INTERVAL_MS) {
+      lastBuildCheckMs = now;
+      checkBuildFreshness();
+    }
   }, 5000);
   accountLimitsRefreshTimer = setInterval(() => {
     const now = Date.now();

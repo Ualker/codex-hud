@@ -35,16 +35,11 @@ export function formatCompactAge(durationMs: number): string {
 }
 
 /**
- * Compound uptime used by the "up ..." cell, which carries the finer unit
- * because it is the row's only time signal.
+ * Compound duration ("2h13m") used where a single unit loses too much
+ * resolution: the "up ..." cell and the "resets in ..." countdown.
  */
-export function formatUptime(startTime: Date, nowMs: number = Date.now()): string {
-  const startedAtMs = startTime.getTime();
-  if (!Number.isFinite(startedAtMs)) {
-    return '0s';
-  }
-
-  const elapsedMs = Math.max(0, nowMs - startedAtMs);
+export function formatCompoundDuration(durationMs: number): string {
+  const elapsedMs = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
   const seconds = Math.floor(elapsedMs / SECOND_MS);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
@@ -60,4 +55,16 @@ export function formatUptime(startTime: Date, nowMs: number = Date.now()): strin
     return `${minutes}m`;
   }
   return `${seconds}s`;
+}
+
+/**
+ * Compound uptime used by the "up ..." cell, which carries the finer unit
+ * because it is the row's only time signal.
+ */
+export function formatUptime(startTime: Date, nowMs: number = Date.now()): string {
+  const startedAtMs = startTime.getTime();
+  if (!Number.isFinite(startedAtMs)) {
+    return '0s';
+  }
+  return formatCompoundDuration(nowMs - startedAtMs);
 }

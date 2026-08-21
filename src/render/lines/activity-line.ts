@@ -28,7 +28,10 @@ import type {
 } from '../../types.js';
 import { isExecutionTool } from '../../utils/tool-names.js';
 import { extractCommandHead } from '../../utils/command-head.js';
-import { formatCompactAge } from '../../utils/format-age.js';
+import {
+  formatCompactAge,
+  formatCompoundDuration,
+} from '../../utils/format-age.js';
 import { osc8Link, fileUrl } from '../../utils/hyperlinks.js';
 
 const DESCENDANT_PREFIX = '↳';
@@ -256,9 +259,15 @@ export function renderBindingHintLine(
   if (data.turnActivity) {
     return null;
   }
-  const message = data.session
-    ? 'Session ready · no turns yet'
-    : 'Waiting for a Codex session…';
+  // With Codex gone, both texts below become lies: nothing is starting and
+  // nothing is waiting. Observed live — Codex quit at the trust prompt and
+  // the pane kept saying "Waiting for a Codex session…".
+  const message =
+    data.codexExited === true
+      ? 'Codex exited · run codex to restart'
+      : data.session
+        ? 'Session ready · no turns yet'
+        : 'Waiting for a Codex session…';
   return truncateAnsi(colors.dim(`${icons.pending} ${message}`), width);
 }
 
@@ -333,6 +342,15 @@ function turnPhasePresentation(
         icon: icons.cross,
         color: theme.error,
       };
+    case 'exited':
+      // The pane is back at the user's shell; nothing will consume input.
+      // Not an error — quitting is normal — but "Idle · waiting for you"
+      // would be a lie, so say what happened and the one-word way back.
+      return {
+        label: 'Codex exited · run codex to restart',
+        icon: icons.pending,
+        color: colors.dim,
+      };
     case 'idle':
       return {
         label: 'Idle · waiting for you',
@@ -395,9 +413,18 @@ function formatRateWindow(windowMinutes: number | undefined): string {
   return `${windowMinutes}m`;
 }
 
+/**
+ * Under a day out, the question is "how long until I can work again", not
+ * "what time is it then" — measured live at 100% used with the reset that
+ * same morning, the absolute form left the subtraction to the user. Beyond a
+ * day the absolute moment reads better for planning, so it stays.
+ */
+const RESET_RELATIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 function formatResetTime(
   epochSeconds: number | undefined,
-  windowMinutes: number | undefined
+  windowMinutes: number | undefined,
+  nowMs: number
 ): string | null {
   if (!epochSeconds || !Number.isFinite(epochSeconds)) {
     return null;
@@ -405,6 +432,10 @@ function formatResetTime(
   const date = new Date(epochSeconds * 1000);
   if (!Number.isFinite(date.getTime())) {
     return null;
+  }
+  const untilMs = date.getTime() - nowMs;
+  if (untilMs > 0 && untilMs < RESET_RELATIVE_WINDOW_MS) {
+    return `in ${formatCompoundDuration(untilMs)}`;
   }
   return windowMinutes && windowMinutes >= 1440
     ? date.toLocaleString([], {
@@ -440,6 +471,75 @@ function isExpiredWindow(window: RateLimitWindow, nowMs: number): boolean {
 /** Below this the quota is not a warning; it is still a number worth having. */
 const RATE_LIMIT_PRESSURE_PERCENT = 70;
 
+/**
+ * Whether a snapshot is in an alert state: the account hit a limit, or the
+ * degenerate post-exhaustion shape (no windows at all, a zeroed credit pool).
+ * One predicate shared by the quota row and the notify hook, so "what counts
+ * as hitting the wall" cannot drift between the pane and the notification.
+ * An expired snapshot alerts on nothing — it describes a finished window.
+ */
+export function rateLimitAlertKind(
+  limits: HudData['rateLimits'],
+  nowMs: number
+): 'reached' | 'credits-exhausted' | null {
+  if (!limits) {
+    return null;
+  }
+  const knownWindows = [limits.primary, limits.secondary].filter(
+    (window): window is RateLimitWindow => Boolean(window)
+  );
+  const datedWindows = knownWindows.filter(
+    (window) =>
+      window.resets_at !== undefined && Number.isFinite(window.resets_at)
+  );
+  if (
+    datedWindows.length > 0 &&
+    datedWindows.every((window) => isExpiredWindow(window, nowMs))
+  ) {
+    return null;
+  }
+  if (
+    Boolean(limits.rate_limit_reached_type) ||
+    limits.spend_control_reached === true
+  ) {
+    return 'reached';
+  }
+  const liveWindows = knownWindows.filter(
+    (window) =>
+      window.used_percent !== undefined && !isExpiredWindow(window, nowMs)
+  );
+  const credits = limits.credits;
+  if (
+    liveWindows.length === 0 &&
+    credits?.has_credits === false &&
+    credits.unlimited !== true
+  ) {
+    return 'credits-exhausted';
+  }
+  return null;
+}
+
+/**
+ * Below this the projection stays quiet: early in a window the slope is a
+ * guess about a distant problem, and a standing forecast next to a small
+ * number reads as noise. From half-spent onward it is the difference between
+ * pacing and hitting the wall — measured on this account, ~24%/day exhausted
+ * the window four days before its reset, both times with no warning.
+ */
+const PROJECTION_MIN_PERCENT = 50;
+
+/** Same threshold as the reset countdown: under a day, say how long. */
+function formatExhaustionEta(exhaustsAtMs: number, nowMs: number): string {
+  const untilMs = exhaustsAtMs - nowMs;
+  if (untilMs < RESET_RELATIVE_WINDOW_MS) {
+    return `in ${formatCompoundDuration(untilMs)}`;
+  }
+  return `~${new Date(exhaustsAtMs).toLocaleString([], {
+    month: '2-digit',
+    day: '2-digit',
+  })}`;
+}
+
 export function renderRateLimitLine(
   data: HudData,
   width: number = Number.POSITIVE_INFINITY,
@@ -461,24 +561,18 @@ export function renderRateLimitLine(
     return null;
   }
 
-  const reached =
-    Boolean(limits?.rate_limit_reached_type) ||
-    limits?.spend_control_reached === true;
+  // Last-resort signal for the degenerate snapshot codex writes once the
+  // weekly window is spent: no windows, no reached flag, a zeroed credit
+  // pool. Gated (inside the shared predicate) on the snapshot carrying no
+  // window at all — a plan without credits would otherwise show a standing
+  // false alarm beside a healthy weekly gauge.
+  const alertKind = rateLimitAlertKind(limits, nowMs);
+  const reached = alertKind === 'reached';
+  const creditsExhausted = alertKind === 'credits-exhausted';
   const liveWindows = knownWindows.filter(
     (window) =>
       window.used_percent !== undefined && !isExpiredWindow(window, nowMs)
   );
-  // Last-resort signal for the degenerate snapshot codex writes once the
-  // weekly window is spent: no windows, no reached flag, a zeroed credit
-  // pool. Gated on the snapshot carrying no window at all — a plan without
-  // credits would otherwise show a standing false alarm beside a healthy
-  // weekly gauge.
-  const credits = limits?.credits;
-  const creditsExhausted =
-    liveWindows.length === 0 &&
-    !reached &&
-    credits?.has_credits === false &&
-    credits.unlimited !== true;
   // A gauge that only lights up once the tank is nearly empty is not a gauge.
   // Measured on this account: the weekly window went 1% -> 48% in two days
   // while the row stayed hidden, and the previous window was last seen at 88%.
@@ -513,7 +607,8 @@ export function renderRateLimitLine(
     );
     const reset = formatResetTime(
       window.resets_at,
-      window.window_minutes
+      window.window_minutes,
+      nowMs
     );
     if (reset) {
       parts.push(colors.dim(`resets ${reset}`));
@@ -524,6 +619,27 @@ export function renderRateLimitLine(
   }
   if (creditsExhausted) {
     parts.push(theme.error('credits: 0'));
+  }
+  // The projected exhaustion, stated only while it precedes the reset — the
+  // only case where the pace changes what the user should do — and placed
+  // last so a narrow pane truncates the forecast before the facts.
+  const projection = data.quotaProjection;
+  const primary = limits?.primary;
+  if (
+    projection &&
+    primary != null &&
+    shownWindows.includes(primary) &&
+    (primary.used_percent ?? 0) >= PROJECTION_MIN_PERCENT &&
+    primary.resets_at !== undefined &&
+    Number.isFinite(primary.resets_at) &&
+    projection.exhaustsAtMs < primary.resets_at * 1000 &&
+    projection.exhaustsAtMs > nowMs
+  ) {
+    parts.push(
+      colors.dim(
+        `${icons.arrow} empty ${formatExhaustionEta(projection.exhaustsAtMs, nowMs)}`
+      )
+    );
   }
   return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
 }
