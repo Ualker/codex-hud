@@ -196,6 +196,11 @@ function splitTopLevel(command: string): TopLevelSplit {
   const separators: string[] = [];
   let current = '';
   let quote: "'" | '"' | '`' | null = null;
+  // Depth of `$(...)` command substitutions. Operators inside one join that
+  // segment's data flow, not the top level: splitting there turned
+  // `x=$(shasum … | awk …)` into segments whose "programs" were the flags
+  // after the assignment prefix, and the pane showed `-a | awk ; -f`.
+  let substitutionDepth = 0;
 
   for (let index = 0; index < command.length; index++) {
     const char = command[index];
@@ -240,7 +245,21 @@ function splitTopLevel(command: string): TopLevelSplit {
       current += char + command[++index];
       continue;
     }
-    if ((char === '&' && next === '&') || (char === '|' && next === '|')) {
+    if (char === '$' && next === '(') {
+      substitutionDepth++;
+      current += char + next;
+      index++;
+      continue;
+    }
+    if (char === ')' && substitutionDepth > 0) {
+      substitutionDepth--;
+      current += char;
+      continue;
+    }
+    if (
+      substitutionDepth === 0 &&
+      ((char === '&' && next === '&') || (char === '|' && next === '|'))
+    ) {
       segments.push(current);
       separators.push(char + next);
       current = '';
@@ -248,14 +267,14 @@ function splitTopLevel(command: string): TopLevelSplit {
       continue;
     }
     // Single `&` stays inside the segment so redirections like 2>&1 survive.
-    if (char === '|' || char === ';') {
+    if (substitutionDepth === 0 && (char === '|' || char === ';')) {
       segments.push(current);
       separators.push(char);
       current = '';
       continue;
     }
     // An unquoted newline separates commands just like `;`.
-    if (char === '\n') {
+    if (substitutionDepth === 0 && char === '\n') {
       segments.push(current);
       separators.push(';');
       current = '';
@@ -297,12 +316,32 @@ function segmentHead(segment: string, depth: number): string | undefined {
   while (index < tokens.length) {
     const token = tokens[index];
     if (!token || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      // An assignment that wraps a command substitution names the real
+      // program right after `$(`: `db_hash=$(shasum …)` runs shasum.
+      // `$((…))` arithmetic is excluded; plain assignments contribute nothing.
+      const wrapped = /^[A-Za-z_][A-Za-z0-9_]*=\$\((?!\()(.+)$/.exec(
+        token ?? ''
+      );
+      if (wrapped) {
+        // The remainder can carry spaces when the substitution was quoted
+        // (`x="$(mktemp -d …)"` tokenizes as one word); re-tokenize it so the
+        // program name stands alone.
+        tokens.splice(index, 1, ...tokenize(wrapped[1]));
+        continue;
+      }
       index++;
       continue;
     }
 
     const name = programName(token);
     if (!name) {
+      index++;
+      continue;
+    }
+    // A flag is never a program name. Skipping it either reaches the real
+    // command later in the segment or leaves the segment headless — both
+    // beat printing `-a` where a program belongs.
+    if (name.startsWith('-')) {
       index++;
       continue;
     }

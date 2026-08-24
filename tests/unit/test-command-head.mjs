@@ -59,7 +59,9 @@ const cases = [
       'run_canary two &',
       'wait "$!"',
     ].join('\n'),
-    'run_canary ×2 ; wait',
+    // mktemp runs inside the first line's assignment substitution; the
+    // function body itself still never leaks into the head.
+    'mktemp ; run_canary ×2 ; wait',
   ],
   ['run_canary() {\n  printf ok\n}', undefined],
   ['function cleanup() { rm -f /tmp/x; }\ncleanup', 'cleanup'],
@@ -73,6 +75,29 @@ const cases = [
   ['while test -f /tmp/busy; do sleep 1; done', 'sleep'],
   ['until [[ -e /tmp/ready ]]; do make test; done', 'make test'],
   ['export FOO=bar; cd /repo; npm test', 'npm test'],
+  // Operators inside `$(...)` join that segment's data flow, not the top
+  // level, and an assignment wrapping a substitution names the real program
+  // right after `$(`. Splitting there put the flags after the assignment
+  // prefix on screen: a live pane showed `-a | awk ; -f` for the command
+  // below.
+  [
+    [
+      'db_path=/Users/zyb/.cc-switch/cc-switch.db',
+      'settings_path=/Users/zyb/.cc-switch/settings.json',
+      `db_hash_before=$(shasum -a 256 "$db_path" | awk '{print $1}')`,
+      `db_mtime_before=$(stat -f '%m' "$db_path")`,
+      `settings_hash_before=$(shasum -a 256 "$settings_path" | awk '{print $1}')`,
+      'python3 -B /Users/zyb/.codex/skills/sync_codex_skills.py --dry-run',
+    ].join('\n'),
+    'shasum ; stat ; shasum …',
+  ],
+  ['result=$(rg -n foo src | head -5)', 'rg'],
+  ['v=$(dirname $(which node)) && ls', 'dirname && ls'],
+  ['x=$( git rev-parse HEAD )', 'git rev-parse'],
+  // `$((…))` arithmetic is an assignment, not a command.
+  ['x=$((1+2)); echo done', 'echo'],
+  // A flag is never a program name, wherever segment splitting leaves it.
+  ['-a | awk', 'awk'],
 ];
 
 // Whatever a head contains reaches the pane verbatim, so no control character
@@ -87,6 +112,13 @@ for (const [command] of cases) {
     /[\u0000-\u001f\u007f]/.test(head),
     false,
     `head of ${JSON.stringify(command)} is printable: ${JSON.stringify(head)}`
+  );
+  // A bare flag where a program belongs means the extractor mis-parsed the
+  // segment; better no head at all than `-a`.
+  assert.equal(
+    /(?:^|[|;&] )-/.test(head),
+    false,
+    `no segment head of ${JSON.stringify(command)} is a flag: ${JSON.stringify(head)}`
   );
 }
 

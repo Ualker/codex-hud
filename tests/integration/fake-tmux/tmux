@@ -64,6 +64,15 @@ case "$cmd" in
       @codex_hud_focus_main)
         echo "${TMUX_FOCUS_MAIN:-}"
         ;;
+      @codex_hud_cwd)
+        echo "${TMUX_STORED_CWD:-${TMUX_SHOW_OPTION_DEFAULT:-}}"
+        ;;
+      @codex_hud_session_start)
+        echo "${TMUX_STORED_SESSION_START:-${TMUX_SHOW_OPTION_DEFAULT:-}}"
+        ;;
+      @codex_hud_toggle_key)
+        echo "${TMUX_STORED_TOGGLE_KEY:-${TMUX_SHOW_OPTION_DEFAULT:-}}"
+        ;;
       *)
         echo "${TMUX_SHOW_OPTION_DEFAULT:-}"
         ;;

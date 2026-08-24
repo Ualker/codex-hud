@@ -2,9 +2,10 @@
  * Outbound notifications for states that need a human.
  *
  * The HUD can only be looked at; when the user is in another tmux window it
- * has no way to say "this session is waiting on you". The three states worth
- * interrupting someone for are exactly the ones the detectors already
- * confirm: an approval prompt, a stream-error-killed turn, and a quota hit.
+ * has no way to say "this session is waiting on you". The states worth
+ * interrupting someone for are the ones the detectors already confirm — an
+ * approval prompt, a stream-error-killed turn, a quota hit — plus a long turn
+ * finishing, which is what the user walked away from in the first place.
  *
  * Delivery is a user command (`CODEX_HUD_NOTIFY_CMD`), run through `sh -c`
  * with the event JSON on stdin and in `CODEX_HUD_EVENT_JSON`; the event name
@@ -25,12 +26,15 @@ import { logHudError } from './utils/hud-log.js';
 export type HudNotifyEvent =
   | 'approval-needed'
   | 'turn-interrupted'
-  | 'limit-reached';
+  | 'limit-reached'
+  | 'turn-completed';
 
 export interface NotifyContext {
   sessionId?: string;
   tmuxSession?: string;
   cwd: string;
+  /** Wall time of the finished turn; rides in the turn-completed payload. */
+  lastTurnDurationMs?: number;
 }
 
 export type NotifyStates = Record<HudNotifyEvent, boolean>;
@@ -39,7 +43,36 @@ const EVENT_NAMES: readonly HudNotifyEvent[] = [
   'approval-needed',
   'turn-interrupted',
   'limit-reached',
+  'turn-completed',
 ];
+
+/**
+ * Shortest finished turn worth announcing. Every other notifier in this
+ * user's grid (the cmux bridge, the fleet monitor) pages on completion, and a
+ * conversational back-and-forth would page on every reply without a floor;
+ * three minutes is the same threshold the cmux bridge settled on for the same
+ * problem. Short turns end with the user already watching.
+ */
+export const MIN_COMPLETED_TURN_MS = 180_000;
+
+/**
+ * Whether the session is in the turn-completed state. The phase is the
+ * overlay-adjusted one on purpose: with Codex gone it reads `exited`, so
+ * quitting right after a turn never pages about a completion nobody awaits.
+ * Kept beside the threshold so the pane wiring and the tests share one
+ * predicate.
+ */
+export function isCompletedTurnNotifiable(
+  phase: string | undefined,
+  lastTurnDurationMs: number | undefined
+): boolean {
+  return (
+    phase === 'idle' &&
+    lastTurnDurationMs !== undefined &&
+    Number.isFinite(lastTurnDurationMs) &&
+    lastTurnDurationMs >= MIN_COMPLETED_TURN_MS
+  );
+}
 
 /** A state that clears and trips again within this window fires once. */
 const REFIRE_COOLDOWN_MS = 5 * 60_000;
@@ -83,6 +116,7 @@ export class HudNotifier {
     'approval-needed': false,
     'turn-interrupted': false,
     'limit-reached': false,
+    'turn-completed': false,
   };
   private lastFiredMs: Partial<Record<HudNotifyEvent, number>> = {};
 
@@ -104,6 +138,7 @@ export class HudNotifier {
       'approval-needed': false,
       'turn-interrupted': false,
       'limit-reached': false,
+      'turn-completed': false,
     };
   }
 
@@ -141,6 +176,11 @@ export class HudNotifier {
           ...(context.tmuxSession ? { tmuxSession: context.tmuxSession } : {}),
           cwd: context.cwd,
           at: new Date(nowMs).toISOString(),
+          ...(event === 'turn-completed' &&
+          context.lastTurnDurationMs !== undefined &&
+          Number.isFinite(context.lastTurnDurationMs)
+            ? { turnDurationMs: Math.round(context.lastTurnDurationMs) }
+            : {}),
         });
         void this.run(this.command, payload).catch((error) => {
           logHudError('notify', error);

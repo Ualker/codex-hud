@@ -1421,6 +1421,11 @@ export async function parseRolloutFile(
   let sessionServiceTier: string | null | undefined = existingSession?.serviceTier;
   let planProgress: PlanProgress | null = null;
   let tokenUsage: TokenUsageInfo | null = null;
+  // Window announced by this batch's turn_started/task_started, handed to a
+  // later token_count whose info does not restate it. A separate variable so
+  // the token_count branch never reads the loop-carried tokenUsage back
+  // (tsc's flow analysis rejects that self-reference).
+  let capturedContextWindow: number | undefined;
   let rateLimits: RateLimitSnapshot | null = null;
   let rateLimitsAt: Date | null = null;
   let turnActivity: TurnActivity | null = existingTurnActivity
@@ -1849,7 +1854,14 @@ export async function parseRolloutFile(
       }
     } else if (payload.type === 'token_count') {
       if (payload.info) {
-        tokenUsage = payload.info;
+        // info replaces the usage wholesale, but a context window captured
+        // from task_started earlier in this batch must survive an info that
+        // does not restate it.
+        tokenUsage = {
+          ...payload.info,
+          model_context_window:
+            payload.info.model_context_window ?? capturedContextWindow,
+        };
       }
       if (payload.rate_limits) {
         rateLimits = payload.rate_limits;
@@ -1866,6 +1878,7 @@ export async function parseRolloutFile(
       payload.type === 'task_started'
     ) {
       if (payload.model_context_window) {
+        capturedContextWindow = payload.model_context_window;
         tokenUsage ??= {};
         tokenUsage.model_context_window = payload.model_context_window;
       }
@@ -2224,10 +2237,30 @@ export class RolloutParser {
         result.lastCompactTime = this.cachedResult.lastCompactTime;
       }
 
+      // A batch whose only token fact was a task_started context window built a
+      // window-only skeleton, and "latest parse wins" adopted it wholesale —
+      // measured live as the context gauge vanishing at 85% used the moment a
+      // turn started, permanently when that turn was aborted before its first
+      // token_count. The skeleton only ever refreshes the window; the cached
+      // cumulative usage survives underneath it.
+      if (
+        result.tokenUsage &&
+        !result.tokenUsage.last_token_usage &&
+        !result.tokenUsage.total_token_usage &&
+        this.cachedResult.tokenUsage
+      ) {
+        result.tokenUsage = {
+          ...this.cachedResult.tokenUsage,
+          model_context_window:
+            result.tokenUsage.model_context_window ??
+            this.cachedResult.tokenUsage.model_context_window,
+        };
+      }
+
       // Keep tokenUsage from latest parse (it contains cumulative data from API)
       // but preserve model_context_window if not in new result
       if (this.cachedResult.tokenUsage?.model_context_window && result.tokenUsage) {
-        result.tokenUsage.model_context_window = 
+        result.tokenUsage.model_context_window =
           result.tokenUsage.model_context_window ?? this.cachedResult.tokenUsage.model_context_window;
       }
 
