@@ -285,6 +285,26 @@ function renderExpandedLayout(
     )
   );
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
+  // A fresh `/new` session at the prompt is invisible to every data source
+  // until its first message (codex 0.149 creates the rollout, the threads
+  // row, and the open-file footprint lazily), so the bound session's last
+  // state — measured live as "✗ Turn aborted · event 5h ago" — would stand
+  // indefinitely. Only quiet terminal phases are overridden: a working phase
+  // is live proof the pane still runs the bound session, and `exited` is the
+  // more specific fact.
+  const paneFreshLine =
+    data.paneFreshSession === true &&
+    (data.turnActivity?.phase === 'idle' ||
+      data.turnActivity?.phase === 'aborted' ||
+      data.turnActivity?.phase === 'interrupted')
+      ? truncateAnsi(
+          colors.dim(
+            `${icons.pending} New session at the prompt · binds on its first message`
+          ),
+          width
+        )
+      : null;
+  const turnLineShown = paneFreshLine ?? turnLine;
   const awaitingApproval =
     data.turnActivity?.phase === 'awaiting-approval';
   const agentLines = renderAgentLines(data.agentActivity, width);
@@ -365,15 +385,18 @@ function renderExpandedLayout(
     // one that separates a long grind from a fresh call — and the turn row is
     // also where the `event N ago` staleness marker lives.
     const showTurnWithTool = Boolean(
-      compression.keepTurnWithTool && hasRunningTool && turnLine && toolsLine
+      compression.keepTurnWithTool &&
+        hasRunningTool &&
+        turnLineShown &&
+        toolsLine
     );
     if (hasRunningTool && toolsLine && !showTurnWithTool) {
       // A suspended call is detail about the approval wait, not the primary
       // state. When one row must win, keep the action the user can take and
       // drop the paused tool detail instead of showing a fake running spinner.
-      lines.push(awaitingApproval && turnLine ? turnLine : toolsLine);
-    } else if (turnLine) {
-      lines.push(turnLine);
+      lines.push(awaitingApproval && turnLineShown ? turnLineShown : toolsLine);
+    } else if (turnLineShown) {
+      lines.push(turnLineShown);
     } else if (bindingHintLine) {
       lines.push(bindingHintLine);
     }

@@ -59,7 +59,10 @@ check() {
 }
 
 echo "non-interactive subcommands reach the CLI:"
-for sub in exec login logout mcp completion doctor apply update archive delete features help; do
+# agents / queue / migrate-rollouts arrived with codex 0.149; through the
+# alias each opened a junk tmux session and `codex queue`'s output vanished
+# into a detached pane.
+for sub in exec login logout mcp completion doctor apply update archive delete features help agents queue migrate-rollouts; do
   rm -f "$MARKER"
   out="$("$ROOT_DIR/bin/codex-hud" "$sub" --some-flag 2>&1 || true)"
   check "codex $sub" "REAL-CODEX-CLI args=[$sub --some-flag]" "$out"

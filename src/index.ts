@@ -37,6 +37,7 @@ import { QuotaTrendTracker } from './collectors/quota-trend.js';
 import { ApprovalDetector } from './collectors/approval-detector.js';
 import { StallDetector } from './collectors/stall-detector.js';
 import { CodexLivenessProbe } from './collectors/codex-liveness.js';
+import { FreshPromptDetector } from './collectors/fresh-prompt-detector.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import {
@@ -56,8 +57,9 @@ import {
   cycleToolDetailsMode,
   rateLimitAlertKind,
 } from './render/lines/activity-line.js';
-import { HudNotifier } from './notify.js';
+import { HudNotifier, isCompletedTurnNotifiable } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
+import { resolveHudStateFile } from './utils/state-dir.js';
 import { calculateContextUsage } from './context-usage.js';
 import type {
   HudData,
@@ -270,6 +272,9 @@ const stallDetector = new StallDetector({
 const codexLiveness = new CodexLivenessProbe({
   mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
 });
+const freshPromptDetector = new FreshPromptDetector({
+  mainPane: process.env.CODEX_HUD_MAIN_PANE || undefined,
+});
 // Edge-triggered outbound notifications (CODEX_HUD_NOTIFY_CMD); inert unless
 // the user configured a command.
 const notifier = new HudNotifier();
@@ -318,6 +323,7 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   approvalDetector.reset();
   stallDetector.reset();
   codexLiveness.reset();
+  freshPromptDetector.reset();
   notifier.reset();
   // Let other HUDs' overviews see this binding. A session bound before its
   // first turn has no rollout yet, which is exactly the case file timestamps
@@ -412,7 +418,11 @@ const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
 );
 // Two observed readings of the current quota window; the burn-rate slope
 // between them projects the exhaustion the level alone cannot warn about.
-const quotaTrend = new QuotaTrendTracker();
+// The baseline is shared through a state file so every HUD forecasts the
+// account the same way and a --reload does not restart the clock.
+const quotaTrend = new QuotaTrendTracker({
+  stateFilePath: resolveHudStateFile('quota-trend.json'),
+});
 const gitCache = new AsyncSnapshotCache(
   emptyGitStatus(),
   () => collectGitStatusAsync(HUD_CWD),
@@ -623,23 +633,29 @@ async function refreshPaneDetectors(): Promise<void> {
     rolloutData?.partialHistory && !rolloutData.runtimeStateComplete
       ? undefined
       : slowProjectCache.get().config.approval_policy;
-  const [approvalChanged, stallChanged, livenessChanged] = await Promise.all([
-    approvalDetector.refresh({
-      turnActivity: rolloutData?.turnActivity,
-      toolActivity: rolloutData?.toolActivity,
-      lastEventAt: rolloutData?.lastEventTime,
-      approvalPolicy: runtimePolicy ?? staticPolicy,
-    }),
-    stallDetector.refresh({
-      turnActivity: rolloutData?.turnActivity,
-      lastEventAt: rolloutData?.lastEventTime,
-    }),
-    codexLiveness.refresh({
-      turnActivity: rolloutData?.turnActivity,
-      lastEventAt: rolloutData?.lastEventTime,
-    }),
-  ]);
-  const changed = approvalChanged || stallChanged || livenessChanged;
+  const [approvalChanged, stallChanged, livenessChanged, freshChanged] =
+    await Promise.all([
+      approvalDetector.refresh({
+        turnActivity: rolloutData?.turnActivity,
+        toolActivity: rolloutData?.toolActivity,
+        lastEventAt: rolloutData?.lastEventTime,
+        approvalPolicy: runtimePolicy ?? staticPolicy,
+      }),
+      stallDetector.refresh({
+        turnActivity: rolloutData?.turnActivity,
+        lastEventAt: rolloutData?.lastEventTime,
+      }),
+      codexLiveness.refresh({
+        turnActivity: rolloutData?.turnActivity,
+        lastEventAt: rolloutData?.lastEventTime,
+      }),
+      freshPromptDetector.refresh({
+        turnActivity: rolloutData?.turnActivity,
+        lastEventAt: rolloutData?.lastEventTime,
+      }),
+    ]);
+  const changed =
+    approvalChanged || stallChanged || livenessChanged || freshChanged;
   if (!changed) {
     return;
   }
@@ -818,6 +834,9 @@ function collectData(): HudData {
     turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
     ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),
+    ...(freshPromptDetector.isPaneOnFreshSession()
+      ? { paneFreshSession: true }
+      : {}),
     partialHistory: rolloutData?.partialHistory,
     runtimeStateComplete: rolloutData?.runtimeStateComplete,
     contextUsage,
@@ -910,16 +929,22 @@ async function mainLoop(): Promise<void> {
     delete collectorHealth.renderer;
     // Observed after the frame so a notification can never precede the pane
     // stating the same thing. Rising edges only; see notify.ts.
+    const lastTurnMs = data.turnActivity?.lastTurnDurationMs;
     notifier.observe(
       {
         'approval-needed': approvalDetector.isApprovalNeeded(),
         'turn-interrupted': stallDetector.isLikelyInterrupted(),
         'limit-reached': rateLimitAlertKind(data.rateLimits, Date.now()) !== null,
+        'turn-completed': isCompletedTurnNotifiable(
+          data.turnActivity?.phase,
+          lastTurnMs
+        ),
       },
       {
         sessionId: sessionFinder.getCurrentSession()?.sessionId,
         tmuxSession: HUD_TMUX_SESSION,
         cwd: HUD_CWD,
+        lastTurnDurationMs: lastTurnMs,
       }
     );
     const plan = computeCadence();

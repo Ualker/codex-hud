@@ -105,6 +105,92 @@ function snapshot(usedPercent, resetsAt = RESETS_AT) {
   assert.equal(tracker.project(null), null);
 }
 
+// ---- the shared baseline --------------------------------------------------
+// The quota is account state; per-process baselines let two panes forecast
+// the same account differently (measured live: `empty ~08/23` beside
+// `empty in 21h30m`). The state file makes every HUD read one pair — and
+// keeps the baseline across --reload.
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-trend-'));
+  const stateFilePath = path.join(dir, 'quota-trend.json');
+  try {
+    // HUD A sees the early reading and persists it.
+    const hudA = new QuotaTrendTracker({ stateFilePath });
+    hudA.observe(snapshot(50), at(-2 * HOUR));
+
+    // HUD B starts later and sees only the fresh reading; the persisted
+    // first point completes its baseline immediately.
+    const hudB = new QuotaTrendTracker({ stateFilePath });
+    hudB.observe(snapshot(60), at(0));
+    assert.equal(
+      hudB.project(snapshot(60), now)?.exhaustsAtMs,
+      now + 8 * HOUR,
+      'a second HUD adopts the persisted first point'
+    );
+
+    // HUD A converges to the same forecast through its periodic re-read,
+    // without ever observing the later snapshot itself.
+    assert.equal(
+      hudA.project(snapshot(60), now)?.exhaustsAtMs,
+      now + 8 * HOUR,
+      'the first HUD reads the other pane\'s later point back'
+    );
+
+    // A restart (fresh instance, same file) starts with the full baseline.
+    const reloaded = new QuotaTrendTracker({ stateFilePath });
+    assert.equal(
+      reloaded.project(snapshot(60), now)?.exhaustsAtMs,
+      now + 8 * HOUR,
+      'a reload does not restart the baseline clock'
+    );
+
+    // The rollover supersedes the persisted window for every reader.
+    const nextWindow = Math.floor((now + 14 * DAY) / 1000);
+    hudB.observe(snapshot(2, nextWindow), at(HOUR));
+    hudB.observe(snapshot(4, nextWindow), at(2 * HOUR));
+    const postRollover = new QuotaTrendTracker({ stateFilePath });
+    assert.equal(
+      postRollover.project(snapshot(60), now),
+      null,
+      'points from a finished window are gone for good'
+    );
+
+    // A stale replay from the finished window must not displace the live one.
+    hudB.observe(snapshot(90), at(-HOUR));
+    assert.equal(
+      JSON.parse(fs.readFileSync(stateFilePath, 'utf8')).resetsAt,
+      nextWindow,
+      'an older window\'s reading cannot overwrite the live baseline'
+    );
+
+    // A corrupted file is no baseline at all — and never a crash.
+    fs.writeFileSync(stateFilePath, '{not json');
+    const corrupted = new QuotaTrendTracker({ stateFilePath });
+    corrupted.observe(snapshot(50), at(-2 * HOUR));
+    corrupted.observe(snapshot(60), at(0));
+    assert.equal(
+      corrupted.project(snapshot(60), now)?.exhaustsAtMs,
+      now + 8 * HOUR,
+      'a corrupt file degrades to in-memory tracking and gets rewritten'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // No path configured: pure memory, no files anywhere.
+  const tracker = new QuotaTrendTracker();
+  tracker.observe(snapshot(50), at(-2 * HOUR));
+  tracker.observe(snapshot(60), at(0));
+  assert.ok(tracker.project(snapshot(60), now));
+}
+
 // ---- the quota row --------------------------------------------------------
 
 const layoutData = (usedPercent, exhaustsAtMs) => ({

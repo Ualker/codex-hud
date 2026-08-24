@@ -1,9 +1,18 @@
+// The deliberately-failing runner below routes through logHudError; without
+// this the test appends "spawn failed" stacks to the user's real hud.log and
+// --doctor then presents them as diagnostics.
+process.env.CODEX_HUD_LOG_FILE = 'off';
+
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { HudNotifier } from '../../dist/notify.js';
+import {
+  HudNotifier,
+  MIN_COMPLETED_TURN_MS,
+  isCompletedTurnNotifiable,
+} from '../../dist/notify.js';
 
 const now = Date.parse('2026-08-20T12:00:00.000Z');
 const context = {
@@ -16,6 +25,7 @@ const quiet = {
   'approval-needed': false,
   'turn-interrupted': false,
   'limit-reached': false,
+  'turn-completed': false,
 };
 
 function recorder() {
@@ -115,6 +125,71 @@ function recorder() {
   );
   assert.deepEqual(fired, ['approval-needed', 'limit-reached']);
   assert.equal(calls.length, 2);
+}
+
+{
+  // The completed-turn predicate: only a genuinely long turn, seen at idle.
+  assert.equal(isCompletedTurnNotifiable('idle', MIN_COMPLETED_TURN_MS), true);
+  assert.equal(
+    isCompletedTurnNotifiable('idle', MIN_COMPLETED_TURN_MS - 1),
+    false,
+    'short turns end with the user already watching'
+  );
+  assert.equal(isCompletedTurnNotifiable('thinking', 300_000), false);
+  assert.equal(
+    isCompletedTurnNotifiable('exited', 300_000),
+    false,
+    'a completion with Codex gone pages nobody'
+  );
+  assert.equal(isCompletedTurnNotifiable('idle', undefined), false);
+  assert.equal(isCompletedTurnNotifiable('idle', Number.NaN), false);
+  assert.equal(isCompletedTurnNotifiable(undefined, 300_000), false);
+}
+
+{
+  // turn-completed rides the same edge machinery and carries the turn's wall
+  // time; other events never gain that field even when the context has it.
+  const { calls, run } = recorder();
+  const notifier = new HudNotifier({ command: 'notify', runCommand: run });
+  const withDuration = { ...context, lastTurnDurationMs: 312_456.7 };
+  notifier.observe(quiet, withDuration, now);
+  const fired = notifier.observe(
+    { ...quiet, 'turn-completed': true },
+    withDuration,
+    now + 1000
+  );
+  assert.deepEqual(fired, ['turn-completed']);
+  assert.deepEqual(calls[0].payload, {
+    event: 'turn-completed',
+    sessionId: context.sessionId,
+    tmuxSession: context.tmuxSession,
+    cwd: context.cwd,
+    at: new Date(now + 1000).toISOString(),
+    turnDurationMs: 312457,
+  });
+
+  // The state holds while the session sits idle; no refire per tick.
+  notifier.observe({ ...quiet, 'turn-completed': true }, withDuration, now + 2000);
+  assert.equal(calls.length, 1);
+
+  // The next long turn is a fresh edge once past the cooldown.
+  notifier.observe(quiet, withDuration, now + 6 * 60_000);
+  notifier.observe(
+    { ...quiet, 'turn-completed': true },
+    withDuration,
+    now + 7 * 60_000
+  );
+  assert.equal(calls.length, 2);
+
+  // An approval edge with a duration in context stays duration-free.
+  notifier.observe(quiet, withDuration, now + 8 * 60_000);
+  notifier.observe(
+    { ...quiet, 'approval-needed': true },
+    withDuration,
+    now + 9 * 60_000
+  );
+  assert.equal(calls[2].payload.event, 'approval-needed');
+  assert.equal('turnDurationMs' in calls[2].payload, false);
 }
 
 {

@@ -686,6 +686,54 @@ resolve_hud_height_for_tmux_target() {
     resolve_hud_height "$term_height"
 }
 
+# Environment variables the HUD renderer consumes. tmux panes inherit the
+# *server's* environment, not the launching shell's, so every one of these
+# must be baked into the pane command — verified live: with the tmux server
+# running since the previous day, an exported CODEX_HUD_NOTIFY_CMD never
+# reached the HUD process, and a server that happened to start with the
+# variable pinned that value forever. Baked only when set and non-empty
+# (empty means unset to every consumer, including NO_COLOR per its spec).
+HUD_PASSTHROUGH_ENV_VARS=(
+    CODEX_HUD_MODE
+    CODEX_HUD_TOOL_DETAILS
+    CODEX_HUD_ASCII
+    CODEX_HUD_LOG_FILE
+    CODEX_HUD_NOTIFY_CMD
+    CODEX_HUD_SHOW_OTHER_AGENT_SKILLS
+    CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS
+    CODEX_HUD_CLEAR_SCROLLBACK
+    NO_COLOR
+)
+
+# The HUD pane's launch command. Also rebuilt by --reload so a respawn bakes
+# the caller's *current* environment instead of reviving values frozen at
+# session creation. %q throughout: CODEX_HUD_NOTIFY_CMD in particular carries
+# quotes and spaces, and a value with a single quote would cut a '...'-style
+# interpolation in half.
+build_hud_pane_command() {
+    local cwd="$1"
+    local main_pane_id="$2"
+    local session_name="$3"
+    local session_start="$4"
+    local toggle_key="$5"
+    local height="$6"
+    local width="$7"
+    local cwd_escaped
+    cwd_escaped=$(printf "%q" "$cwd")
+    # This branch's container filesystems need polling watchers; recomputed
+    # here so --reload re-bakes the caller's current setting too.
+    local use_polling
+    use_polling=$(parse_boolean_setting "CHOKIDAR_USEPOLLING" "${CHOKIDAR_USEPOLLING:-}" "1") || return 1
+    local env_parts=""
+    local var
+    for var in "${HUD_PASSTHROUGH_ENV_VARS[@]}"; do
+        if [[ -n "${!var:-}" ]]; then
+            env_parts+=" ${var}=$(printf "%q" "${!var}")"
+        fi
+    done
+    printf '%s' "cd ${cwd_escaped} && exec env LINES='$height' COLUMNS='$width' CHOKIDAR_USEPOLLING='$use_polling' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$session_name' CODEX_HUD_TOGGLE_KEY='$toggle_key'${env_parts} node '$HUD_DIR/dist/index.js'"
+}
+
 # Create new tmux session with HUD
 create_session() {
     local cwd="$1"
@@ -793,8 +841,6 @@ create_session() {
     # Split the window based on HUD_POSITION
     local session_start
     session_start=$(date +%s)
-    local hud_use_polling
-    hud_use_polling=$(parse_boolean_setting "CHOKIDAR_USEPOLLING" "${CHOKIDAR_USEPOLLING:-}" "1") || exit 1
     # The on-screen hint is the only place the hotkeys are taught, so tell the
     # HUD which one this session actually has: with Prefix+H installed the
     # toggle works from the Codex pane, without it the HUD pane must be
@@ -807,9 +853,14 @@ create_session() {
     # one exact HUD process without walking or guessing the process tree.
     # NODE_COMPILE_CACHE persists V8 code caches across HUD restarts (Node 22+;
     # older releases ignore the variable), shaving module compilation off the
-    # time to first frame. CHOKIDAR_USEPOLLING stays: this branch's container
-    # filesystems need polling watchers.
-    local hud_cmd="cd ${cwd_escaped} && exec env LINES='$HUD_HEIGHT' COLUMNS='$term_width' CHOKIDAR_USEPOLLING='$hud_use_polling' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$SESSION_NAME' CODEX_HUD_TOGGLE_KEY='$toggle_key' CODEX_HUD_CLEAR_SCROLLBACK='${CODEX_HUD_CLEAR_SCROLLBACK:-}' node '$HUD_DIR/dist/index.js'"
+    # time to first frame.
+    local hud_cmd
+    hud_cmd=$(build_hud_pane_command "$cwd" "$main_pane_id" "$SESSION_NAME" "$session_start" "$toggle_key" "$HUD_HEIGHT" "$term_width")
+    # --reload rebuilds the pane command from these instead of reviving the
+    # original one, so a respawn bakes the caller's current environment.
+    tmux set-option -t "$SESSION_NAME" -q @codex_hud_cwd "$cwd"
+    tmux set-option -t "$SESSION_NAME" -q @codex_hud_session_start "$session_start"
+    tmux set-option -t "$SESSION_NAME" -q @codex_hud_toggle_key "$toggle_key"
     
     if [[ "$HUD_POSITION" == "top" ]]; then
         # Split at top, then swap panes
@@ -857,7 +908,12 @@ is_passthrough_command() {
     case "$1" in
         exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|exec-server|\
         remote-control|app|completion|update|doctor|sandbox|debug|apply|a|\
-        archive|delete|unarchive|cloud|features|help|--version|-V)
+        archive|delete|unarchive|cloud|features|help|--version|-V|\
+        agents|queue|migrate-rollouts)
+            # The last three arrived with codex 0.149: `queue` and
+            # `migrate-rollouts` are plain CLI commands whose output belongs
+            # on the caller's stdout, and `agents` is a browse TUI over the
+            # app-server daemon, not a Codex session worth a HUD.
             return 0
             ;;
         *)
@@ -996,6 +1052,11 @@ HUD Pane Keys (click the HUD pane first):
   view on the current frame; press q there to resume live updates.
 
 Environment Variables:
+  HUD display variables are captured from your shell when a session starts and
+  re-captured by 'codex-hud --reload' — a running HUD never sees a later
+  'export' on its own, because tmux panes inherit the tmux server's
+  environment, not your shell's.
+
   CODEX_HUD_POSITION  HUD pane position: bottom (default), top
   CODEX_HUD_HEIGHT    HUD pane height in lines (default: terminal height / 6, min 5, max 12)
   CODEX_HUD_HEIGHT_AUTO Auto-adjust height for narrow panes (default: 1 unless height is explicit)
@@ -1012,7 +1073,9 @@ Environment Variables:
   CODEX_HUD_LOG_FILE  Append HUD diagnostics to this file (default: ~/Library/Logs/codex-hud/hud.log
                       on macOS, \$XDG_STATE_HOME/codex-hud/hud.log elsewhere; 'off' discards them)
   CODEX_HUD_NOTIFY_CMD Shell command run when a session starts needing a human
-                      (approval-needed / turn-interrupted / limit-reached);
+                      (approval-needed / turn-interrupted / limit-reached) or
+                      finishes a turn of three minutes or longer
+                      (turn-completed, payload carries turnDurationMs);
                       event JSON on stdin and in CODEX_HUD_EVENT_JSON, the bare
                       name in CODEX_HUD_EVENT. Transitions only. (default: unset)
   CODEX_HUD_SHOW_OTHER_AGENT_SKILLS Show non-Codex .agents skill count (default: 0)
@@ -1295,7 +1358,27 @@ reload_hud_pane_for_session() {
     main_pane=$(get_main_pane_id_for_session "$session_name")
     resolve_hud_height_for_tmux_target "$hud_pane"
     set_fixed_hud_height "$session_name" "$hud_pane" "$HUD_HEIGHT" "$main_pane"
-    tmux respawn-pane -k -t "$hud_pane"
+    # Rebuild the pane command so the relaunch bakes the caller's *current*
+    # environment (CODEX_HUD_NOTIFY_CMD and friends) instead of reviving the
+    # values frozen at session creation. Sessions created by older wrappers
+    # lack the stored fields and keep their original command.
+    local stored_cwd
+    local stored_start
+    local stored_toggle
+    local pane_width
+    stored_cwd=$(tmux show-option -t "$session_name" -qv @codex_hud_cwd)
+    stored_start=$(tmux show-option -t "$session_name" -qv @codex_hud_session_start)
+    stored_toggle=$(tmux show-option -t "$session_name" -qv @codex_hud_toggle_key)
+    if [[ -n "$stored_cwd" && -n "$stored_start" ]]; then
+        pane_width=$(tmux display -p -t "$hud_pane" "#{pane_width}" 2>/dev/null || true)
+        if ! [[ "$pane_width" =~ ^[0-9]+$ ]]; then
+            pane_width=$(tput cols 2>/dev/null || echo 80)
+        fi
+        tmux respawn-pane -k -t "$hud_pane" \
+            "$(build_hud_pane_command "$stored_cwd" "$main_pane" "$session_name" "$stored_start" "$stored_toggle" "$HUD_HEIGHT" "$pane_width")"
+    else
+        tmux respawn-pane -k -t "$hud_pane"
+    fi
     info "Reloaded HUD pane in session: $session_name"
 }
 

@@ -613,6 +613,16 @@ export interface HudData {
    */
   codexExited?: boolean;
   /**
+   * The main pane shows a brand-new Codex session at its prompt (`/new`),
+   * which is invisible to every data source until its first message — codex
+   * 0.149 creates the rollout, the threads-db row, and even the open-file
+   * footprint lazily. The bound session's last state would otherwise stand
+   * for hours. Confirmed by the pane footer probe
+   * (collectors/fresh-prompt-detector.ts); absence means "same session or
+   * unknown".
+   */
+  paneFreshSession?: boolean;
+  /**
    * The rollout was large enough that its middle was skipped on the first
    * read, so cumulative counters (tool totals, compactions) are lower bounds
    * and must be rendered as such.
