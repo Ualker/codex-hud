@@ -64,4 +64,39 @@ assert.ok(
   'no marker without a bound session'
 );
 
+// A confirmed fresh `/new` prompt outranks the stale phase word: the row's
+// state describes the previous session until the first message rebinds it.
+const freshRows = renderHud(
+  {
+    ...baseData,
+    overview: {
+      sessions: [
+        {
+          id: 'cccccccc-9999-aaaa-bbbb-cccccccccccc',
+          cwd: '/tmp/proj-c',
+          projectName: 'proj-c',
+          turnActivity: {
+            phase: 'idle',
+            since: new Date(0),
+            lastActivityAt: new Date(0),
+          },
+          lastActivityAt: new Date(0),
+          contextUsage: undefined,
+          freshPrompt: true,
+        },
+      ],
+      updatedAt: new Date(0),
+    },
+  },
+  options
+).map(stripAnsi);
+assert.ok(
+  freshRows[0].includes('New prompt'),
+  `a fresh-prompt row says so: ${freshRows[0]}`
+);
+assert.ok(
+  !freshRows[0].includes('Idle'),
+  'the stale idle word yields to the fresh-prompt mark'
+);
+
 console.log('test-overview-self-marker: PASS');

@@ -25,6 +25,7 @@ import {
   remainingBar,
   padEnd,
   sanitizeTerminalText,
+  stripAnsi,
   truncate,
   truncateAnsi,
   truncateStart,
@@ -222,8 +223,37 @@ function renderExpandedLayout(
         )
       : null;
 
+  // A fresh `/new` session at the prompt is invisible to every data source
+  // until its first message (codex 0.149 creates the rollout, the threads
+  // row, and the open-file footprint lazily), so the bound session's last
+  // state — measured live as "✗ Turn aborted · event 5h ago" — would stand
+  // indefinitely. Only quiet terminal phases are overridden: a working phase
+  // is live proof the pane still runs the bound session, and `exited` is the
+  // more specific fact.
+  const paneFreshLine =
+    data.paneFreshSession === true &&
+    (data.turnActivity?.phase === 'idle' ||
+      data.turnActivity?.phase === 'aborted' ||
+      data.turnActivity?.phase === 'interrupted')
+      ? truncateAnsi(
+          colors.dim(
+            `${icons.pending} New session at the prompt · binds on its first message`
+          ),
+          width
+        )
+      : null;
+  // While the hint stands, the session-scoped rows describe the previous
+  // session. They stay (they are the useful "what came before") but recede:
+  // at full brightness the stale `Ctx: 24% left` sat directly above a pane
+  // footer reading `Context 100% left`, and the biggest number on the HUD
+  // contradicted the pane. Account-scoped cells (the quota) keep their color.
+  const dimStaleRow = (line: string): string => colors.dim(stripAnsi(line));
+  const staleSessionRows = paneFreshLine !== null;
+
   // Context capacity is actionable and remains ahead of activity history.
-  const tokenLine = renderTokenLine(data, width);
+  const rawTokenLine = renderTokenLine(data, width);
+  const tokenLine =
+    staleSessionRows && rawTokenLine ? dimStaleRow(rawTokenLine) : rawTokenLine;
   // Two readings of the same account quota: the alert form only appears under
   // pressure, the calm form always states where the window stands. The calm
   // one is worth a row only when there is one to spare, so the ladder picks.
@@ -247,7 +277,11 @@ function renderExpandedLayout(
         // floor the context gauge itself would be sacrificed to a calm quota,
         // so the two signals stay on separate rows and the layout ladder picks.
         if (tokenBudget >= 80) {
-          const compressedTokenLine = renderTokenLine(data, tokenBudget);
+          const rawCompressed = renderTokenLine(data, tokenBudget);
+          const compressedTokenLine =
+            staleSessionRows && rawCompressed
+              ? dimStaleRow(rawCompressed)
+              : rawCompressed;
           if (compressedTokenLine) {
             const compressed =
               `${compressedTokenLine}${usageSeparator}${rateLimitLine}`;
@@ -272,38 +306,21 @@ function renderExpandedLayout(
     return rows;
   };
 
-  const toolsLine = renderToolsLine(
+  const rawToolsLine = renderToolsLine(
     data.toolActivity,
     width,
     Date.now(),
     data.partialHistory,
     data.turnActivity?.phase === 'awaiting-approval'
   );
+  const toolsLine =
+    staleSessionRows && rawToolsLine ? dimStaleRow(rawToolsLine) : rawToolsLine;
   const hasRunningTool = Boolean(
     data.toolActivity?.recentCalls.some(
       (call) => call.status === 'running'
     )
   );
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
-  // A fresh `/new` session at the prompt is invisible to every data source
-  // until its first message (codex 0.149 creates the rollout, the threads
-  // row, and the open-file footprint lazily), so the bound session's last
-  // state — measured live as "✗ Turn aborted · event 5h ago" — would stand
-  // indefinitely. Only quiet terminal phases are overridden: a working phase
-  // is live proof the pane still runs the bound session, and `exited` is the
-  // more specific fact.
-  const paneFreshLine =
-    data.paneFreshSession === true &&
-    (data.turnActivity?.phase === 'idle' ||
-      data.turnActivity?.phase === 'aborted' ||
-      data.turnActivity?.phase === 'interrupted')
-      ? truncateAnsi(
-          colors.dim(
-            `${icons.pending} New session at the prompt · binds on its first message`
-          ),
-          width
-        )
-      : null;
   const turnLineShown = paneFreshLine ?? turnLine;
   const awaitingApproval =
     data.turnActivity?.phase === 'awaiting-approval';
@@ -318,17 +335,27 @@ function renderExpandedLayout(
   // mode removes, which is the case with no other on-screen evidence.
   const toolDetailsNotice = toolsLine ? null : renderToolDetailsNotice(width);
 
-  const runtimeSandbox = data.session?.sandboxMode;
-  // A bounded history whose state scan completed cleanly is not partial for
-  // runtime facts: absence of a sandbox record then means the session never
-  // wrote one, and the config value is the truth rather than a guess.
+  // Same source order as the environment row: session records, then the
+  // pane's live launch flags (which override the config file), then config —
+  // except where config is blind: a partial history, or a bound session with
+  // no rollout at all (0.149 defers the file to the first message), where the
+  // overriding flags are exactly what no persisted source can see. A fresh
+  // session at the prompt runs the flags, not the previous session's records.
+  const sessionSandbox = data.session?.sandboxMode;
+  const cliSandbox = data.paneCliPolicy?.sandboxMode;
+  const runtimeSandbox =
+    data.paneFreshSession === true
+      ? cliSandbox ?? sessionSandbox
+      : sessionSandbox ?? cliSandbox;
   const runtimeFactsPartial =
     data.partialHistory === true && data.runtimeStateComplete !== true;
   const accessUnknown =
-    runtimeFactsPartial && runtimeSandbox === undefined;
+    runtimeSandbox === undefined &&
+    (runtimeFactsPartial ||
+      (data.boundWithoutRollout === true && data.codexExited !== true));
   const fullAccess =
     runtimeSandbox === 'danger-full-access' ||
-    (!runtimeFactsPartial &&
+    (!accessUnknown &&
       runtimeSandbox === undefined &&
       data.config.sandbox_mode === 'danger-full-access');
 
@@ -572,6 +599,12 @@ function renderOverviewLayout(
     // has not written a rollout for it yet.
     if (session.neverStarted) {
       return colors.dim('Ready');
+    }
+    // A confirmed fresh `/new` prompt outranks the stale phase word: the
+    // phase describes the previous session, and the single view one keypress
+    // away already says "New session at the prompt".
+    if (session.freshPrompt) {
+      return colors.dim('New prompt');
     }
     const phase = session.turnActivity?.phase;
     switch (phase) {

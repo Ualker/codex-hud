@@ -234,4 +234,88 @@ const render = (data) =>
   assert.doesNotMatch(working, /New session at the prompt/);
 }
 
+{
+  // While the hint stands, the previous session's metric rows recede: at full
+  // brightness the stale `Ctx: 24% left` sat directly above a pane footer
+  // reading `Context 100% left`. Account-scoped quota keeps its color.
+  const staleMetrics = {
+    tokenUsage: {
+      last_token_usage: {
+        total_tokens: 200_400,
+        input_tokens: 10_600,
+        cached_input_tokens: 186_100,
+        output_tokens: 3_700,
+      },
+      model_context_window: 258_400,
+    },
+    contextUsage: {
+      used: 200_400,
+      total: 258_400,
+      percent: 24,
+      inputTokens: 10_600,
+      outputTokens: 3_700,
+      cachedTokens: 186_100,
+    },
+    toolActivity: {
+      recentCalls: [
+        {
+          name: 'exec',
+          callId: 'c1',
+          status: 'completed',
+          startedAt: at(-3600_000),
+          completedAt: at(-3590_000),
+        },
+      ],
+      totalCalls: 42,
+    },
+    rateLimits: {
+      limit_id: 'codex',
+      primary: {
+        used_percent: 14,
+        window_minutes: 10080,
+        resets_at: Math.floor((now + 6 * 24 * 3600_000) / 1000),
+      },
+      secondary: null,
+    },
+  };
+  const dimmedFrame = renderHud(
+    hudData({ paneFreshSession: true, ...staleMetrics }),
+    { width: 146, showDetails: true, layout, maxLines: 12 }
+  );
+  const ctxRow = dimmedFrame.find((line) => stripAnsi(line).includes('Ctx: '));
+  assert.ok(ctxRow, 'the stale context row still renders');
+  assert.match(
+    ctxRow,
+    /^\x1b\[2mCtx: /,
+    'the stale session metrics recede to dim as one block'
+  );
+  assert.ok(
+    stripAnsi(ctxRow).includes('7d limit 14%'),
+    'the account quota stays on the row'
+  );
+  const dimClose = ctxRow.indexOf('\x1b[0m');
+  assert.ok(
+    dimClose !== -1 && dimClose < ctxRow.indexOf('7d limit'),
+    'the dim region closes before the account quota cell'
+  );
+  const toolsRow = dimmedFrame.find((line) =>
+    stripAnsi(line).includes('42 total')
+  );
+  assert.ok(toolsRow, 'the stale tool row still renders');
+  assert.match(toolsRow, /^\x1b\[2m/, 'the stale tool history recedes to dim');
+
+  // Without the fresh mark the same data keeps its normal colors.
+  const normalFrame = renderHud(hudData({ ...staleMetrics }), {
+    width: 146,
+    showDetails: true,
+    layout,
+    maxLines: 12,
+  });
+  const normalCtxRow = normalFrame.find((line) =>
+    stripAnsi(line).includes('Ctx: ')
+  );
+  assert.ok(normalCtxRow);
+  assert.doesNotMatch(normalCtxRow, /^\x1b\[2mCtx: /);
+}
+
 console.log('test-fresh-prompt-detector: PASS');

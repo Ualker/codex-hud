@@ -134,6 +134,12 @@ export interface SessionOverviewItem {
    * read what happened", which the phase column would otherwise merge.
    */
   neverStarted?: boolean;
+  /**
+   * The owning HUD confirmed a fresh `/new` session at the bound pane's
+   * prompt: this row's phase and context describe the previous session until
+   * the first message rebinds it.
+   */
+  freshPrompt?: boolean;
 }
 
 export interface SessionOverview {
@@ -305,6 +311,10 @@ export interface EventMsgPayload {
     sandbox_policy?: {
       type?: string;
     };
+    /** codex-cli 0.149 vocabulary; `disabled` means no restrictions. */
+    permission_profile?: {
+      type?: string;
+    };
     collaboration_mode?: {
       settings?: {
         model?: string;
@@ -329,6 +339,10 @@ export interface EventMsgPayload {
 export interface TurnContextPayload {
   approval_policy?: string;
   sandbox_policy?: {
+    type?: string;
+  };
+  /** codex-cli 0.149 vocabulary; `disabled` means no restrictions. */
+  permission_profile?: {
     type?: string;
   };
   model?: string;
@@ -622,6 +636,24 @@ export interface HudData {
    * unknown".
    */
   paneFreshSession?: boolean;
+  /**
+   * Approval/sandbox flags read off the pane's live Codex invocation
+   * (collectors/runtime-hooks.ts extractCodexCliPolicy over the liveness
+   * probe's command capture). CLI flags override the config file, so while a
+   * session has no records these are the truth and the config is exactly
+   * what they replaced.
+   */
+  paneCliPolicy?: {
+    approvalPolicy?: string;
+    sandboxMode?: string;
+  };
+  /**
+   * A session is bound but no rollout content exists to read yet (codex
+   * 0.149 defers the file to the first message). Runtime facts are then
+   * unknown rather than "config is truth": the launch flags that override
+   * config are invisible to every persisted source.
+   */
+  boundWithoutRollout?: boolean;
   /**
    * The rollout was large enough that its middle was skipped on the first
    * read, so cumulative counters (tool totals, compactions) are lower bounds

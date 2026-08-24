@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   CodexLivenessProbe,
+  codexCommandInTree,
   isLivenessProbeCandidate,
   treeContainsCodex,
 } from '../../dist/collectors/codex-liveness.js';
@@ -105,6 +106,18 @@ assert.equal(treeContainsCodex(lookalike, '10'), false);
 assert.equal(treeContainsCodex('', '10'), false);
 assert.equal(treeContainsCodex(liveShape, 'not-a-pid'), false);
 
+// The walk hands back the matched invocation itself — the launch flags on it
+// are the only policy witness while the session has no rollout.
+assert.equal(
+  codexCommandInTree(liveShape, '2689'),
+  'node /Users/zyb/.nvm/versions/node/v25.8.1/bin/codex'
+);
+assert.equal(
+  codexCommandInTree(binaryShape, '10'),
+  '/opt/homebrew/bin/codex --model gpt-5.6-sol'
+);
+assert.equal(codexCommandInTree(afterQuit, '2689'), undefined);
+
 // ---- probe lifecycle ------------------------------------------------------
 
 function probe(answers, options = {}) {
@@ -116,7 +129,11 @@ function probe(answers, options = {}) {
     probePane: async (pane) => {
       probes.push(pane);
       const next = answers.shift();
-      return next === undefined ? null : next;
+      if (next === undefined || next === null) {
+        return null;
+      }
+      // Plain booleans stand for command-less probes; objects pass through.
+      return typeof next === 'boolean' ? { alive: next } : next;
     },
     ...options,
   });
@@ -188,7 +205,7 @@ function probe(answers, options = {}) {
     probeIntervalMs: 60_000,
     probePane: async () => {
       await gate;
-      return false;
+      return { alive: false };
     },
   });
   const pending = instance.refresh(quietIdle, now);
@@ -204,6 +221,54 @@ function probe(answers, options = {}) {
   assert.equal(await instance.refresh(quietIdle, now), false);
   assert.equal(instance.isCodexGone(), false);
   assert.equal(probes.length, 0);
+}
+
+// ---- the command capture --------------------------------------------------
+// The invocation's launch flags are the only policy witness while a 0.149
+// session has written no rollout; the probe walks the tree anyway, so the
+// matched command rides along for free.
+
+{
+  const yolo = 'node /x/bin/codex --ask-for-approval never --sandbox danger-full-access';
+  const { instance } = probe([
+    { alive: true, command: yolo },
+    { alive: true, command: yolo },
+    { alive: false },
+  ]);
+  assert.equal(await instance.refresh(quietIdle, now), true);
+  assert.equal(instance.getCodexCommand(), yolo);
+  assert.equal(instance.isCodexGone(), false);
+
+  // The same sighting twice is not a change.
+  assert.equal(await instance.refresh(quietIdle, now + 61_000), false);
+
+  // Codex gone drops the command with the liveness flip.
+  assert.equal(await instance.refresh(quietIdle, now + 122_000), true);
+  assert.equal(instance.getCodexCommand(), undefined);
+}
+
+{
+  // A restart with different flags is a change even while alive throughout.
+  const { instance } = probe([
+    { alive: true, command: 'node /x/bin/codex' },
+    { alive: true, command: 'node /x/bin/codex --yolo' },
+  ]);
+  await instance.refresh(quietIdle, now);
+  assert.equal(await instance.refresh(quietIdle, now + 61_000), true);
+  assert.equal(instance.getCodexCommand(), 'node /x/bin/codex --yolo');
+}
+
+{
+  // A failed probe keeps the last sighting, and a rebind forgets it.
+  const { instance } = probe([
+    { alive: true, command: 'node /x/bin/codex --yolo' },
+    null,
+  ]);
+  await instance.refresh(quietIdle, now);
+  assert.equal(await instance.refresh(quietIdle, now + 61_000), false);
+  assert.equal(instance.getCodexCommand(), 'node /x/bin/codex --yolo');
+  instance.reset();
+  assert.equal(instance.getCodexCommand(), undefined);
 }
 
 // ---- what the pane says ---------------------------------------------------

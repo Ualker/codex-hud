@@ -52,6 +52,7 @@ interface BoundPayload {
   approvalNeeded?: boolean;
   likelyInterrupted?: boolean;
   codexExited?: boolean;
+  freshPrompt?: boolean;
 }
 
 export interface OpenHudBinding {
@@ -75,6 +76,14 @@ export interface OpenHudBinding {
   likelyInterrupted?: boolean;
   /** The owning HUD confirmed the Codex process left the main pane. */
   codexExited?: boolean;
+  /**
+   * The owning HUD confirmed a fresh `/new` session at the main pane's
+   * prompt: the bound session's state is the previous session's, and the
+   * pane will rebind on its first message. Same pane-text evidence class as
+   * `approvalNeeded` — without it the dashboard row keeps advertising the
+   * stale idle state the single view already annotates.
+   */
+  freshPrompt?: boolean;
 }
 
 function tmux(args: readonly string[]): Promise<string | null> {
@@ -111,7 +120,8 @@ export function publishHudBinding(
   cwd: string,
   approvalNeeded: boolean = false,
   likelyInterrupted: boolean = false,
-  codexExited: boolean = false
+  codexExited: boolean = false,
+  freshPrompt: boolean = false
 ): Promise<void> {
   if (!tmuxSession) {
     return Promise.resolve();
@@ -126,6 +136,7 @@ export function publishHudBinding(
         ...(approvalNeeded ? { approvalNeeded: true } : {}),
         ...(likelyInterrupted ? { likelyInterrupted: true } : {}),
         ...(codexExited ? { codexExited: true } : {}),
+        ...(freshPrompt ? { freshPrompt: true } : {}),
       }
     : null;
   const value = payload
@@ -156,6 +167,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
       approvalNeeded,
       likelyInterrupted,
       codexExited,
+      freshPrompt,
     } = parsed as Record<string, unknown>;
     if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
       return null;
@@ -173,6 +185,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
       ...(approvalNeeded === true ? { approvalNeeded: true } : {}),
       ...(likelyInterrupted === true ? { likelyInterrupted: true } : {}),
       ...(codexExited === true ? { codexExited: true } : {}),
+      ...(freshPrompt === true ? { freshPrompt: true } : {}),
     };
   } catch {
     // A HUD from a different build, or a hand-edited option.

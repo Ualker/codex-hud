@@ -190,6 +190,11 @@ function shellFunctionEnd(command: string, start: number): number | undefined {
   return undefined;
 }
 
+interface PendingHeredoc {
+  delimiter: string;
+  stripTabs: boolean;
+}
+
 /** Split on top-level `&&`, `||`, `|`, `;` while honoring quotes. */
 function splitTopLevel(command: string): TopLevelSplit {
   const segments: string[] = [];
@@ -201,10 +206,32 @@ function splitTopLevel(command: string): TopLevelSplit {
   // `x=$(shasum … | awk …)` into segments whose "programs" were the flags
   // after the assignment prefix, and the pane showed `-a | awk ; -f`.
   let substitutionDepth = 0;
+  // Heredocs announced on the current line; their bodies start at the next
+  // top-level newline. Body lines are data, not commands — splitting them on
+  // newlines minted fake heads (`cat <<EOF …` showed `cat ; hello ; EOF`)
+  // and spent the segment budget that later real commands needed.
+  const pendingHeredocs: PendingHeredoc[] = [];
+  let heredoc: PendingHeredoc | null = null;
+  let heredocLine = '';
 
   for (let index = 0; index < command.length; index++) {
     const char = command[index];
     const next = command[index + 1];
+
+    if (heredoc) {
+      if (char === '\n') {
+        const line = heredoc.stripTabs
+          ? heredocLine.replace(/^\t+/, '')
+          : heredocLine;
+        if (line === heredoc.delimiter) {
+          heredoc = pendingHeredocs.shift() ?? null;
+        }
+        heredocLine = '';
+      } else {
+        heredocLine += char;
+      }
+      continue;
+    }
 
     if (quote) {
       current += char;
@@ -251,6 +278,48 @@ function splitTopLevel(command: string): TopLevelSplit {
       index++;
       continue;
     }
+    // `<<WORD` announces a heredoc whose body runs until a line reading WORD.
+    // `<<<` here-strings stay inline and need no handling.
+    if (
+      substitutionDepth === 0 &&
+      char === '<' &&
+      next === '<' &&
+      command[index + 2] !== '<'
+    ) {
+      let cursor = index + 2;
+      let stripTabs = false;
+      if (command[cursor] === '-') {
+        stripTabs = true;
+        cursor++;
+      }
+      while (command[cursor] === ' ' || command[cursor] === '\t') {
+        cursor++;
+      }
+      let delimiter = '';
+      const quoteChar = command[cursor];
+      if (quoteChar === "'" || quoteChar === '"') {
+        const close = command.indexOf(quoteChar, cursor + 1);
+        if (close > cursor) {
+          delimiter = command.slice(cursor + 1, close);
+          cursor = close + 1;
+        }
+      } else {
+        while (
+          cursor < command.length &&
+          /[^\s<>|&;()]/.test(command[cursor])
+        ) {
+          delimiter += command[cursor++];
+        }
+        // `<<\EOF` quotes the delimiter; the closing line still reads EOF.
+        delimiter = delimiter.replace(/^\\/, '');
+      }
+      if (delimiter) {
+        pendingHeredocs.push({ delimiter, stripTabs });
+        current += command.slice(index, cursor);
+        index = cursor - 1;
+        continue;
+      }
+    }
     if (char === ')' && substitutionDepth > 0) {
       substitutionDepth--;
       current += char;
@@ -273,11 +342,16 @@ function splitTopLevel(command: string): TopLevelSplit {
       current = '';
       continue;
     }
-    // An unquoted newline separates commands just like `;`.
+    // An unquoted newline separates commands just like `;` — unless heredocs
+    // are pending, in which case the following lines are their bodies.
     if (substitutionDepth === 0 && char === '\n') {
       segments.push(current);
       separators.push(';');
       current = '';
+      if (pendingHeredocs.length > 0) {
+        heredoc = pendingHeredocs.shift() ?? null;
+        heredocLine = '';
+      }
       continue;
     }
     current += char;
@@ -307,6 +381,22 @@ function programName(token: string): string {
     return '';
   }
   return baseName(cleaned);
+}
+
+/**
+ * Number of tokens a redirection occupies starting at `index`; 0 when the
+ * token is not a redirection. A bare operator (`>`, `2>`, `<<`) carries its
+ * target in the following token; a fused one (`>out`, `<<EOF`, `2>&1`) is
+ * self-contained. Script scans need this so `python3 <<PY` reads as the
+ * interpreter alone instead of adopting `<<PY` — or a redirect target — as
+ * its script name.
+ */
+function redirectionSpan(tokens: string[], index: number): number {
+  const token = tokens[index];
+  if (!token || !/^[\d&]*[<>]/.test(token)) {
+    return 0;
+  }
+  return /^[\d&]*(?:<{1,3}|>{1,2}|<>|>\|)[|&]?$/.test(token) ? 2 : 1;
 }
 
 function segmentHead(segment: string, depth: number): string | undefined {
@@ -391,11 +481,21 @@ function segmentHead(segment: string, depth: number): string | undefined {
     if (SHELL_NAMES.has(lowerName)) {
       let optionEnd = index + 1;
       let hasCommandFlag = false;
-      while (optionEnd < tokens.length && tokens[optionEnd].startsWith('-')) {
-        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(tokens[optionEnd])) {
-          hasCommandFlag = true;
+      while (optionEnd < tokens.length) {
+        const option = tokens[optionEnd];
+        if (option.startsWith('-')) {
+          if (/^-[A-Za-z]*c[A-Za-z]*$/.test(option)) {
+            hasCommandFlag = true;
+          }
+          optionEnd++;
+          continue;
         }
-        optionEnd++;
+        const span = redirectionSpan(tokens, optionEnd);
+        if (span > 0) {
+          optionEnd += span;
+          continue;
+        }
+        break;
       }
       const nextToken = tokens[optionEnd];
       if (nextToken === undefined) {
@@ -437,11 +537,18 @@ function segmentHead(segment: string, depth: number): string | undefined {
 
     if (SCRIPT_INTERPRETERS.has(lowerName)) {
       let scriptIndex = index + 1;
-      while (
-        scriptIndex < tokens.length &&
-        tokens[scriptIndex].startsWith('-')
-      ) {
-        scriptIndex++;
+      while (scriptIndex < tokens.length) {
+        const candidate = tokens[scriptIndex];
+        if (candidate.startsWith('-')) {
+          scriptIndex++;
+          continue;
+        }
+        const span = redirectionSpan(tokens, scriptIndex);
+        if (span > 0) {
+          scriptIndex += span;
+          continue;
+        }
+        break;
       }
       const script = tokens[scriptIndex];
       return script ? `${name} ${baseName(script)}` : name;

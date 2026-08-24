@@ -203,6 +203,25 @@ function stringValue(value: unknown): string | undefined {
 }
 
 /**
+ * codex-cli 0.149.1 dropped the sandbox keys from `thread_settings_applied`
+ * in favor of `permission_profile` (measured live: the payload carries
+ * neither `sandbox_mode` nor `sandbox_policy`), so a mid-session `/approvals`
+ * switch went dark until the next turn_context. `disabled` is the profile
+ * word for "no restrictions" — turn_context pairs it with
+ * `sandbox_policy: danger-full-access`; any other profile type is shown in
+ * codex's own words rather than kept stale.
+ */
+function sandboxModeFromPermissionProfile(
+  profile: { type?: string } | undefined
+): string | undefined {
+  const type = stringValue(profile?.type);
+  if (!type) {
+    return undefined;
+  }
+  return type === 'disabled' ? 'danger-full-access' : type;
+}
+
+/**
  * `CommandExecution.cwd` is a `file://` URL; every other path the HUD handles
  * is a plain filesystem path, so it is normalized on the way in.
  */
@@ -1733,7 +1752,9 @@ export async function parseRolloutFile(
           session.approvalPolicy = payload.approval_policy;
         }
       }
-      const sandboxMode = payload.sandbox_policy?.type;
+      const sandboxMode =
+        payload.sandbox_policy?.type ??
+        sandboxModeFromPermissionProfile(payload.permission_profile);
       if (sandboxMode !== undefined) {
         sessionSandboxMode = sandboxMode;
         if (session) {
@@ -1953,7 +1974,8 @@ export async function parseRolloutFile(
       );
       const settingsSandboxMode =
         stringValue(threadSettings?.sandbox_mode) ??
-        stringValue(threadSettings?.sandbox_policy?.type);
+        stringValue(threadSettings?.sandbox_policy?.type) ??
+        sandboxModeFromPermissionProfile(threadSettings?.permission_profile);
 
       if (settingsModel) {
         sessionModel = settingsModel;

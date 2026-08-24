@@ -127,6 +127,99 @@ assert.equal(
   'danger-full-access'
 );
 
+// codex-cli 0.149.1 dropped the sandbox keys from thread_settings_applied:
+// the live payload carries `permission_profile` only. Without the mapping, a
+// mid-session /approvals switch updated the Approval cell while the sandbox
+// badge stayed stale until the next turn_context.
+fs.appendFileSync(rolloutPath, `${JSON.stringify({
+  timestamp: '2026-04-09T14:18:09.000Z',
+  type: 'event_msg',
+  payload: {
+    type: 'thread_settings_applied',
+    thread_settings: {
+      approval_policy: 'on-request',
+      permission_profile: { type: 'workspace-limited' },
+    },
+  },
+})}\n`, 'utf8');
+const profileOnlySettings = await parser.parse();
+assert.equal(profileOnlySettings?.session?.approvalPolicy, 'on-request');
+assert.equal(
+  profileOnlySettings?.session?.sandboxMode,
+  'workspace-limited',
+  'an unmapped profile type is shown in codex\'s own words, never kept stale'
+);
+
+fs.appendFileSync(rolloutPath, `${JSON.stringify({
+  timestamp: '2026-04-09T14:18:10.000Z',
+  type: 'event_msg',
+  payload: {
+    type: 'thread_settings_applied',
+    thread_settings: {
+      approval_policy: 'never',
+      permission_profile: { type: 'disabled' },
+    },
+  },
+})}\n`, 'utf8');
+const disabledProfileSettings = await parser.parse();
+assert.equal(
+  disabledProfileSettings?.session?.sandboxMode,
+  'danger-full-access',
+  'profile `disabled` is the 0.149 word for no restrictions'
+);
+
+// When both vocabularies appear, the native sandbox one stays authoritative.
+fs.appendFileSync(rolloutPath, `${JSON.stringify({
+  timestamp: '2026-04-09T14:18:11.000Z',
+  type: 'event_msg',
+  payload: {
+    type: 'thread_settings_applied',
+    thread_settings: {
+      sandbox_policy: { type: 'workspace-write' },
+      permission_profile: { type: 'disabled' },
+    },
+  },
+})}\n`, 'utf8');
+const bothVocabularies = await parser.parse();
+assert.equal(bothVocabularies?.session?.sandboxMode, 'workspace-write');
+
+// turn_context in 0.149.1 still carries both; a future record with only the
+// profile keeps the sandbox truth flowing.
+{
+  const profileTurnContext = writeRollout([
+    {
+      timestamp: '2026-04-09T14:20:00.000Z',
+      type: 'session_meta',
+      payload: {
+        id: '019d7295-3ef8-7292-a039-fdf7ecd4f54f',
+        timestamp: '2026-04-09T14:20:00.000Z',
+        cwd: '/local/ycfeng/codex-hud',
+        originator: 'codex-tui',
+        cli_version: '0.149.1',
+        source: 'cli',
+        model_provider: 'openai',
+      },
+    },
+    {
+      timestamp: '2026-04-09T14:20:01.000Z',
+      type: 'turn_context',
+      payload: {
+        turn_id: '019d729b-4e3d-75c0-a1c7-46beee7d0e22',
+        approval_policy: 'never',
+        permission_profile: { type: 'disabled' },
+        model: 'gpt-5.6-sol',
+      },
+    },
+  ]);
+  const { result: profileResult } = await parseRolloutFile(
+    profileTurnContext,
+    0,
+    5
+  );
+  assert.equal(profileResult.session?.sandboxMode, 'danger-full-access');
+  assert.equal(profileResult.session?.approvalPolicy, 'never');
+}
+
 fs.appendFileSync(rolloutPath, `${JSON.stringify({
   timestamp: '2026-04-09T14:18:08.000Z',
   type: 'response_item',

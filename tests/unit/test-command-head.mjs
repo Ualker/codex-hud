@@ -98,6 +98,23 @@ const cases = [
   ['x=$((1+2)); echo done', 'echo'],
   // A flag is never a program name, wherever segment splitting leaves it.
   ['-a | awk', 'awk'],
+  // Heredoc bodies are data. Splitting them on newlines minted fake heads
+  // (`import`, `EOF`) and spent the segment budget real commands needed —
+  // measured live as `python3 <<PY ; import ; from …`.
+  ['python3 <<PY\nimport os\nfrom pathlib import Path\nprint(1)\nPY', 'python3'],
+  ['cat <<EOF > /tmp/x\nhello world\nEOF', 'cat'],
+  ["python3 - <<'PY'\nimport sys\nPY", 'python3'],
+  ['cat <<-EOF\n\tindented\nEOF', 'cat'],
+  // The heredoc body starts after the full command line; `&&` still splits.
+  ['python3 <<PY && echo done\nimport x\nPY', 'python3 && echo'],
+  // After the closing delimiter, later lines are commands again.
+  ['cat <<EOF\nbody line\nEOF\ngit status', 'cat ; git status'],
+  // Two heredocs on one line queue two bodies.
+  ['cat <<A <<B\nfirst\nA\nsecond\nB\necho ok', 'cat ; echo'],
+  // An unterminated body swallows to the end instead of minting heads.
+  ['python3 <<PY\nimport never_closed', 'python3'],
+  // A here-string stays inline and keeps following commands visible.
+  ['grep -c x <<< "$data" && echo done', 'grep && echo'],
 ];
 
 // Whatever a head contains reaches the pane verbatim, so no control character

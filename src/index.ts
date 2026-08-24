@@ -37,6 +37,7 @@ import { QuotaTrendTracker } from './collectors/quota-trend.js';
 import { ApprovalDetector } from './collectors/approval-detector.js';
 import { StallDetector } from './collectors/stall-detector.js';
 import { CodexLivenessProbe } from './collectors/codex-liveness.js';
+import { extractCodexCliPolicy } from './collectors/runtime-hooks.js';
 import { FreshPromptDetector } from './collectors/fresh-prompt-detector.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
@@ -562,6 +563,9 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       lastActivityAt:
         result.lastEventTime ?? result.turnActivity?.lastActivityAt,
       contextUsage,
+      // The owning HUD saw a fresh `/new` prompt over this binding: the
+      // row's state describes the previous session until the first message.
+      ...(binding?.freshPrompt === true ? { freshPrompt: true } : {}),
     });
   }
 
@@ -614,7 +618,8 @@ async function publishCurrentHudBinding(): Promise<void> {
     HUD_CWD,
     approvalDetector.isApprovalNeeded(),
     stallDetector.isLikelyInterrupted(),
-    codexLiveness.isCodexGone()
+    codexLiveness.isCodexGone(),
+    freshPromptDetector.isPaneOnFreshSession()
   );
 }
 
@@ -627,6 +632,12 @@ async function publishCurrentHudBinding(): Promise<void> {
 async function refreshPaneDetectors(): Promise<void> {
   const rolloutData = rolloutParser.getCached();
   const runtimePolicy = rolloutData?.session?.approvalPolicy;
+  // Launch flags outrank the config file; the liveness capture is the only
+  // witness for them while the session has no records.
+  const codexCommand = codexLiveness.getCodexCommand();
+  const cliApprovalPolicy = codexCommand
+    ? extractCodexCliPolicy(codexCommand).approvalPolicy
+    : undefined;
   // A complete state scan makes the config fallback safe even on a bounded
   // history: absence of a runtime policy record is then a fact, not a gap.
   const staticPolicy =
@@ -639,7 +650,7 @@ async function refreshPaneDetectors(): Promise<void> {
         turnActivity: rolloutData?.turnActivity,
         toolActivity: rolloutData?.toolActivity,
         lastEventAt: rolloutData?.lastEventTime,
-        approvalPolicy: runtimePolicy ?? staticPolicy,
+        approvalPolicy: runtimePolicy ?? cliApprovalPolicy ?? staticPolicy,
       }),
       stallDetector.refresh({
         turnActivity: rolloutData?.turnActivity,
@@ -822,6 +833,17 @@ function collectData(): HudData {
     };
   }
 
+  // The pane's live invocation carries launch flags the config file cannot
+  // see; while the bound session has no records they are the only truth.
+  const codexCommand = codexLiveness.getCodexCommand();
+  const cliPolicy = codexCommand
+    ? extractCodexCliPolicy(codexCommand)
+    : undefined;
+  const paneCliPolicy =
+    cliPolicy && (cliPolicy.approvalPolicy || cliPolicy.sandboxMode)
+      ? cliPolicy
+      : undefined;
+
   return {
     ...baseData,
     session: boundSession,
@@ -837,6 +859,8 @@ function collectData(): HudData {
     ...(freshPromptDetector.isPaneOnFreshSession()
       ? { paneFreshSession: true }
       : {}),
+    ...(paneCliPolicy ? { paneCliPolicy } : {}),
+    ...(session && !rolloutData ? { boundWithoutRollout: true } : {}),
     partialHistory: rolloutData?.partialHistory,
     runtimeStateComplete: rolloutData?.runtimeStateComplete,
     contextUsage,

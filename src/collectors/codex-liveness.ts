@@ -75,13 +75,18 @@ export function isLivenessProbeCandidate(
 }
 
 /**
- * Whether a `ps -axo pid=,ppid=,command=` table contains a Codex invocation
- * in the descendant tree of `rootPid`. Exported so the walk is provable
- * against the live-calibrated process shape (shell -> node .../bin/codex).
+ * The Codex invocation found in the descendant tree of `rootPid`, or
+ * undefined when there is none. Exported so the walk is provable against the
+ * live-calibrated process shape (shell -> node .../bin/codex). The command
+ * line itself is the only witness for launch flags (`--yolo`,
+ * `--ask-for-approval`) while a fresh 0.149 session has written no rollout.
  */
-export function treeContainsCodex(psOutput: string, rootPid: string): boolean {
+export function codexCommandInTree(
+  psOutput: string,
+  rootPid: string
+): string | undefined {
   if (!/^\d+$/.test(rootPid)) {
-    return false;
+    return undefined;
   }
   const childrenByParent = new Map<string, string[]>();
   const commandsByPid = new Map<string, string>();
@@ -106,16 +111,28 @@ export function treeContainsCodex(psOutput: string, rootPid: string): boolean {
     seen.add(pid);
     const command = commandsByPid.get(pid);
     if (command && isCodexProcessCommand(command)) {
-      return true;
+      return command;
     }
     queue.push(...(childrenByParent.get(pid) ?? []));
   }
-  return false;
+  return undefined;
 }
 
-type PaneProcessProbe = (pane: string) => Promise<boolean | null>;
+export function treeContainsCodex(psOutput: string, rootPid: string): boolean {
+  return codexCommandInTree(psOutput, rootPid) !== undefined;
+}
 
-async function probePaneForCodex(pane: string): Promise<boolean | null> {
+export interface PaneCodexProbeResult {
+  alive: boolean;
+  /** The matched invocation's `ps` command line; set only when alive. */
+  command?: string;
+}
+
+type PaneProcessProbe = (pane: string) => Promise<PaneCodexProbeResult | null>;
+
+async function probePaneForCodex(
+  pane: string
+): Promise<PaneCodexProbeResult | null> {
   const run = (
     file: string,
     args: readonly string[]
@@ -145,7 +162,10 @@ async function probePaneForCodex(pane: string): Promise<boolean | null> {
   if (table === null) {
     return null;
   }
-  return treeContainsCodex(table, panePid);
+  const command = codexCommandInTree(table, panePid);
+  return command === undefined
+    ? { alive: false }
+    : { alive: true, command };
 }
 
 export interface CodexLivenessOptions {
@@ -161,6 +181,7 @@ export class CodexLivenessProbe {
   private readonly eventGraceMs: number;
   private readonly probePane: PaneProcessProbe;
   private gone = false;
+  private codexCommand: string | undefined;
   private lastProbeMs = 0;
   private generation = 0;
   private inFlight = false;
@@ -177,9 +198,19 @@ export class CodexLivenessProbe {
     return this.gone;
   }
 
+  /**
+   * The pane's Codex invocation as of the last successful probe; undefined
+   * until one runs or after Codex is found gone. Consumers read launch flags
+   * off it — the only policy witness while no rollout exists.
+   */
+  getCodexCommand(): string | undefined {
+    return this.codexCommand;
+  }
+
   /** A rebind changes whose pane the answer describes. */
   reset(): void {
     this.gone = false;
+    this.codexCommand = undefined;
     this.lastProbeMs = 0;
     this.generation++;
   }
@@ -209,22 +240,24 @@ export class CodexLivenessProbe {
     this.lastProbeMs = nowMs;
     this.inFlight = true;
     const generationAtStart = this.generation;
-    let alive: boolean | null;
+    let probed: PaneCodexProbeResult | null;
     try {
-      alive = await this.probePane(this.mainPane);
+      probed = await this.probePane(this.mainPane);
     } catch {
-      alive = null;
+      probed = null;
     } finally {
       this.inFlight = false;
     }
-    if (generationAtStart !== this.generation || alive === null) {
+    if (generationAtStart !== this.generation || probed === null) {
       return false;
     }
-    const gone = !alive;
-    if (gone === this.gone) {
+    const gone = !probed.alive;
+    const command = probed.alive ? probed.command : undefined;
+    if (gone === this.gone && command === this.codexCommand) {
       return false;
     }
     this.gone = gone;
+    this.codexCommand = command;
     return true;
   }
 }
