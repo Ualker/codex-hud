@@ -38,13 +38,34 @@ export function renderEnvironmentLine(
   // whose file provably contained no thread_settings record.
   const partialRuntime =
     data.partialHistory === true && data.runtimeStateComplete !== true;
-  const runtimeSandbox = data.session?.sandboxMode;
-  const runtimeApprovalPolicy = data.session?.approvalPolicy;
+  // The pane's live launch flags are the second-best witness: they override
+  // the config file, so once the session's own records exist those win, but
+  // with no records at all the flags are the truth and the config is exactly
+  // what they replaced. A fresh session at the prompt runs the flags too —
+  // the bound records describe the previous session there.
+  const cliPolicy = data.paneCliPolicy;
+  const sessionSandbox = data.session?.sandboxMode;
+  const sessionApprovalPolicy = data.session?.approvalPolicy;
+  const runtimeSandbox =
+    data.paneFreshSession === true
+      ? cliPolicy?.sandboxMode ?? sessionSandbox
+      : sessionSandbox ?? cliPolicy?.sandboxMode;
+  const runtimeApprovalPolicy =
+    data.paneFreshSession === true
+      ? cliPolicy?.approvalPolicy ?? sessionApprovalPolicy
+      : sessionApprovalPolicy ?? cliPolicy?.approvalPolicy;
+  // A bound session with no rollout yet (0.149 defers it to the first
+  // message) has no records for flags to have reached; trusting config there
+  // showed `Approval: ask for approval | Sandbox: workspace-write` under a
+  // live `--yolo` process. Only Codex's own exit reopens the config fallback.
+  const configBlind =
+    partialRuntime ||
+    (data.boundWithoutRollout === true && data.codexExited !== true);
   const sandbox =
-    runtimeSandbox ?? (partialRuntime ? undefined : data.config.sandbox_mode);
+    runtimeSandbox ?? (configBlind ? undefined : data.config.sandbox_mode);
   const approvalPolicy =
     runtimeApprovalPolicy ??
-    (partialRuntime ? undefined : data.config.approval_policy);
+    (configBlind ? undefined : data.config.approval_policy);
   const fullAccess = sandbox === 'danger-full-access';
   const badgePart = fullAccess ? theme.error('[FULL ACCESS]') : null;
 
@@ -55,7 +76,7 @@ export function renderEnvironmentLine(
   // badge implies are dropped and only a diverging approval policy remains
   // visible.
   const approvalUncertain =
-    partialRuntime &&
+    configBlind &&
     (runtimeApprovalPolicy === undefined ||
       (runtimeApprovalPolicy === 'never' && runtimeSandbox === undefined));
   const approvalDisplay = approvalUncertain
@@ -69,7 +90,7 @@ export function renderEnvironmentLine(
       ? colors.dim('Approval: ') + theme.value(approvalDisplay)
       : null;
 
-  const sandboxPart = !fullAccess && (sandbox || partialRuntime)
+  const sandboxPart = !fullAccess && (sandbox || configBlind)
     ? colors.dim('Sandbox: ') +
       (sandbox === undefined
         ? colors.dim('?')

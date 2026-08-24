@@ -192,6 +192,133 @@ assert.match(
 );
 assert.doesNotMatch(compressedUnknownLines[0], /\[FULL ACCESS\]/);
 
+// ---- the no-rollout world (codex 0.149) -----------------------------------
+// A bound session can sit for hours with no rollout written; the launch flags
+// then outrank the config file they override. Measured live: a `--yolo` pane
+// whose HUD read `Approval: ask for approval | Sandbox: workspace-write` off
+// config — the opposite of what the process would do.
+
+const flaggedConfig = {
+  ...baseData.config,
+  approval_policy: 'on-request',
+  sandbox_mode: 'workspace-write',
+};
+const metadataOnlySession = {
+  id: '01a03266-f1aa-7b90-b15e-96a8d7d0a897',
+  startTime: new Date('2026-08-24T06:13:22Z'),
+  cwd: '/tmp/new-topic-research',
+};
+
+const yoloNoRolloutLines = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  session: metadataOnlySession,
+  boundWithoutRollout: true,
+  paneCliPolicy: { approvalPolicy: 'never', sandboxMode: 'danger-full-access' },
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+assert.ok(
+  yoloNoRolloutLines.some((line) => line.startsWith('[FULL ACCESS]')),
+  'launch flags are the truth while the session has no records'
+);
+assert.ok(
+  !yoloNoRolloutLines.some((line) => /ask for approval|workspace-write/.test(line)),
+  'the config the flags override must not be presented as session fact'
+);
+
+const blindNoRolloutLines = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  session: metadataOnlySession,
+  boundWithoutRollout: true,
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+const blindEnvironmentLine = blindNoRolloutLines.find((line) =>
+  line.includes('Approval:')
+);
+assert.ok(blindEnvironmentLine);
+assert.match(blindEnvironmentLine, /Approval: \?/);
+assert.match(blindEnvironmentLine, /Sandbox: \?/);
+assert.doesNotMatch(
+  blindEnvironmentLine,
+  /ask for approval|workspace-write/,
+  'no records and no readable flags is unknown, never config'
+);
+const blindCompressed = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  session: metadataOnlySession,
+  boundWithoutRollout: true,
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+  maxLines: 1,
+}).map(stripAnsi);
+assert.match(blindCompressed[0], /\[ACCESS \?\]/);
+
+// Codex's own exit reopens the config fallback: nothing is running for the
+// flags to describe.
+const exitedNoRolloutLines = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  session: metadataOnlySession,
+  boundWithoutRollout: true,
+  codexExited: true,
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+const exitedEnvironmentLine = exitedNoRolloutLines.find((line) =>
+  line.includes('Approval:')
+);
+assert.ok(exitedEnvironmentLine);
+assert.match(exitedEnvironmentLine, /Approval: ask for approval/);
+assert.match(exitedEnvironmentLine, /Sandbox: workspace-write/);
+
+// A fresh session at the prompt runs the flags; the bound records describe
+// the previous session there. Without the fresh mark, records still win.
+const freshPaneLines = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  paneFreshSession: true,
+  paneCliPolicy: { approvalPolicy: 'never', sandboxMode: 'danger-full-access' },
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+assert.ok(
+  freshPaneLines.some((line) => line.startsWith('[FULL ACCESS]')),
+  'the fresh prompt runs the launch flags, not the previous session\'s policy'
+);
+const samePaneLines = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  paneCliPolicy: { approvalPolicy: 'never', sandboxMode: 'danger-full-access' },
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+const samePaneEnvironment = samePaneLines.find((line) =>
+  line.includes('Approval:')
+);
+assert.ok(samePaneEnvironment);
+assert.match(
+  samePaneEnvironment,
+  /Approval: ask for approval/,
+  'a bound session with records follows its own records, not the launch flags'
+);
+assert.match(samePaneEnvironment, /Sandbox: workspace-write/);
+
 const unknownEffortSession = {
   ...baseData.session,
   model: 'gpt-5.6-session',

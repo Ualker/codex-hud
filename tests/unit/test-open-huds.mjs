@@ -75,13 +75,20 @@ try {
             likelyInterrupted: true,
             codexExited: true,
           }),
+          encode({
+            tmuxSession: 'codex-hud-d',
+            sessionId: 'session-d',
+            rolloutPath: '/tmp/d.jsonl',
+            cwd: '/work/d',
+            freshPrompt: true,
+          }),
           '', // a tmux session with no HUD
         ]),
         listBody
       )
     );
 
-    assert.equal(parsed.length, 3, 'sessions with no HUD binding are skipped');
+    assert.equal(parsed.length, 4, 'sessions with no HUD binding are skipped');
     assert.deepEqual(parsed[0], {
       tmuxSession: 'codex-hud-a',
       sessionId: 'session-a',
@@ -104,6 +111,17 @@ try {
         codexExited: true,
       },
       'confirmed pane findings travel with the binding'
+    );
+    assert.deepEqual(
+      parsed[3],
+      {
+        tmuxSession: 'codex-hud-d',
+        sessionId: 'session-d',
+        rolloutPath: '/tmp/d.jsonl',
+        cwd: '/work/d',
+        freshPrompt: true,
+      },
+      'a confirmed fresh prompt travels with the binding'
     );
   }
 
@@ -186,7 +204,7 @@ try {
     const log = path.join(tempRoot, 'publish.log');
     const publishBody = `
       const { publishHudBinding } = await import(${JSON.stringify(modulePath)});
-      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a', true, true, true);
+      await publishHudBinding('codex-hud-a', 'session-a', '/tmp/a.jsonl', '/work/a', true, true, true, true);
       await publishHudBinding('codex-hud-a', null, null, '/work/a');
       process.stdout.write('ok');
     `;
@@ -209,6 +227,7 @@ try {
         approvalNeeded: true,
         likelyInterrupted: true,
         codexExited: true,
+        freshPrompt: true,
       },
       'every field travels together in one write'
     );
