@@ -816,7 +816,24 @@ export function normalizeCustomToolName(
   }
 
   const invocations = findCustomToolInvocations(input);
-  return invocations.length === 1 ? invocations[0].name : toolName;
+  return invocations.length === 1
+    ? displayCustomToolName(invocations[0].name)
+    : toolName;
+}
+
+/**
+ * The display name for a wrapped invocation. `exec_command` is the one inner
+ * tool that means the same thing as the `exec` wrapper — a shell command — so
+ * surfacing it split the tool row into `exec` and `exec_command` groups for
+ * one kind of activity (0.150 models batch commands into scripts, putting
+ * both shapes side by side). Concrete names other than `exec_command`
+ * (web_search, update_plan, view_image) still surface: those say something
+ * `exec` does not.
+ */
+function displayCustomToolName(invocationName: string): string {
+  return invocationName.toLowerCase() === 'exec_command'
+    ? 'exec'
+    : invocationName;
 }
 
 function analyzeToolCall(payload: ResponseItemPayload): {
@@ -907,14 +924,14 @@ function analyzeToolCall(payload: ResponseItemPayload): {
     const patch = findJsStringContaining(source, '*** Begin Patch');
     if (patch) {
       return {
-        name: invocation.name,
+        name: displayCustomToolName(invocation.name),
         details: summarizeToolArguments(invocation.name, { patch }),
         parsedArguments: { patch },
       };
     }
   }
   return {
-    name: invocation.name,
+    name: displayCustomToolName(invocation.name),
     details,
     parsedArguments: parsedArgument,
   };

@@ -803,7 +803,7 @@ function collectData(): HudData {
   // every dated reading, not just whichever snapshot wins the display.
   quotaTrend.observe(rolloutData?.rateLimits, rolloutData?.rateLimitsAt);
   quotaTrend.observe(accountLimits?.limits, accountLimits?.observedAt);
-  const quotaProjection = quotaTrend.project(rateLimits) ?? undefined;
+  const quotaProjections = quotaTrend.projectAll(rateLimits) ?? undefined;
   const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
   const turnActivity = withDetectorPhases(
     rolloutData?.turnActivity,
@@ -828,7 +828,7 @@ function collectData(): HudData {
       turnActivity,
       contextUsage,
       rateLimits,
-      quotaProjection,
+      quotaProjections,
       ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),
     };
   }
@@ -840,7 +840,12 @@ function collectData(): HudData {
     ? extractCodexCliPolicy(codexCommand)
     : undefined;
   const paneCliPolicy =
-    cliPolicy && (cliPolicy.approvalPolicy || cliPolicy.sandboxMode)
+    cliPolicy &&
+    (cliPolicy.approvalPolicy ||
+      cliPolicy.sandboxMode ||
+      // An exhaustive walk that found nothing is itself information: it
+      // certifies the config un-overridden for the no-rollout display.
+      cliPolicy.exhaustive)
       ? cliPolicy
       : undefined;
 
@@ -852,7 +857,7 @@ function collectData(): HudData {
     planProgress: rolloutData?.planProgress ?? undefined,
     tokenUsage: rolloutData?.tokenUsage ?? undefined,
     rateLimits,
-    quotaProjection,
+    quotaProjections,
     turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
     ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),

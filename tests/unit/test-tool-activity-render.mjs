@@ -96,6 +96,36 @@ assert.equal(
   '↻ exec_command: npm test @codex-hud 30s session 4242'
 );
 
+// The workdir tag earns its slot only when it differs from the session cwd:
+// codex sends a workdir on every exec, and nearly every one is the session's
+// own directory — measured live as a standing `@prj` in the detailed slot.
+const renderWithCwd = (sessionCwd) =>
+  stripAnsi(
+    renderToolsLine(
+      activity([detailedError]),
+      146,
+      2_500,
+      false,
+      false,
+      sessionCwd
+    ) ?? ''
+  );
+assert.equal(
+  renderWithCwd('/tmp/repo/codex-hud'),
+  '✗ exec_command: rg --files src 48ms exit 1',
+  'a workdir equal to the session cwd is a no-op and stays off the row'
+);
+assert.equal(
+  renderWithCwd('/tmp/repo/other'),
+  '✗ exec_command: rg --files src @codex-hud 48ms exit 1',
+  'a call that ran somewhere else keeps its tag'
+);
+assert.equal(
+  renderWithCwd('/tmp/repo/codex-hud/'),
+  '✗ exec_command: rg --files src 48ms exit 1',
+  'trailing slashes normalize away'
+);
+
 const running = call('exec-running', 'exec_command', 'running', {
   timestamp: new Date(1_000),
   summary: 'npm run build -- --watch',

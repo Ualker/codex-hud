@@ -11,6 +11,7 @@ import {
   icons,
   getSpinnerFrame,
   sanitizeTerminalText,
+  stripAnsi,
   truncate,
   truncateStart,
   truncateAnsi,
@@ -620,26 +621,35 @@ export function renderRateLimitLine(
   if (creditsExhausted) {
     parts.push(theme.error('credits: 0'));
   }
-  // The projected exhaustion, stated only while it precedes the reset — the
-  // only case where the pace changes what the user should do — and placed
-  // last so a narrow pane truncates the forecast before the facts.
-  const projection = data.quotaProjection;
-  const primary = limits?.primary;
-  if (
-    projection &&
-    primary != null &&
-    shownWindows.includes(primary) &&
-    (primary.used_percent ?? 0) >= PROJECTION_MIN_PERCENT &&
-    primary.resets_at !== undefined &&
-    Number.isFinite(primary.resets_at) &&
-    projection.exhaustsAtMs < primary.resets_at * 1000 &&
-    projection.exhaustsAtMs > nowMs
-  ) {
-    parts.push(
-      colors.dim(
-        `${icons.arrow} empty ${formatExhaustionEta(projection.exhaustsAtMs, nowMs)}`
-      )
-    );
+  // The projected exhaustions, stated only while they precede their own
+  // window's reset — the only case where the pace changes what the user
+  // should do — labeled by window so the 5h and weekly forecasts cannot be
+  // confused, and placed last so a narrow pane truncates the forecasts
+  // before the facts.
+  const projections = data.quotaProjections;
+  if (projections) {
+    for (const window of shownWindows) {
+      const windowMinutes = window.window_minutes;
+      if (windowMinutes === undefined || !Number.isFinite(windowMinutes)) {
+        continue;
+      }
+      const projection = projections[windowMinutes];
+      if (
+        !projection ||
+        (window.used_percent ?? 0) < PROJECTION_MIN_PERCENT ||
+        window.resets_at === undefined ||
+        !Number.isFinite(window.resets_at) ||
+        projection.exhaustsAtMs >= window.resets_at * 1000 ||
+        projection.exhaustsAtMs <= nowMs
+      ) {
+        continue;
+      }
+      parts.push(
+        colors.dim(
+          `${icons.arrow} ${formatRateWindow(windowMinutes)} empty ${formatExhaustionEta(projection.exhaustsAtMs, nowMs)}`
+        )
+      );
+    }
   }
   return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
 }
@@ -772,11 +782,30 @@ function toolCallHasDetail(call: ToolCall): boolean {
   );
 }
 
+/**
+ * Whether a call's workdir is the session's own cwd, after trailing-slash
+ * and separator normalization (the collector stores the value verbatim).
+ */
+function isSessionCwd(
+  workdir: string,
+  sessionCwd: string | undefined
+): boolean {
+  if (!sessionCwd) {
+    return false;
+  }
+  const normalize = (value: string): string => {
+    const cleaned = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    return cleaned === '' ? '/' : cleaned;
+  };
+  return normalize(workdir) === normalize(sessionCwd);
+}
+
 function renderToolCallDetail(
   call: ToolCall,
   maxWidth: number,
   nowMs: number,
-  paused: boolean = false
+  paused: boolean = false,
+  sessionCwd?: string
 ): string {
   const status = call.status === 'running' ? 'running' : presentationStatus(call);
   const icon = status === 'running'
@@ -807,7 +836,14 @@ function renderToolCallDetail(
       : executionTool
         ? executionDisplayHead(call)
         : call.target ?? call.summary;
-  const workdir = call.workdir ? `@${formatToolWorkdir(call.workdir)}` : undefined;
+  // The workdir tag earns its slot only when it says something: codex sends
+  // a workdir on every exec, and nearly every one is the session's own cwd,
+  // so an unconditional `@prj` stood in the row's most detailed slot as a
+  // no-op. Only a call that ran somewhere else keeps the tag.
+  const workdir =
+    call.workdir && !isSessionCwd(call.workdir, sessionCwd)
+      ? `@${formatToolWorkdir(call.workdir)}`
+      : undefined;
   const durationMs = call.status === 'running'
     ? Math.max(0, nowMs - call.timestamp.getTime())
     : call.result?.wallTimeMs ?? call.duration;
@@ -970,7 +1006,8 @@ export function renderToolsLine(
   width: number = Number.POSITIVE_INFINITY,
   nowMs: number = Date.now(),
   partialHistory: boolean = false,
-  paused: boolean = false
+  paused: boolean = false,
+  sessionCwd?: string
 ): string | null {
   if (toolDetailsMode() === 'off') {
     return null;
@@ -1027,22 +1064,42 @@ export function renderToolsLine(
     const finishedWidth = Number.isFinite(detailArea)
       ? Math.max(20, detailArea - currentWidth)
       : Number.POSITIVE_INFINITY;
-    parts.push(renderToolCallDetail(current, currentWidth, nowMs, paused));
-    parts.push(renderToolCallDetail(detailedFinished, finishedWidth, nowMs));
+    parts.push(
+      renderToolCallDetail(current, currentWidth, nowMs, paused, sessionCwd)
+    );
+    parts.push(
+      renderToolCallDetail(
+        detailedFinished,
+        finishedWidth,
+        nowMs,
+        false,
+        sessionCwd
+      )
+    );
   } else {
     if (current) {
       const totalReserve = totalPart ? visualLength(totalPart) + 3 : 0;
       const detailWidth = Number.isFinite(width)
         ? Math.max(20, Math.min(84, width - totalReserve))
         : Number.POSITIVE_INFINITY;
-      parts.push(renderToolCallDetail(current, detailWidth, nowMs, paused));
+      parts.push(
+        renderToolCallDetail(current, detailWidth, nowMs, paused, sessionCwd)
+      );
     }
     if (showDetailedFinished && detailedFinished) {
       const totalReserve = totalPart ? visualLength(totalPart) + 3 : 0;
       const detailWidth = Number.isFinite(width)
         ? Math.max(20, Math.min(84, width - totalReserve))
         : Number.POSITIVE_INFINITY;
-      parts.push(renderToolCallDetail(detailedFinished, detailWidth, nowMs));
+      parts.push(
+        renderToolCallDetail(
+          detailedFinished,
+          detailWidth,
+          nowMs,
+          false,
+          sessionCwd
+        )
+      );
     }
   }
 
@@ -1271,29 +1328,37 @@ export function renderTokenLine(
 
 export function renderSessionDetailLine(
   data: HudData,
-  width: number = Number.POSITIVE_INFINITY
+  width: number = Number.POSITIVE_INFINITY,
+  options: { dimStaleCells?: boolean } = {}
 ): string | null {
   // The session id is the only value on this row the user can act on:
   // `codex resume|fork|archive|delete|unarchive` all take the UUID. Abbreviated
   // to `019ff4e2…2ecc` it could be read but neither typed nor copied, so the
   // full id is shown whenever the row has room and the short form is kept only
   // as the narrow-pane fallback.
-  const full = buildSessionDetailParts(data, width, false);
+  const full = buildSessionDetailParts(data, width, false, options);
   if (full !== null) {
     return full;
   }
-  return buildSessionDetailParts(data, width, true);
+  return buildSessionDetailParts(data, width, true, options);
 }
 
 function buildSessionDetailParts(
   data: HudData,
   width: number,
-  abbreviateSessionId: boolean
+  abbreviateSessionId: boolean,
+  options: { dimStaleCells?: boolean } = {}
 ): string | null {
   const optionalParts: string[] = [];
 
   // Always show session info if we have a session
   const session = data.session;
+  // While a fresh `/new` prompt stands, Session/CLI/Provider describe the
+  // previous session — measured live as `CLI: 0.149.1` under a pane running
+  // v0.150.1 — so they recede with the other stale rows. The directory is
+  // the pane's own and keeps its color (and its link).
+  const staleCell = (part: string): string =>
+    options.dimStaleCells === true ? colors.dim(stripAnsi(part)) : part;
 
   // Show working directory
   const cwd = sanitizeTerminalText(
@@ -1324,27 +1389,28 @@ function buildSessionDetailParts(
   let sessionPart: string | undefined;
   if (session?.id) {
     const id = sanitizeTerminalText(session.id);
-    sessionPart =
+    sessionPart = staleCell(
       colors.dim('Session: ') +
-      theme.info(abbreviateSessionId ? formatSessionId(id) : id);
+        theme.info(abbreviateSessionId ? formatSessionId(id) : id)
+    );
     optionalParts.push(sessionPart);
   }
 
 
   // Show CLI version if available
   if (session?.cliVersion) {
-    optionalParts.push(
+    optionalParts.push(staleCell(
       colors.dim('CLI: ') +
       theme.value(sanitizeTerminalText(session.cliVersion))
-    );
+    ));
   }
-  
+
   // Show model provider if available
   if (session?.modelProvider) {
-    optionalParts.push(
+    optionalParts.push(staleCell(
       colors.dim('Provider: ') +
       theme.value(sanitizeTerminalText(session.modelProvider))
-    );
+    ));
   }
 
   if (optionalParts.length === 0) {

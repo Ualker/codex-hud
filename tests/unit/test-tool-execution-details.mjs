@@ -343,7 +343,7 @@ try {
   assert.equal(patch.target, undefined);
 
   const customExec = calls.call_custom_json_exec;
-  assert.equal(customExec.name, 'exec_command');
+  assert.equal(customExec.name, 'exec');
   assert.equal(customExec.summary, 'git status --short');
   assert.equal(customExec.target, 'git status');
   assert.equal(customExec.workdir, '/tmp/repo');

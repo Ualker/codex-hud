@@ -57,10 +57,15 @@ export function renderEnvironmentLine(
   // A bound session with no rollout yet (0.149 defers it to the first
   // message) has no records for flags to have reached; trusting config there
   // showed `Approval: ask for approval | Sandbox: workspace-write` under a
-  // live `--yolo` process. Only Codex's own exit reopens the config fallback.
+  // live `--yolo` process. Codex's own exit reopens the config fallback —
+  // and so does a captured command line walked to its end with no policy
+  // flag and no profile: that argv provably overrides nothing, so a plain
+  // launch no longer sits on `?` until its first message.
   const configBlind =
     partialRuntime ||
-    (data.boundWithoutRollout === true && data.codexExited !== true);
+    (data.boundWithoutRollout === true &&
+      data.codexExited !== true &&
+      cliPolicy?.exhaustive !== true);
   const sandbox =
     runtimeSandbox ?? (configBlind ? undefined : data.config.sandbox_mode);
   const approvalPolicy =

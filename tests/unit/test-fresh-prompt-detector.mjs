@@ -273,13 +273,27 @@ const render = (data) =>
       primary: {
         used_percent: 14,
         window_minutes: 10080,
-        resets_at: Math.floor((now + 6 * 24 * 3600_000) / 1000),
+        // Relative to the real clock: the renderer expires windows against
+        // Date.now(), so a resets_at pinned to the fixture epoch quietly
+        // expired two days after this test was written and took the quota
+        // cell with it.
+        resets_at: Math.floor((Date.now() + 6 * 24 * 3600_000) / 1000),
       },
       secondary: null,
     },
   };
   const dimmedFrame = renderHud(
-    hudData({ paneFreshSession: true, ...staleMetrics }),
+    hudData({
+      paneFreshSession: true,
+      ...staleMetrics,
+      session: {
+        id: '01a02279-adb0-7cb0-a401-1850b1b57692',
+        rolloutPath: '/tmp/x/rollout.jsonl',
+        startTime: at(-3600_000),
+        cwd: '/tmp/x',
+        cliVersion: '0.149.1',
+      },
+    }),
     { width: 146, showDetails: true, layout, maxLines: 12 }
   );
   const ctxRow = dimmedFrame.find((line) => stripAnsi(line).includes('Ctx: '));
@@ -304,6 +318,26 @@ const render = (data) =>
   assert.ok(toolsRow, 'the stale tool row still renders');
   assert.match(toolsRow, /^\x1b\[2m/, 'the stale tool history recedes to dim');
 
+  // Session/CLI/Provider describe the previous session — measured live as
+  // `CLI: 0.149.1` under a pane running v0.150.1 — and recede with it. The
+  // directory is the pane's own: it keeps its link, and with it its color.
+  const sessionRow = dimmedFrame.find((line) =>
+    stripAnsi(line).includes('Session: ')
+  );
+  assert.ok(sessionRow, 'the session detail row still renders');
+  assert.ok(
+    sessionRow.includes('\x1b[2mSession: 01a02279'),
+    'the stale session identity cell recedes to dim'
+  );
+  assert.ok(
+    sessionRow.includes('\x1b[2mCLI: 0.149.1'),
+    'the stale CLI version cell recedes to dim'
+  );
+  assert.ok(
+    sessionRow.includes('\x1b]8;;file://'),
+    'the directory cell keeps its link and its color'
+  );
+
   // Without the fresh mark the same data keeps its normal colors.
   const normalFrame = renderHud(hudData({ ...staleMetrics }), {
     width: 146,
@@ -316,6 +350,16 @@ const render = (data) =>
   );
   assert.ok(normalCtxRow);
   assert.doesNotMatch(normalCtxRow, /^\x1b\[2mCtx: /);
+  const normalSessionRow = normalFrame.find((line) =>
+    stripAnsi(line).includes('Session: ')
+  );
+  assert.ok(normalSessionRow);
+  // The label alone is always dim; the stale form is label AND value inside
+  // one dim run, with no color escape between them.
+  assert.ok(
+    !normalSessionRow.includes('\x1b[2mSession: 01a02279'),
+    'without the fresh mark the session id keeps its color'
+  );
 }
 
 console.log('test-fresh-prompt-detector: PASS');

@@ -311,7 +311,8 @@ function renderExpandedLayout(
     width,
     Date.now(),
     data.partialHistory,
-    data.turnActivity?.phase === 'awaiting-approval'
+    data.turnActivity?.phase === 'awaiting-approval',
+    data.session?.cwd ?? data.project.cwd
   );
   const toolsLine =
     staleSessionRows && rawToolsLine ? dimStaleRow(rawToolsLine) : rawToolsLine;
@@ -327,7 +328,9 @@ function renderExpandedLayout(
   const agentLines = renderAgentLines(data.agentActivity, width);
   const agentSummaryLine = renderAgentSummaryLine(data.agentActivity, width);
   const planLine = renderTodosLine(data.planProgress, width);
-  const sessionLine = renderSessionDetailLine(data, width);
+  const sessionLine = renderSessionDetailLine(data, width, {
+    dimStaleCells: staleSessionRows,
+  });
   // Nothing bound yet: say so instead of rendering three rows and letting the
   // blank remainder read as a broken HUD.
   const bindingHintLine = renderBindingHintLine(data, width);
@@ -352,7 +355,11 @@ function renderExpandedLayout(
   const accessUnknown =
     runtimeSandbox === undefined &&
     (runtimeFactsPartial ||
-      (data.boundWithoutRollout === true && data.codexExited !== true));
+      (data.boundWithoutRollout === true &&
+        data.codexExited !== true &&
+        // An exhaustively walked argv with no policy flag proves the config
+        // un-overridden; the badge may then trust it again.
+        data.paneCliPolicy?.exhaustive !== true));
   const fullAccess =
     runtimeSandbox === 'danger-full-access' ||
     (!accessUnknown &&
