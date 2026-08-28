@@ -26,7 +26,12 @@ try {
 
   assert.equal(
     normalizeCustomToolName('exec', singleInvocation),
-    'exec_command',
+    'exec',
+    'a nested exec_command means the same as the wrapper and keeps its name'
+  );
+  assert.equal(
+    normalizeCustomToolName('exec', 'await tools.web_search({ query: "x" });'),
+    'web_search',
     'one unambiguous nested invocation should use its concrete name'
   );
   assert.equal(
@@ -139,9 +144,8 @@ try {
   assert.equal(mixed.result.toolActivity.totalCalls, 4);
   assert.deepEqual(mixed.result.toolActivity.callsByType, {
     read: 1,
-    exec_command: 1,
     wait: 1,
-    exec: 1,
+    exec: 2,
   });
   assert.deepEqual(
     mixed.result.toolActivity.recentCalls.map(({ id, name, status, target }) => ({
@@ -155,7 +159,7 @@ try {
       // `{ cmd: "pwd" }` is a JavaScript object literal, not JSON. This used to
       // expect `undefined` because strict parsing threw on every such argument
       // and the tool row showed bare tool names for the whole session.
-      { id: 'call_custom_exec', name: 'exec_command', status: 'completed', target: 'pwd' },
+      { id: 'call_custom_exec', name: 'exec', status: 'completed', target: 'pwd' },
       { id: 'call_wait', name: 'wait', status: 'completed', target: undefined },
       { id: 'call_multi_exec', name: 'exec', status: 'error', target: undefined },
     ]

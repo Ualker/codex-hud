@@ -605,7 +605,8 @@ export interface HudData {
    * in-process observations of the same window (collectors/quota-trend.ts).
    * The quota row states it only while it precedes the reset.
    */
-  quotaProjection?: { exhaustsAtMs: number };
+  /** Projected exhaustion per rate-limit window, keyed by `window_minutes`. */
+  quotaProjections?: Record<number, { exhaustsAtMs: number }>;
   
   // Activity tracking
   toolActivity?: ToolActivity;
@@ -646,6 +647,12 @@ export interface HudData {
   paneCliPolicy?: {
     approvalPolicy?: string;
     sandboxMode?: string;
+    /**
+     * The argv walk reached the end of the command line with no bare
+     * argument and no profile: with both fields unset, the config file is
+     * provably what the process runs.
+     */
+    exhaustive?: boolean;
   };
   /**
    * A session is bound but no rollout content exists to read yet (codex

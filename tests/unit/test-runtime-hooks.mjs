@@ -79,7 +79,10 @@ assert.deepEqual(
 // CLI flags override the config file; while a 0.149 session has no rollout
 // they are the only truth. Measured live: a `--ask-for-approval never
 // --sandbox danger-full-access` pane whose HUD read the config's
-// `ask for approval | workspace-write` instead.
+// `ask for approval | workspace-write` instead. A walk that reaches the end
+// of the argv (no bare argument, no profile, no unparseable policy word)
+// additionally reports `exhaustive`: the argv provably overrides nothing
+// beyond the parsed fields, so a plain launch may trust the config again.
 
 const { extractCodexCliPolicy } = await import(
   '../../dist/collectors/runtime-hooks.js'
@@ -92,45 +95,80 @@ assert.deepEqual(
       `--dangerously-bypass-hook-trust -c ${hook('Stop', '/hooks/stop')} ` +
       `--ask-for-approval never --sandbox danger-full-access`
   ),
-  { approvalPolicy: 'never', sandboxMode: 'danger-full-access' }
+  {
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+    exhaustive: true,
+  }
 );
 
 assert.deepEqual(extractCodexCliPolicy('/opt/homebrew/bin/codex --yolo'), {
   approvalPolicy: 'never',
   sandboxMode: 'danger-full-access',
+  exhaustive: true,
 });
 assert.deepEqual(
   extractCodexCliPolicy(
     '/opt/codex --dangerously-bypass-approvals-and-sandbox'
   ),
-  { approvalPolicy: 'never', sandboxMode: 'danger-full-access' }
+  {
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+    exhaustive: true,
+  }
 );
 assert.deepEqual(extractCodexCliPolicy('/opt/codex --full-auto'), {
   approvalPolicy: 'on-failure',
   sandboxMode: 'workspace-write',
+  exhaustive: true,
 });
 assert.deepEqual(
   extractCodexCliPolicy('/opt/codex -a on-request -s read-only'),
-  { approvalPolicy: 'on-request', sandboxMode: 'read-only' }
+  {
+    approvalPolicy: 'on-request',
+    sandboxMode: 'read-only',
+    exhaustive: true,
+  }
 );
 assert.deepEqual(
   extractCodexCliPolicy('/opt/codex --sandbox=workspace-write'),
-  { sandboxMode: 'workspace-write' }
+  { sandboxMode: 'workspace-write', exhaustive: true }
 );
 assert.deepEqual(
   extractCodexCliPolicy(
     '/opt/codex -c approval_policy="never" --config sandbox_mode=read-only'
   ),
-  { approvalPolicy: 'never', sandboxMode: 'read-only' }
+  { approvalPolicy: 'never', sandboxMode: 'read-only', exhaustive: true }
 );
 
 // Later flags override earlier ones, matching the CLI.
 assert.deepEqual(
   extractCodexCliPolicy('/opt/codex --full-auto --ask-for-approval never'),
-  { approvalPolicy: 'never', sandboxMode: 'workspace-write' }
+  {
+    approvalPolicy: 'never',
+    sandboxMode: 'workspace-write',
+    exhaustive: true,
+  }
 );
 
-// A word Codex would reject must never reach the security cells.
+// A plain launch is the certification case: no flags at all, walked to the
+// end, so the config file is provably what the process runs.
+assert.deepEqual(extractCodexCliPolicy('/opt/codex'), { exhaustive: true });
+assert.deepEqual(extractCodexCliPolicy('/opt/codex --enable hooks'), {
+  exhaustive: true,
+});
+
+// A profile swaps in config values this parser does not resolve; flags
+// around it still parse, but nothing may be certified.
+assert.deepEqual(
+  extractCodexCliPolicy('/opt/codex --profile speed --yolo'),
+  { approvalPolicy: 'never', sandboxMode: 'danger-full-access' }
+);
+assert.deepEqual(extractCodexCliPolicy('/opt/codex -c profile="speed"'), {});
+
+// A word Codex would reject must never reach the security cells — and a
+// policy flag whose value this parser cannot read (a future vocabulary)
+// forfeits the exhaustive claim too.
 assert.deepEqual(extractCodexCliPolicy('/opt/codex --sandbox sideways'), {});
 
 // Prompt text mentioning a flag is not a flag: the walk stops at the first
@@ -144,7 +182,11 @@ assert.deepEqual(extractCodexCliPolicy('/opt/codex resume abc --yolo'), {});
 // Values consumed by unrelated options stay values.
 assert.deepEqual(
   extractCodexCliPolicy('/opt/codex -m gpt-5.6-sol --yolo'),
-  { approvalPolicy: 'never', sandboxMode: 'danger-full-access' }
+  {
+    approvalPolicy: 'never',
+    sandboxMode: 'danger-full-access',
+    exhaustive: true,
+  }
 );
 
 // Non-Codex commands claim nothing.

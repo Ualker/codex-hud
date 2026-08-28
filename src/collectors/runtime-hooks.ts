@@ -295,6 +295,17 @@ export function extractCodexRuntimeHookOverrides(commands: readonly string[]): s
 export interface CodexCliPolicy {
   approvalPolicy?: string;
   sandboxMode?: string;
+  /**
+   * True when the walk consumed every argument to the end of the command
+   * line without meeting a bare argument or a profile selection: the argv
+   * then provably carries no policy override beyond the fields above, so
+   * with both fields unset the config file is what the process actually
+   * runs. `ps` loses argv boundaries, so any early stop — a prompt, a
+   * subcommand, a half-typed pair — leaves this unset and the caller stays
+   * uncertain. A profile clears it because a profile swaps in config values
+   * this parser does not resolve.
+   */
+  exhaustive?: boolean;
 }
 
 // Only vocabulary Codex itself accepts may reach the security cells: a
@@ -318,25 +329,38 @@ function tomlStringValue(raw: string): string {
   return quoted ? quoted[2] : trimmed;
 }
 
+/** Returns whether the value was recognized and assigned. */
 function assignPolicyValue(
   policy: CodexCliPolicy,
   kind: 'approval' | 'sandbox',
   raw: string
-): void {
+): boolean {
   const value = tomlStringValue(raw);
   if (kind === 'approval' && APPROVAL_POLICY_VALUES.has(value)) {
     policy.approvalPolicy = value;
-  } else if (kind === 'sandbox' && SANDBOX_MODE_VALUES.has(value)) {
-    policy.sandboxMode = value;
+    return true;
   }
+  if (kind === 'sandbox' && SANDBOX_MODE_VALUES.has(value)) {
+    policy.sandboxMode = value;
+    return true;
+  }
+  return false;
 }
 
-function assignConfigOverride(policy: CodexCliPolicy, override: string): void {
+/**
+ * Returns false only when the override names a policy key whose value was
+ * not recognized — a policy override stood in the argv that this parser
+ * could not interpret, which forfeits any claim about the effective policy.
+ */
+function assignConfigOverride(
+  policy: CodexCliPolicy,
+  override: string
+): boolean {
   const match = /^(approval_policy|sandbox_mode)\s*=\s*(.*)$/.exec(override);
   if (!match) {
-    return;
+    return true;
   }
-  assignPolicyValue(
+  return assignPolicyValue(
     policy,
     match[1] === 'approval_policy' ? 'approval' : 'sandbox',
     match[2]
@@ -359,6 +383,9 @@ export function extractCodexCliPolicy(command: string): CodexCliPolicy {
   }
 
   let position = argumentsStart;
+  let stoppedEarly = false;
+  let sawProfile = false;
+  let sawUnparsedPolicy = false;
   while (position < command.length) {
     const argument = readProcessArgument(command, position);
     if (!argument) {
@@ -368,6 +395,7 @@ export function extractCodexCliPolicy(command: string): CodexCliPolicy {
     const value = argument.value;
 
     if (value === '--') {
+      stoppedEarly = true;
       break;
     }
 
@@ -388,43 +416,82 @@ export function extractCodexCliPolicy(command: string): CodexCliPolicy {
     if (value === '-a' || value === '--ask-for-approval') {
       const valueArgument = readProcessArgument(command, position);
       if (!valueArgument) {
+        stoppedEarly = true;
         break;
       }
       position = valueArgument.end;
-      assignPolicyValue(policy, 'approval', valueArgument.value);
+      if (!assignPolicyValue(policy, 'approval', valueArgument.value)) {
+        sawUnparsedPolicy = true;
+      }
       continue;
     }
     if (value === '-s' || value === '--sandbox') {
       const valueArgument = readProcessArgument(command, position);
       if (!valueArgument) {
+        stoppedEarly = true;
         break;
       }
       position = valueArgument.end;
-      assignPolicyValue(policy, 'sandbox', valueArgument.value);
+      if (!assignPolicyValue(policy, 'sandbox', valueArgument.value)) {
+        sawUnparsedPolicy = true;
+      }
       continue;
     }
     const inlineFlag = /^(--ask-for-approval|--sandbox)=(.*)$/.exec(value);
     if (inlineFlag) {
-      assignPolicyValue(
-        policy,
-        inlineFlag[1] === '--ask-for-approval' ? 'approval' : 'sandbox',
-        inlineFlag[2]
-      );
+      if (
+        !assignPolicyValue(
+          policy,
+          inlineFlag[1] === '--ask-for-approval' ? 'approval' : 'sandbox',
+          inlineFlag[2]
+        )
+      ) {
+        sawUnparsedPolicy = true;
+      }
       continue;
     }
 
     if (value === '-c' || value === '--config') {
       const valueArgument = readProcessArgument(command, position);
       if (!valueArgument) {
+        stoppedEarly = true;
         break;
       }
       position = valueArgument.end;
-      assignConfigOverride(policy, valueArgument.value);
+      if (/^profile\s*=/.test(valueArgument.value)) {
+        sawProfile = true;
+      }
+      if (!assignConfigOverride(policy, valueArgument.value)) {
+        sawUnparsedPolicy = true;
+      }
       continue;
     }
     const inlineConfig = /^(?:-c|--config)=(.*)$/.exec(value);
     if (inlineConfig) {
-      assignConfigOverride(policy, inlineConfig[1]);
+      if (/^profile\s*=/.test(inlineConfig[1])) {
+        sawProfile = true;
+      }
+      if (!assignConfigOverride(policy, inlineConfig[1])) {
+        sawUnparsedPolicy = true;
+      }
+      continue;
+    }
+
+    // A profile swaps in config values this parser does not resolve, so a
+    // selected profile forfeits the exhaustive claim while the flags around
+    // it still parse.
+    if (value === '-p' || value === '--profile') {
+      sawProfile = true;
+      const valueArgument = readProcessArgument(command, position);
+      if (!valueArgument) {
+        stoppedEarly = true;
+        break;
+      }
+      position = valueArgument.end;
+      continue;
+    }
+    if (/^(?:-p|--profile)=/.test(value)) {
+      sawProfile = true;
       continue;
     }
 
@@ -434,6 +501,7 @@ export function extractCodexCliPolicy(command: string): CodexCliPolicy {
     if (value === '--enable' || value === '--disable') {
       const valueArgument = readProcessArgument(command, position);
       if (!valueArgument) {
+        stoppedEarly = true;
         break;
       }
       position = valueArgument.end;
@@ -443,6 +511,7 @@ export function extractCodexCliPolicy(command: string): CodexCliPolicy {
     if (optionConsumesValue(value)) {
       const valueArgument = readProcessArgument(command, position);
       if (!valueArgument) {
+        stoppedEarly = true;
         break;
       }
       position = valueArgument.end;
@@ -451,8 +520,12 @@ export function extractCodexCliPolicy(command: string): CodexCliPolicy {
     if (value.startsWith('-')) {
       continue;
     }
+    stoppedEarly = true;
     break;
   }
 
+  if (!stoppedEarly && !sawProfile && !sawUnparsedPolicy) {
+    policy.exhaustive = true;
+  }
   return policy;
 }

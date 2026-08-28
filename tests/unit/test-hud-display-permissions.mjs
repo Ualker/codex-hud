@@ -263,6 +263,31 @@ const blindCompressed = renderHud({
 }).map(stripAnsi);
 assert.match(blindCompressed[0], /\[ACCESS \?\]/);
 
+// A captured argv walked to its end with no policy flag and no profile
+// certifies the config un-overridden: a plain `codex-hud` launch no longer
+// sits on `?` until its first message.
+const certifiedNoRolloutLines = renderHud({
+  ...baseData,
+  config: flaggedConfig,
+  session: metadataOnlySession,
+  boundWithoutRollout: true,
+  paneCliPolicy: { exhaustive: true },
+}, {
+  width: 160,
+  showDetails: true,
+  layout,
+}).map(stripAnsi);
+const certifiedEnvironmentLine = certifiedNoRolloutLines.find((line) =>
+  line.includes('Approval:')
+);
+assert.ok(certifiedEnvironmentLine);
+assert.match(certifiedEnvironmentLine, /Approval: ask for approval/);
+assert.match(certifiedEnvironmentLine, /Sandbox: workspace-write/);
+assert.ok(
+  !certifiedNoRolloutLines.some((line) => /\[ACCESS \?\]/.test(line)),
+  'a certified argv lifts the unknown-access badge'
+);
+
 // Codex's own exit reopens the config fallback: nothing is running for the
 // flags to describe.
 const exitedNoRolloutLines = renderHud({

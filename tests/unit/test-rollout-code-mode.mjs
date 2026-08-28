@@ -99,7 +99,7 @@ const byId = new Map(result.toolActivity.recentCalls.map((c) => [c.id, c]));
 // ---- the command comes back ----------------------------------------------
 {
   const call = byId.get('c1');
-  assert.equal(call.name, 'exec_command', 'the inner tool names the call');
+  assert.equal(call.name, 'exec', 'a shell wrapper call keeps the protocol name');
   assert.equal(call.summary, 'npm test', 'the command is recovered from the JS literal');
   assert.equal(call.target, 'npm test');
   assert.equal(call.workdir, '/Users/dev/prj');
