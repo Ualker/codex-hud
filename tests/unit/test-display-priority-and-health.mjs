@@ -123,8 +123,8 @@ assert.match(turn, /Thinking 42s/);
 assert.match(turn, /event 8s ago/);
 
 const rate = stripAnsi(renderRateLimitLine(data, 80, now));
-assert.match(rate, /5h limit 82%/);
-assert.match(rate, /7d limit 91%/);
+assert.match(rate, /5h 18% left/);
+assert.match(rate, /7d 9% left/);
 assert.match(rate, /resets/);
 
 // A quota snapshot only describes the window it was written in. Rollouts keep
@@ -139,8 +139,8 @@ assert.equal(
 const partiallyExpired = stripAnsi(
   renderRateLimitLine(data, 80, now + 2 * 3600 * 1000)
 );
-assert.doesNotMatch(partiallyExpired, /5h limit/, 'the reset window drops out');
-assert.match(partiallyExpired, /7d limit 91%/, 'the live window survives');
+assert.doesNotMatch(partiallyExpired, /5h \d+% left/, 'the reset window drops out');
+assert.match(partiallyExpired, /7d 9% left/, 'the live window survives');
 
 const health = stripAnsi(renderHealthLine(data, 100, now));
 // Collector keys are internal names; the health row is the only place a user

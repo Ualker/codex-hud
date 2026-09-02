@@ -304,12 +304,12 @@ const render = (data) =>
     'the stale session metrics recede to dim as one block'
   );
   assert.ok(
-    stripAnsi(ctxRow).includes('7d limit 14%'),
+    stripAnsi(ctxRow).includes('7d 86% left'),
     'the account quota stays on the row'
   );
   const dimClose = ctxRow.indexOf('\x1b[0m');
   assert.ok(
-    dimClose !== -1 && dimClose < ctxRow.indexOf('7d limit'),
+    dimClose !== -1 && dimClose < ctxRow.indexOf('7d 86% left'),
     'the dim region closes before the account quota cell'
   );
   const toolsRow = dimmedFrame.find((line) =>

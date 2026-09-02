@@ -228,6 +228,11 @@ try {
       'a windowless snapshot does not shadow the informative one behind it'
     );
     assert.equal(found?.limits?.limit_id, 'codex');
+    // …and the windowless snapshot is not discarded either: it is the
+    // exhaustion, carried on the informative reading's windows.
+    assert.equal(found?.limits?.windowsRetained, true);
+    assert.equal(found?.limits?.credits?.has_credits, false);
+    assert.equal(found?.limits?.primary?.resets_at, RESETS_AT);
   }
 
   {

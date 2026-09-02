@@ -61,7 +61,10 @@ export function isFreshPromptProbeCandidate(
     !Number.isFinite(nowMs) ||
     !Number.isFinite(silenceMs) ||
     silenceMs < 0 ||
-    (phase !== 'idle' && phase !== 'aborted' && phase !== 'interrupted')
+    (phase !== 'idle' &&
+      phase !== 'aborted' &&
+      phase !== 'failed' &&
+      phase !== 'interrupted')
   ) {
     return false;
   }

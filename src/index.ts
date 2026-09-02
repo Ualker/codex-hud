@@ -312,6 +312,7 @@ function withDetectorPhases(
     codexExited &&
     (activity.phase === 'idle' ||
       activity.phase === 'aborted' ||
+      activity.phase === 'failed' ||
       activity.phase === 'interrupted')
   ) {
     return { ...activity, phase: 'exited' };
@@ -881,6 +882,7 @@ function isWorkingPhase(phase: string | undefined): boolean {
     phase !== 'awaiting-approval' &&
     phase !== 'idle' &&
     phase !== 'aborted' &&
+    phase !== 'failed' &&
     phase !== 'interrupted' &&
     phase !== 'exited'
   );
@@ -968,12 +970,14 @@ async function mainLoop(): Promise<void> {
           data.turnActivity?.phase,
           lastTurnMs
         ),
+        'turn-failed': data.turnActivity?.phase === 'failed',
       },
       {
         sessionId: sessionFinder.getCurrentSession()?.sessionId,
         tmuxSession: HUD_TMUX_SESSION,
         cwd: HUD_CWD,
         lastTurnDurationMs: lastTurnMs,
+        lastTurnError: data.turnActivity?.lastTurnError,
       }
     );
     const plan = computeCadence();

@@ -300,6 +300,36 @@ function formatToolDuration(durationMs: number): string {
 
 const formatAge = formatCompactAge;
 
+/** Codex's error codes in the words a user would act on. */
+const TURN_ERROR_LABELS: Record<string, string> = {
+  usage_limit_exceeded: 'usage limit',
+  server_overloaded: 'model at capacity',
+};
+
+const MAX_TURN_ERROR_REASON_LENGTH = 48;
+
+/**
+ * A known code gets its label; anything else falls back to the message's
+ * first clause (`stream disconnected before completion: error sending…`
+ * reads as `stream disconnected before completion`), then to the bare code.
+ */
+function describeTurnError(
+  error: TurnActivity['lastTurnError']
+): string | null {
+  if (!error) {
+    return null;
+  }
+  const label = error.code ? TURN_ERROR_LABELS[error.code] : undefined;
+  if (label) {
+    return label;
+  }
+  const clause = error.message?.split(/[.:(]/)[0]?.trim();
+  if (clause) {
+    return truncate(clause, MAX_TURN_ERROR_REASON_LENGTH);
+  }
+  return error.code ?? null;
+}
+
 function turnPhasePresentation(
   activity: TurnActivity,
   nowMs: number
@@ -335,6 +365,16 @@ function turnPhasePresentation(
         icon: icons.cross,
         color: theme.error,
       };
+    case 'failed': {
+      // The provider ended the turn; say why in the words the user would
+      // search for, never as a completion.
+      const reason = describeTurnError(activity.lastTurnError);
+      return {
+        label: reason ? `Turn failed · ${reason}` : 'Turn failed',
+        icon: icons.cross,
+        color: theme.error,
+      };
+    }
     case 'interrupted':
       // Backed by a confirmed error banner on the main pane; the freshness
       // suffix alongside says how long the turn has been silent.
@@ -382,15 +422,17 @@ export function renderTurnActivityLine(
   // reached the screen: it is the anchor for "how long does a turn here
   // usually take". Idle is where that question gets asked, and the cell is
   // the first to go when the row is too narrow.
+  const durationMs = activity.lastTurnDurationMs;
+  const hasDuration =
+    durationMs !== undefined && Number.isFinite(durationMs) && durationMs >= 0;
+  // A failed turn's wall time is how much work was lost, not how long a turn
+  // here usually takes — stated, but never as "last turn".
   const lastTurn =
-    activity.phase === 'idle' &&
-    activity.lastTurnDurationMs !== undefined &&
-    Number.isFinite(activity.lastTurnDurationMs) &&
-    activity.lastTurnDurationMs >= 0
-      ? colors.dim(
-          ` · last turn ${formatToolDuration(activity.lastTurnDurationMs)}`
-        )
-      : '';
+    hasDuration && activity.phase === 'idle'
+      ? colors.dim(` · last turn ${formatToolDuration(durationMs)}`)
+      : hasDuration && activity.phase === 'failed'
+        ? colors.dim(` · after ${formatToolDuration(durationMs)}`)
+        : '';
   const base = presentation.color(
     `${presentation.icon} ${presentation.label}`
   );
@@ -510,8 +552,10 @@ export function rateLimitAlertKind(
       window.used_percent !== undefined && !isExpiredWindow(window, nowMs)
   );
   const credits = limits.credits;
+  // Windows retained across a windowless snapshot keep the reset time on the
+  // row; the exhaustion they were retained through is still the alert.
   if (
-    liveWindows.length === 0 &&
+    (liveWindows.length === 0 || limits.windowsRetained === true) &&
     credits?.has_credits === false &&
     credits.unlimited !== true
   ) {
@@ -528,6 +572,16 @@ export function rateLimitAlertKind(
  * the window four days before its reset, both times with no warning.
  */
 const PROJECTION_MIN_PERCENT = 50;
+
+/**
+ * A baseline this long makes the slope trustworthy on its own, whatever the
+ * level: the percentage gate guards against a guess from minutes of data,
+ * not against a low number. Measured live, the weekly window sat at 38%
+ * with 47 hours behind the pace — a pace that emptied it a day and a half
+ * before its reset — and the gate held that forecast for another sixteen
+ * hours. The 5h window never reaches a day, so for it the gate is unchanged.
+ */
+const PROJECTION_MIN_BASELINE_MS = 24 * 60 * 60 * 1000;
 
 /** Same threshold as the reset countdown: under a day, say how long. */
 function formatExhaustionEta(exhaustsAtMs: number, nowMs: number): string {
@@ -601,9 +655,13 @@ export function renderRateLimitLine(
         : usedPercent >= RATE_LIMIT_PRESSURE_PERCENT
           ? theme.warning
           : colors.dim;
+    // Stated as what remains, the way the Codex footer (`5h 6% left`) and the
+    // context gauge above it do: measured live the row read `5h limit 98%`
+    // under a Ctx cell reading `63% left` and a footer reading `5h 2% left`,
+    // and the reader was left to do the subtraction between three directions.
     parts.push(
       color(
-        `${formatRateWindow(window.window_minutes)} limit ${Math.round(usedPercent)}%`
+        `${formatRateWindow(window.window_minutes)} ${Math.max(0, Math.round(100 - usedPercent))}% left`
       )
     );
     const reset = formatResetTime(
@@ -636,7 +694,8 @@ export function renderRateLimitLine(
       const projection = projections[windowMinutes];
       if (
         !projection ||
-        (window.used_percent ?? 0) < PROJECTION_MIN_PERCENT ||
+        ((window.used_percent ?? 0) < PROJECTION_MIN_PERCENT &&
+          (projection.baselineMs ?? 0) < PROJECTION_MIN_BASELINE_MS) ||
         window.resets_at === undefined ||
         !Number.isFinite(window.resets_at) ||
         projection.exhaustsAtMs >= window.resets_at * 1000 ||

@@ -65,7 +65,7 @@ const threeSessions = [
     rateLimits: limits(47),
   });
   assert.equal(lines.length, 4, 'three sessions plus the quota');
-  assert.ok(lines[3].includes('7d limit 47%'));
+  assert.ok(lines[3].includes('7d 53% left'));
   assert.ok(lines[0].includes('codex-hud-prj-1'), 'sessions keep the top of the pane');
 }
 
@@ -80,7 +80,7 @@ const threeSessions = [
   });
   assert.equal(lines.length, 7);
   assert.equal(
-    lines.some((line) => line.includes('7d limit')),
+    lines.some((line) => /\b7d \d+% left/.test(line)),
     false,
     'a calm quota only fills a row nothing else wanted'
   );
@@ -97,7 +97,7 @@ const threeSessions = [
     rateLimits: limits(92),
   });
   assert.ok(
-    lines[0].includes('7d limit 92%'),
+    lines[0].includes('7d 8% left'),
     'the warning leads, because the bottom of a full list is what gets clipped'
   );
   assert.ok(

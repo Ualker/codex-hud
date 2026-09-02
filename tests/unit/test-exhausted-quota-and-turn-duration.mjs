@@ -104,7 +104,7 @@ const withWindowLine = stripAnsi(
     includeBelowPressure: true,
   }) ?? ''
 );
-assert.match(withWindowLine, /7d limit 42%/);
+assert.match(withWindowLine, /7d 58% left/);
 assert.doesNotMatch(
   withWindowLine,
   /credits/,
@@ -324,5 +324,40 @@ assert.ok(
   narrowResolved.some((row) => row.includes('[FULL ACCESS]')),
   'a complete scan resolves that badge too'
 );
+
+// ---- codex 0.150+: the 5h window spent, its windows retained ---------------
+// Measured 2026-08-31 09:31: the 5h window read 100%, one second later the
+// windowless "premium" snapshot arrived, and the reset time ("try again at
+// 9:18 PM" on the Codex pane) left the HUD for the whole 3h47m.
+{
+  const retained = {
+    ...exhausted,
+    limit_id: 'codex',
+    primary: {
+      used_percent: 100,
+      window_minutes: 300,
+      resets_at: Math.floor(now / 1000) + 3 * 3600 + 47 * 60,
+    },
+    secondary: {
+      used_percent: 31,
+      window_minutes: 10080,
+      resets_at: Math.floor(now / 1000) + 6 * 86400,
+    },
+    windowsRetained: true,
+  };
+  const alertRow = stripAnsi(
+    renderRateLimitLine(baseData({ rateLimits: retained }), 146, now) ?? ''
+  );
+  assert.match(alertRow, /^5h 0% left/, `the spent window leads the row: ${alertRow}`);
+  assert.match(alertRow, /resets in 3h47m/, 'with the moment work can resume');
+  assert.match(alertRow, /credits: 0/, 'and the exhaustion stated beside it');
+  assert.doesNotMatch(alertRow, /7d/, 'the calm weekly reading waits for a spare row');
+  const calmRow = stripAnsi(
+    renderRateLimitLine(baseData({ rateLimits: retained }), 146, now, {
+      includeBelowPressure: true,
+    }) ?? ''
+  );
+  assert.match(calmRow, /7d 69% left/, `the weekly window rides along when there is room: ${calmRow}`);
+}
 
 console.log('test-exhausted-quota-and-turn-duration: PASS');

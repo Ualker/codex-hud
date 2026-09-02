@@ -101,9 +101,9 @@ const render = (data, width, maxLines) =>
 // the pane rendered four of its seven rows.
 {
   const lines = render(readySession(limits(47)), 146, 7);
-  const quota = lines.find((line) => line.includes('7d limit'));
+  const quota = lines.find((line) => /\b7d \d+% left/.test(line));
   assert.ok(quota, 'a calm quota is stated when rows are free');
-  assert.match(quota, /7d limit 47%/);
+  assert.match(quota, /7d 53% left/);
   assert.match(quota, /resets /, 'the reset is what makes the number actionable');
   assert.doesNotMatch(
     quota,
@@ -123,7 +123,7 @@ const render = (data, width, maxLines) =>
     146,
     7
   );
-  const quota = soon.find((line) => line.includes('7d limit'));
+  const quota = soon.find((line) => /\b7d \d+% left/.test(line));
   assert.ok(quota, 'an exhausted quota always renders');
   assert.match(
     quota,
@@ -140,7 +140,7 @@ const render = (data, width, maxLines) =>
   const busy = render(busySession(limits(47)), width, 7);
   assert.ok(busy.length <= 7);
   assert.equal(
-    busy.some((line) => line.includes('7d limit')),
+    busy.some((line) => /\b7d \d+% left/.test(line)),
     false,
     'the calm quota yields before agent, plan, or tool rows do'
   );
@@ -151,7 +151,7 @@ const render = (data, width, maxLines) =>
   // layout needs for every live row plus the quota.
   const roomy = render(busySession(limits(47)), width, 10);
   assert.ok(
-    roomy.some((line) => line.includes('7d limit 47%')),
+    roomy.some((line) => line.includes('7d 53% left')),
     'a taller pane brings it back'
   );
   assert.ok(
@@ -168,7 +168,7 @@ const render = (data, width, maxLines) =>
 // threshold.
 {
   const lines = render(busySession(limits(69)), 146, 7);
-  const quotaLine = lines.find((line) => line.includes('7d limit 69%'));
+  const quotaLine = lines.find((line) => line.includes('7d 31% left'));
   assert.ok(quotaLine, '69% weekly quota survives a 146x7 busy frame');
   assert.ok(lines.length <= 7, 'the quota does not overflow the viewport');
   assert.ok(
@@ -180,9 +180,9 @@ const render = (data, width, maxLines) =>
 // ---- pressure is never optional -------------------------------------------
 {
   const busy = render(busySession(limits(92)), 100, 7);
-  const quota = busy.find((line) => line.includes('7d limit'));
+  const quota = busy.find((line) => /\b7d \d+% left/.test(line));
   assert.ok(quota, 'a quota under pressure is not a candidate for dropping');
-  assert.match(quota, /7d limit 92%/);
+  assert.match(quota, /7d 8% left/);
 }
 
 // ---- an expired window still says nothing, calm or not --------------------
@@ -199,7 +199,7 @@ const render = (data, width, maxLines) =>
     'showing calm readings does not resurrect expired ones'
   );
   const lines = render(readySession(stale), 146, 7);
-  assert.equal(lines.some((line) => line.includes('limit')), false);
+  assert.equal(lines.some((line) => /\b\d+[hd] \d+% left/.test(line)), false);
 }
 
 // ---- no quota data at all is not an empty row -----------------------------
