@@ -37,6 +37,14 @@ import type { RateLimitSnapshot, RateLimitWindow } from '../types.js';
 export interface QuotaProjection {
   /** When the window reaches 100% at the observed pace. */
   exhaustsAtMs: number;
+  /**
+   * Span between the two readings behind the pace. The renderer trusts a
+   * long baseline the way it trusts a half-spent window: measured live the
+   * weekly window stood at 38% after 47 hours of readings, a pace that
+   * emptied it a day and a half before its reset, and a percentage gate
+   * alone kept that forecast off the row for another sixteen hours.
+   */
+  baselineMs: number;
 }
 
 interface TrendPoint {
@@ -275,6 +283,7 @@ export class QuotaTrendTracker {
       exhaustsAtMs:
         series.latest.atMs +
         (100 - series.latest.usedPercent) * msPerPercent,
+      baselineMs: spanMs,
     };
   }
 

@@ -26,6 +26,7 @@ const quiet = {
   'turn-interrupted': false,
   'limit-reached': false,
   'turn-completed': false,
+  'turn-failed': false,
 };
 
 function recorder() {
@@ -142,6 +143,11 @@ function recorder() {
     'a completion with Codex gone pages nobody'
   );
   assert.equal(isCompletedTurnNotifiable('idle', undefined), false);
+  assert.equal(
+    isCompletedTurnNotifiable('failed', 976_568),
+    false,
+    'a turn the provider ended on an error is not a completion (2026-08-31: three such pages)'
+  );
   assert.equal(isCompletedTurnNotifiable('idle', Number.NaN), false);
   assert.equal(isCompletedTurnNotifiable(undefined, 300_000), false);
 }
@@ -204,6 +210,40 @@ function recorder() {
   assert.doesNotThrow(() =>
     notifier.observe({ ...quiet, 'approval-needed': true }, context, now + 1000)
   );
+}
+
+{
+  // turn-failed: Codex's own verdict on the turn rides along with the wall
+  // time the failure cost, so a bridge can say "usage limit after 16m17s".
+  const { calls, run } = recorder();
+  const notifier = new HudNotifier({ command: 'notify', runCommand: run });
+  const failedContext = {
+    ...context,
+    lastTurnDurationMs: 976_568,
+    lastTurnError: { code: 'usage_limit_exceeded', message: "You've hit your usage limit." },
+  };
+  notifier.observe(quiet, failedContext, now);
+  const fired = notifier.observe(
+    { ...quiet, 'turn-failed': true },
+    failedContext,
+    now + 1000
+  );
+  assert.deepEqual(fired, ['turn-failed']);
+  assert.deepEqual(calls[0].payload, {
+    event: 'turn-failed',
+    sessionId: context.sessionId,
+    tmuxSession: context.tmuxSession,
+    cwd: context.cwd,
+    at: new Date(now + 1000).toISOString(),
+    turnDurationMs: 976568,
+    error: { code: 'usage_limit_exceeded', message: "You've hit your usage limit." },
+  });
+  // Other events never gain the error field even when the context has it.
+  notifier.observe(quiet, failedContext, now + 6 * 60_000);
+  notifier.observe({ ...quiet, 'limit-reached': true }, failedContext, now + 7 * 60_000);
+  assert.equal(calls[1].payload.event, 'limit-reached');
+  assert.equal('error' in calls[1].payload, false);
+  assert.equal('turnDurationMs' in calls[1].payload, false);
 }
 
 // ---- the real shell path ---------------------------------------------------

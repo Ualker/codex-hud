@@ -4,8 +4,9 @@
  * The HUD can only be looked at; when the user is in another tmux window it
  * has no way to say "this session is waiting on you". The states worth
  * interrupting someone for are the ones the detectors already confirm — an
- * approval prompt, a stream-error-killed turn, a quota hit — plus a long turn
- * finishing, which is what the user walked away from in the first place.
+ * approval prompt, a stream-error-killed turn, a quota hit, a turn Codex
+ * itself ended on an error — plus a long turn finishing, which is what the
+ * user walked away from in the first place.
  *
  * Delivery is a user command (`CODEX_HUD_NOTIFY_CMD`), run through `sh -c`
  * with the event JSON on stdin and in `CODEX_HUD_EVENT_JSON`; the event name
@@ -27,14 +28,17 @@ export type HudNotifyEvent =
   | 'approval-needed'
   | 'turn-interrupted'
   | 'limit-reached'
-  | 'turn-completed';
+  | 'turn-completed'
+  | 'turn-failed';
 
 export interface NotifyContext {
   sessionId?: string;
   tmuxSession?: string;
   cwd: string;
-  /** Wall time of the finished turn; rides in the turn-completed payload. */
+  /** Wall time of the finished turn; rides in the turn-completed and turn-failed payloads. */
   lastTurnDurationMs?: number;
+  /** Codex's verdict on a failed turn; rides in the turn-failed payload. */
+  lastTurnError?: { code?: string; message?: string };
 }
 
 export type NotifyStates = Record<HudNotifyEvent, boolean>;
@@ -44,6 +48,7 @@ const EVENT_NAMES: readonly HudNotifyEvent[] = [
   'turn-interrupted',
   'limit-reached',
   'turn-completed',
+  'turn-failed',
 ];
 
 /**
@@ -117,6 +122,7 @@ export class HudNotifier {
     'turn-interrupted': false,
     'limit-reached': false,
     'turn-completed': false,
+    'turn-failed': false,
   };
   private lastFiredMs: Partial<Record<HudNotifyEvent, number>> = {};
 
@@ -139,6 +145,7 @@ export class HudNotifier {
       'turn-interrupted': false,
       'limit-reached': false,
       'turn-completed': false,
+      'turn-failed': false,
     };
   }
 
@@ -176,10 +183,13 @@ export class HudNotifier {
           ...(context.tmuxSession ? { tmuxSession: context.tmuxSession } : {}),
           cwd: context.cwd,
           at: new Date(nowMs).toISOString(),
-          ...(event === 'turn-completed' &&
+          ...((event === 'turn-completed' || event === 'turn-failed') &&
           context.lastTurnDurationMs !== undefined &&
           Number.isFinite(context.lastTurnDurationMs)
             ? { turnDurationMs: Math.round(context.lastTurnDurationMs) }
+            : {}),
+          ...(event === 'turn-failed' && context.lastTurnError
+            ? { error: context.lastTurnError }
             : {}),
         });
         void this.run(this.command, payload).catch((error) => {

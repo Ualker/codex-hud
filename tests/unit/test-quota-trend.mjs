@@ -62,6 +62,11 @@ function dualSnapshot(fiveHourUsed, weeklyUsed, options = {}) {
     now + 8 * HOUR,
     'the pace extrapolates linearly from the observed pair'
   );
+  assert.equal(
+    projection.baselineMs,
+    2 * HOUR,
+    'the span behind the pace rides along for the renderer to judge'
+  );
 }
 
 {
@@ -325,13 +330,18 @@ const layoutData = (rateLimits, quotaProjections) => ({
   ...(quotaProjections ? { quotaProjections } : {}),
 });
 
-const renderQuota = (usedPercent, exhaustsAtMs) =>
+const renderQuota = (usedPercent, exhaustsAtMs, baselineMs) =>
   stripAnsi(
     renderRateLimitLine(
       layoutData(
         snapshot(usedPercent),
         exhaustsAtMs !== undefined
-          ? { 10080: { exhaustsAtMs } }
+          ? {
+              10080: {
+                exhaustsAtMs,
+                ...(baselineMs !== undefined ? { baselineMs } : {}),
+              },
+            }
           : undefined
       ),
       200,
@@ -347,7 +357,7 @@ const renderQuota = (usedPercent, exhaustsAtMs) =>
     /→ 7d empty ~08\/22/,
     'a projection that beats the reset is stated on the row, named for its window'
   );
-  assert.match(line, /7d limit 62%/, 'the level stays first');
+  assert.match(line, /7d 38% left/, 'the level stays first');
 }
 
 assert.match(
@@ -360,6 +370,25 @@ assert.doesNotMatch(
   renderQuota(49, now + 2 * DAY),
   /empty/,
   'early in the window the slope is a guess about a distant problem'
+);
+
+// A day of readings makes the slope trustworthy at any level: measured live
+// the weekly window stood at 38% after 47 hours, a pace that emptied it a day
+// and a half before its reset, and the percentage gate alone hid that.
+assert.match(
+  renderQuota(38, now + 3.5 * DAY, 47 * HOUR),
+  /→ 7d empty ~08\/24/,
+  'a long baseline states the forecast below half spent'
+);
+assert.doesNotMatch(
+  renderQuota(38, now + 3.5 * DAY, 23 * HOUR),
+  /empty/,
+  'under a day of readings the percentage gate still holds'
+);
+assert.match(
+  renderQuota(62, now + 2 * DAY, 40 * 60_000),
+  /empty/,
+  'past half spent a short baseline is enough, as before'
 );
 
 assert.doesNotMatch(
@@ -396,7 +425,7 @@ assert.doesNotMatch(
   );
   assert.match(
     line,
-    /5h limit 91%.*7d limit 62%.*→ 5h empty in 30m.*→ 7d empty ~08\/22/,
+    /5h 9% left.*7d 38% left.*→ 5h empty in 30m.*→ 7d empty ~08\/22/,
     `dual windows carry dual labeled forecasts: ${line}`
   );
 }

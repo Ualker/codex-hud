@@ -25,6 +25,7 @@ import { readCompleteJsonl } from '../utils/jsonl-tail.js';
 import { extractCommandHead } from '../utils/command-head.js';
 import { EXECUTION_TOOL_NAMES, runsShellCommand } from '../utils/tool-names.js';
 import { findJsStringContaining, parseJsLiteral } from '../utils/js-literal.js';
+import { retainRateLimitWindows } from './rate-limit-windows.js';
 
 /**
  * Result of parsing a rollout file
@@ -364,6 +365,7 @@ function transitionTurn(
     turnId?: string;
     durationMs?: number;
     timeToFirstTokenMs?: number;
+    error?: TurnActivity['lastTurnError'];
   } = {}
 ): TurnActivity {
   const sameTurn =
@@ -371,6 +373,14 @@ function transitionTurn(
     !previous?.turnId ||
     options.turnId === previous.turnId;
   const samePhase = previous?.phase === phase && sameTurn;
+  // The failure detail belongs to the failed phase; a completed turn clears
+  // it, and the phases in between carry it the way the duration is carried.
+  const lastTurnError =
+    phase === 'failed'
+      ? options.error
+      : phase === 'idle'
+        ? undefined
+        : previous?.lastTurnError;
 
   return {
     phase,
@@ -381,7 +391,36 @@ function transitionTurn(
       options.durationMs ?? previous?.lastTurnDurationMs,
     lastTimeToFirstTokenMs:
       options.timeToFirstTokenMs ?? previous?.lastTimeToFirstTokenMs,
+    ...(lastTurnError ? { lastTurnError } : {}),
   };
+}
+
+const MAX_TURN_ERROR_CODE_LENGTH = 64;
+const MAX_TURN_ERROR_MESSAGE_LENGTH = 200;
+
+/**
+ * Codex's verdict on a turn that ended badly: `task_complete.error` carries
+ * a stable `codex_error_info` code (`usage_limit_exceeded`,
+ * `server_overloaded`, `other`) and the message the TUI showed. Measured on
+ * this machine: 10 of 1484 turns, every one of them a moment the user most
+ * needs to be told about, and every one previously rendered as a completion.
+ */
+function parseTurnError(raw: unknown): TurnActivity['lastTurnError'] {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  const code =
+    typeof raw.codex_error_info === 'string'
+      ? sanitizeDisplayText(raw.codex_error_info, MAX_TURN_ERROR_CODE_LENGTH)
+      : undefined;
+  const message =
+    typeof raw.message === 'string'
+      ? sanitizeDisplayText(raw.message, MAX_TURN_ERROR_MESSAGE_LENGTH)
+      : undefined;
+  if (!code && !message) {
+    return undefined;
+  }
+  return { ...(code ? { code } : {}), ...(message ? { message } : {}) };
 }
 
 function matchesActiveTurn(
@@ -1440,7 +1479,8 @@ export async function parseRolloutFile(
   maxRecentCalls: number = 10,
   runningCalls: Map<string, ToolCall> = new Map(),
   existingSession: SessionInfo | null = null,
-  existingTurnActivity: TurnActivity | null = null
+  existingTurnActivity: TurnActivity | null = null,
+  existingRateLimits: RateLimitSnapshot | null = null
 ): Promise<RolloutParseOutput> {
   const toolActivity: ToolActivity = {
     recentCalls: [],
@@ -1902,11 +1942,19 @@ export async function parseRolloutFile(
         };
       }
       if (payload.rate_limits) {
-        rateLimits = payload.rate_limits;
+        rateLimits = retainRateLimitWindows(
+          rateLimits ?? existingRateLimits,
+          payload.rate_limits,
+          timestamp.getTime()
+        );
         rateLimitsAt = timestamp;
       }
     } else if (payload.type === 'rate_limit' && payload.rate_limits) {
-      rateLimits = payload.rate_limits;
+      rateLimits = retainRateLimitWindows(
+        rateLimits ?? existingRateLimits,
+        payload.rate_limits,
+        timestamp.getTime()
+      );
       rateLimitsAt = timestamp;
     } else if (payload.type === 'context_compacted') {
       compactEventCount++;
@@ -1932,9 +1980,12 @@ export async function parseRolloutFile(
         continue;
       }
       const completedAt = asValidDate(payload.completed_at, timestamp);
+      // A task_complete carrying `error` is the provider ending the turn, not
+      // the turn finishing: it must not read (or notify) as a completion.
+      const turnError = parseTurnError(payload.error);
       turnActivity = transitionTurn(
         turnActivity,
-        'idle',
+        turnError ? 'failed' : 'idle',
         completedAt,
         {
           turnId: payload.turn_id,
@@ -1946,6 +1997,7 @@ export async function parseRolloutFile(
             typeof payload.time_to_first_token_ms === 'number'
               ? payload.time_to_first_token_ms
               : undefined,
+          error: turnError,
         }
       );
     } else if (payload.type === 'turn_aborted') {
@@ -2176,7 +2228,8 @@ export class RolloutParser {
       this.maxRecentCalls,
       this.runningCalls,
       this.cachedResult?.session ?? null,
-      this.cachedResult?.turnActivity ?? null
+      this.cachedResult?.turnActivity ?? null,
+      this.cachedResult?.rateLimits ?? null
     );
 
     // Some rollouts first emit a generic function_call and later enrich that

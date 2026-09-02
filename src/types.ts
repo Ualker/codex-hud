@@ -295,6 +295,11 @@ export interface EventMsgPayload {
   completed_at?: string;
   duration_ms?: number;
   time_to_first_token_ms?: number;
+  /** task_complete: present when the provider ended the turn on an error. */
+  error?: {
+    message?: string;
+    codex_error_info?: string;
+  } | null;
   // For context_compacted events
   compacted_items?: CompactedItem[];
   summary?: string;
@@ -397,6 +402,13 @@ export interface RateLimitSnapshot {
   } | null;
   rate_limit_reached_type?: string | null;
   spend_control_reached?: boolean | null;
+  /**
+   * HUD-side marker, never written by Codex: the newest raw snapshot carried
+   * no window at all (the shape Codex writes the moment a limit is spent),
+   * and the windows on this snapshot are retained from the last dated
+   * reading so the reset time survives the exhaustion.
+   */
+  windowsRetained?: boolean;
   // Older protocol compatibility.
   requests_remaining?: number;
   tokens_remaining?: number;
@@ -421,6 +433,15 @@ export type TurnPhase =
   | 'idle'
   | 'aborted'
   /**
+   * The turn ended on an error Codex wrote into `task_complete.error`: a
+   * usage-limit hit, a model at capacity, a stream that died before
+   * completion. Terminal like `aborted`, but the provider's verdict rather
+   * than the user's, and never a completion — measured 2026-08-31, four of
+   * twelve turns across two live sessions ended this way (one after 35
+   * minutes) and each read `✓ Idle · waiting for you`.
+   */
+  | 'failed'
+  /**
    * Render-time overlay, never written by the parser: a stream error is drawn
    * only on the Codex TUI, not into the rollout, so a turn it kills stays
    * `thinking` forever. The stall detector sets this after confirming the
@@ -436,6 +457,14 @@ export type TurnPhase =
    */
   | 'exited';
 
+/** Why a turn failed, from Codex's `task_complete.error`. */
+export interface TurnError {
+  /** Codex's `codex_error_info`: `usage_limit_exceeded`, `server_overloaded`, … */
+  code?: string;
+  /** Sanitized, bounded provider message. */
+  message?: string;
+}
+
 export interface TurnActivity {
   phase: TurnPhase;
   turnId?: string;
@@ -443,6 +472,8 @@ export interface TurnActivity {
   lastActivityAt: Date;
   lastTurnDurationMs?: number;
   lastTimeToFirstTokenMs?: number;
+  /** Set with the `failed` phase; cleared by the next completed turn. */
+  lastTurnError?: TurnError;
 }
 
 export interface ProtocolHealth {
@@ -606,7 +637,7 @@ export interface HudData {
    * The quota row states it only while it precedes the reset.
    */
   /** Projected exhaustion per rate-limit window, keyed by `window_minutes`. */
-  quotaProjections?: Record<number, { exhaustsAtMs: number }>;
+  quotaProjections?: Record<number, { exhaustsAtMs: number; baselineMs?: number }>;
   
   // Activity tracking
   toolActivity?: ToolActivity;

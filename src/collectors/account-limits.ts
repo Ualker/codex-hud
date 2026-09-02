@@ -19,6 +19,7 @@ import * as fs from 'fs';
 
 import type { RateLimitSnapshot } from '../types.js';
 import { findActiveRollouts } from './session-finder.js';
+import { retainRateLimitWindows } from './rate-limit-windows.js';
 import { readCompleteJsonl } from '../utils/jsonl-tail.js';
 
 /**
@@ -127,7 +128,10 @@ async function readTailSnapshot(
 
   // Walk backwards: the last snapshot in the file is the newest one it has.
   // Degenerate snapshots keep the walk going — behind the windowless record a
-  // turn writes once the weekly limit is spent sits the reading that said so.
+  // turn writes once a limit is spent sits the reading that said so — and the
+  // newest of them is kept: it is the exhaustion itself, and the informative
+  // reading behind it supplies the windows (and the reset time) it lacks.
+  let newestWindowless: AccountRateLimits | null = null;
   for (let index = records.length - 1; index >= 0; index--) {
     const record = records[index];
     const payload = record?.payload;
@@ -137,12 +141,23 @@ async function readTailSnapshot(
     if (payload.type !== 'token_count' && payload.type !== 'rate_limit') {
       continue;
     }
-    if (!hasRateLimitSignal(payload.rate_limits)) {
-      continue;
-    }
     const observedAt = parseTimestamp(record.timestamp);
     if (!observedAt) {
       continue;
+    }
+    if (!hasRateLimitSignal(payload.rate_limits)) {
+      newestWindowless ??= { limits: payload.rate_limits, observedAt };
+      continue;
+    }
+    if (newestWindowless) {
+      return {
+        limits: retainRateLimitWindows(
+          payload.rate_limits,
+          newestWindowless.limits,
+          newestWindowless.observedAt.getTime()
+        ),
+        observedAt: newestWindowless.observedAt,
+      };
     }
     return { limits: payload.rate_limits, observedAt };
   }

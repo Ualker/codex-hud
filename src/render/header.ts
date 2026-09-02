@@ -234,6 +234,7 @@ function renderExpandedLayout(
     data.paneFreshSession === true &&
     (data.turnActivity?.phase === 'idle' ||
       data.turnActivity?.phase === 'aborted' ||
+      data.turnActivity?.phase === 'failed' ||
       data.turnActivity?.phase === 'interrupted')
       ? truncateAnsi(
           colors.dim(
@@ -625,6 +626,8 @@ function renderOverviewLayout(
         return theme.info('Responding');
       case 'aborted':
         return theme.error('Aborted');
+      case 'failed':
+        return theme.error('Failed');
       case 'interrupted':
         return theme.error('Interrupted');
       case 'exited':
