@@ -241,6 +241,12 @@ const KNOWN_TOP_LEVEL_TYPES = new Set([
   'turn_context',
   'compacted',
   'world_state',
+  // codex-cli 0.153+ persists each model response's token usage as its own
+  // record (usage / turn_token_usage / thread_token_usage). It lands 1:1
+  // beside the token_count event this parser already consumes, with the same
+  // figures and without rate_limits or the context window, so it is
+  // known-and-ignored rather than protocol drift.
+  'token_usage_record',
 ]);
 
 const KNOWN_RESPONSE_TYPES = new Set([
