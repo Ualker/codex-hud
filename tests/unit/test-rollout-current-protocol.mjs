@@ -343,6 +343,46 @@ try {
     'earlier unknown counters carry across incremental parses'
   );
 
+  // codex-cli 0.153+ persists each model response's token usage as its own
+  // top-level record, 1:1 with the token_count event the parser consumes and
+  // carrying the same figures; known-and-ignored, so it neither counts as
+  // drift nor moves the token figures.
+  const usage = {
+    input_tokens: 22518,
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    output_tokens: 297,
+    reasoning_output_tokens: 89,
+    total_tokens: 22815,
+  };
+  appendRecords([
+    {
+      timestamp: '2026-07-30T00:00:09.300Z',
+      type: 'token_usage_record',
+      payload: {
+        thread_id: '019b1111-a111-7111-8111-111111111111',
+        turn_id: 'turn-2',
+        session_id: '019b1111-a111-7111-8111-111111111111',
+        root_turn_id: 'turn-2',
+        response_id: 'resp_0ae826d112af6518016a98df819af487d0b9725316bd4ad140',
+        usage,
+        turn_token_usage: usage,
+        thread_token_usage: usage,
+      },
+    },
+  ]);
+  const withUsageRecord = await parser.parse();
+  assert.deepEqual(
+    withUsageRecord?.protocolHealth.unknownTopLevelTypes,
+    { future_protocol_record: 1 },
+    'the 0.153 token_usage_record is a known top-level type'
+  );
+  assert.deepEqual(
+    withUsageRecord?.tokenUsage,
+    withItemStream?.tokenUsage,
+    'token figures still come from token_count alone'
+  );
+
   console.log('test-rollout-current-protocol: PASS');
 } finally {
   const resolvedRoot = fs.realpathSync(tempRoot);
