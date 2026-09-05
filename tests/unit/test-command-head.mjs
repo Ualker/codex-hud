@@ -45,7 +45,7 @@ const cases = [
   // its own. Keeping the pair made the newline itself the head of a segment,
   // which the pane printed as a lone `↵` between two real commands.
   ['env \\\n  A=1 \\\n  /bin/echo hi', 'echo'],
-  ['printf a \\\n  b\nmake test', 'printf ; make test'],
+  ['printf a \\\n  b\nmake test', 'make test'],
   // Shell function definitions are declarations, not commands. The complete
   // body is skipped, and later invocations never keep a dangling `(`.
   [
@@ -61,7 +61,7 @@ const cases = [
     ].join('\n'),
     // mktemp runs inside the first line's assignment substitution; the
     // function body itself still never leaks into the head.
-    'mktemp ; run_canary ×2 ; wait',
+    'mktemp ; run_canary ×2',
   ],
   ['run_canary() {\n  printf ok\n}', undefined],
   ['function cleanup() { rm -f /tmp/x; }\ncleanup', 'cleanup'],
@@ -71,7 +71,7 @@ const cases = [
     'set -e; if [ -f /tmp/ready ]; then tmux capture-pane -p -t %1; tmux capture-pane -p -t %2; fi',
     'tmux capture-pane ×2',
   ],
-  ['if grep -q needle file; then echo found; fi', 'grep ; echo'],
+  ['if grep -q needle file; then echo found; fi', 'grep'],
   ['while test -f /tmp/busy; do sleep 1; done', 'sleep'],
   ['until [[ -e /tmp/ready ]]; do make test; done', 'make test'],
   ['export FOO=bar; cd /repo; npm test', 'npm test'],
@@ -106,15 +106,23 @@ const cases = [
   ["python3 - <<'PY'\nimport sys\nPY", 'python3'],
   ['cat <<-EOF\n\tindented\nEOF', 'cat'],
   // The heredoc body starts after the full command line; `&&` still splits.
-  ['python3 <<PY && echo done\nimport x\nPY', 'python3 && echo'],
+  ['python3 <<PY && echo done\nimport x\nPY', 'python3'],
   // After the closing delimiter, later lines are commands again.
   ['cat <<EOF\nbody line\nEOF\ngit status', 'cat ; git status'],
   // Two heredocs on one line queue two bodies.
-  ['cat <<A <<B\nfirst\nA\nsecond\nB\necho ok', 'cat ; echo'],
+  ['cat <<A <<B\nfirst\nA\nsecond\nB\necho ok', 'cat'],
   // An unterminated body swallows to the end instead of minting heads.
   ['python3 <<PY\nimport never_closed', 'python3'],
   // A here-string stays inline and keeps following commands visible.
-  ['grep -c x <<< "$data" && echo done', 'grep && echo'],
+  ['grep -c x <<< "$data" && echo done', 'grep'],
+  // Shell builtins never describe what a command did (measured live as
+  // `ffmpeg ; echo ; exit`); echo/printf stay only when they are all there is.
+  ['ffmpeg -i in.mp4 out.mp4 ; echo done ; exit 0', 'ffmpeg'],
+  ['exit 1', undefined],
+  ['true', undefined],
+  ['echo hello', 'echo'],
+  ['printf "%s" a; printf b', 'printf ×2'],
+  ['make build || exit 1', 'make build'],
 ];
 
 // Whatever a head contains reaches the pane verbatim, so no control character

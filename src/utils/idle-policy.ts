@@ -49,7 +49,11 @@ const RENDER_IDLE_MS = 1500;
 const RENDER_UNBOUND_MS = 2500;
 const RENDER_DEEP_IDLE_MS = 3000;
 
-const GIT_BASE_MS = 5_000;
+// Fifteen seconds, not five: Codex's own file changes trigger a refresh the
+// moment a tool call completes (index.ts), so the poll only covers edits made
+// outside the session, where a few seconds of latency on the dirty marker
+// costs nothing and each poll is a spawn.
+const GIT_BASE_MS = 15_000;
 /**
  * Exported: the git snapshot's staleness threshold must cover this slowest
  * planned cadence, or the health line reports "git stale" between perfectly

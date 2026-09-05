@@ -67,14 +67,19 @@ const MODE_NOTICE_MS = 3000;
 let modeNoticeUntilMs = 0;
 
 /**
- * Cycle targets -> full -> off -> targets at runtime. Returns the new mode.
+ * Cycle targets -> full -> off -> targets at runtime (backwards with
+ * `step = -1`, which is what the wheel's other direction does). Returns the
+ * new mode.
  */
-export function cycleToolDetailsMode(nowMs: number = Date.now()): ToolDetailsMode {
+export function cycleToolDetailsMode(
+  nowMs: number = Date.now(),
+  step: 1 | -1 = 1
+): ToolDetailsMode {
   const current = toolDetailsMode();
+  const length = TOOL_DETAILS_MODE_ORDER.length;
   const next =
     TOOL_DETAILS_MODE_ORDER[
-      (TOOL_DETAILS_MODE_ORDER.indexOf(current) + 1) %
-        TOOL_DETAILS_MODE_ORDER.length
+      (TOOL_DETAILS_MODE_ORDER.indexOf(current) + step + length) % length
     ];
   toolDetailsModeOverride = next;
   modeNoticeUntilMs = nowMs + MODE_NOTICE_MS;
@@ -167,8 +172,7 @@ function renderAgentActivityRow(row: AgentActivityRow, width: number, nowMs: num
     return renderAgentRow(icons.cross, safeLabel, ' display error', theme.error, width);
   }
 
-  const spinnerIndex = Math.floor(nowMs / 100) % icons.spinner.length;
-  const spinner = getSpinnerFrame(spinnerIndex);
+  const spinner = getSpinnerFrame();
   const elapsed = formatAgentElapsed(row.elapsedStartedAt, nowMs);
   const descendants = row.activeDescendantCount > 0
     ? ` ${DESCENDANT_PREFIX}${row.activeDescendantCount}`
@@ -229,9 +233,7 @@ export function renderAgentSummaryLine(
     descendants += row.activeDescendantCount;
   }
 
-  const spinner = getSpinnerFrame(
-    Math.floor(nowMs / 100) % icons.spinner.length
-  );
+  const spinner = getSpinnerFrame();
   const elapsed = formatAgentElapsed(new Date(oldestStartedAtMs), nowMs);
   const descendantSuffix = descendants > 0 ? ` ${DESCENDANT_PREFIX}${descendants}` : '';
   return truncateAnsi(
@@ -344,19 +346,19 @@ function turnPhasePresentation(
     case 'thinking':
       return {
         label: `Thinking ${formatAge(nowMs - activity.since.getTime())}`,
-        icon: getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length),
+        icon: getSpinnerFrame(),
         color: theme.toolRunning,
       };
     case 'running-tool':
       return {
         label: `Running tool ${formatAge(nowMs - activity.since.getTime())}`,
-        icon: getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length),
+        icon: getSpinnerFrame(),
         color: theme.toolRunning,
       };
     case 'responding':
       return {
         label: `Responding ${formatAge(nowMs - activity.since.getTime())}`,
-        icon: getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length),
+        icon: getSpinnerFrame(),
         color: theme.info,
       };
     case 'aborted':
@@ -760,23 +762,18 @@ export function renderHealthLine(
 
   const protocolHealth = data.protocolHealth;
   if (protocolHealth) {
-    const unknownCount = [
-      protocolHealth.unknownTopLevelTypes,
-      protocolHealth.unknownResponseTypes,
-      protocolHealth.unknownEventTypes,
-    ].reduce(
-      (total, counters) =>
-        total +
-        Object.values(counters).reduce(
-          (subtotal, count) => subtotal + count,
-          0
-        ),
-      0
+    // Unknown response/event types can hide tool or turn state the HUD
+    // renders, so they are warnings. Unknown top-level records are a separate,
+    // dim note (renderProtocolNoteLine): Codex adds those with releases, and
+    // every one so far arrived beside the records the HUD already reads.
+    const nested = describeUnknownRecords(
+      mergeUnknownCounters(
+        protocolHealth.unknownResponseTypes,
+        protocolHealth.unknownEventTypes
+      )
     );
-    if (unknownCount > 0) {
-      warnings.push(
-        `${unknownCount} unrecognized Codex ${plural(unknownCount, 'record')}`
-      );
+    if (nested) {
+      warnings.push(nested);
     }
     if (protocolHealth.malformedLines > 0) {
       const count = protocolHealth.malformedLines;
@@ -789,12 +786,105 @@ export function renderHealthLine(
   if (warnings.length === 0) {
     return null;
   }
-  const warningIcon =
-    process.env.CODEX_HUD_ASCII === '1' ? '!' : '⚠';
   return truncateAnsi(
-    theme.warning(`${warningIcon} ${warnings.join(' · ')}`),
+    theme.warning(`${healthIcon()} ${warnings.join(' · ')}`),
     width
   );
+}
+
+function healthIcon(): string {
+  return process.env.CODEX_HUD_ASCII === '1' ? '!' : '⚠';
+}
+
+function mergeUnknownCounters(
+  ...counters: Record<string, number>[]
+): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const counter of counters) {
+    for (const [name, count] of Object.entries(counter)) {
+      merged[name] = (merged[name] ?? 0) + count;
+    }
+  }
+  return merged;
+}
+
+/** How many type names the note spells out before trailing off. */
+const MAX_NAMED_UNKNOWN_TYPES = 3;
+
+/**
+ * `2 unrecognized Codex records: token_usage_record`. The bare count used to
+ * be the whole message, and "what is that?" was the user's first question:
+ * the type name is what a release note or a whitelist search needs.
+ */
+function describeUnknownRecords(
+  counters: Record<string, number>
+): string | null {
+  const entries = Object.entries(counters).filter(([, count]) => count > 0);
+  const total = entries.reduce((sum, [, count]) => sum + count, 0);
+  if (total === 0) {
+    return null;
+  }
+  const names = entries
+    .sort(([leftName, left], [rightName, right]) =>
+      right - left || leftName.localeCompare(rightName)
+    )
+    .map(([name]) => sanitizeTerminalText(name))
+    .filter(Boolean);
+  const named = names.slice(0, MAX_NAMED_UNKNOWN_TYPES);
+  const suffix = names.length > named.length ? ', …' : '';
+  return `${total} unrecognized Codex ${plural(total, 'record')}: ${named.join(', ')}${suffix}`;
+}
+
+/**
+ * Dim note for record types this build does not know at the top level. Kept
+ * off the warning row: a warning color for a harmless new record trained the
+ * user to ignore the one row that reports real faults, while the row budget
+ * ladder can drop this note first when live state needs the row.
+ */
+export function renderProtocolNoteLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
+  const protocolHealth = data.protocolHealth;
+  if (!protocolHealth) {
+    return null;
+  }
+  const note = describeUnknownRecords(protocolHealth.unknownTopLevelTypes);
+  if (!note) {
+    return null;
+  }
+  return truncateAnsi(colors.dim(`${healthIcon()} ${note}`), width);
+}
+
+/**
+ * The dim note row: unknown top-level records, and probes that have gone
+ * slow. Past their budgets tmux and ps probes time out and every consumer
+ * degrades silently (the overview loses bindings, liveness stays unknown)
+ * while the pane looks healthy; measured 0.3-5.4s per tmux round trip at
+ * load average 96. Saying so is the difference between "the HUD is stale"
+ * and "the machine is".
+ */
+export function renderNoteLine(
+  data: HudData,
+  width: number = Number.POSITIVE_INFINITY
+): string | null {
+  const notes: string[] = [];
+  const protocolNote = data.protocolHealth
+    ? describeUnknownRecords(data.protocolHealth.unknownTopLevelTypes)
+    : null;
+  if (protocolNote) {
+    notes.push(protocolNote);
+  }
+  const slowest = data.slowProbes?.[0];
+  if (slowest) {
+    notes.push(
+      `probes slow · ${sanitizeTerminalText(slowest.name)} ${formatToolDuration(slowest.ms)}`
+    );
+  }
+  if (notes.length === 0) {
+    return null;
+  }
+  return truncateAnsi(colors.dim(`${healthIcon()} ${notes.join(' · ')}`), width);
 }
 
 function formatToolWorkdir(workdir: string): string {
@@ -870,7 +960,7 @@ function renderToolCallDetail(
   const icon = status === 'running'
     ? paused
       ? icons.pause
-      : getSpinnerFrame(Math.floor(nowMs / 100) % icons.spinner.length)
+      : getSpinnerFrame()
     : status === 'error'
       ? icons.cross
       : status === 'yielded'
@@ -1315,8 +1405,10 @@ export function renderTokenLine(
     const cachedInput = usage.cached_input_tokens ?? 0;
     const nonCachedInput = Math.max(0, (usage.input_tokens ?? 0) - cachedInput);
 
+    // "Turn", not "Tokens": this is the last turn's usage, and beside the
+    // session `Total:` the generic label read as the cumulative number.
     tokensPart = theme.tokenCount(
-      `Tokens: ${formatTokenCount(usage.total_tokens ?? 0)}`
+      `Turn: ${formatTokenCount(usage.total_tokens ?? 0)}`
     );
     parts.push(tokensPart);
 

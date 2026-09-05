@@ -7,6 +7,7 @@ import {
 } from '../../dist/render/lines/environment-line.js';
 import {
   renderHealthLine,
+  renderProtocolNoteLine,
   renderRateLimitLine,
   renderTurnActivityLine,
 } from '../../dist/render/lines/activity-line.js';
@@ -147,8 +148,43 @@ const health = stripAnsi(renderHealthLine(data, 100, now));
 // meets them, so each reads as a phrase rather than a status enum.
 assert.match(health, /git status 18s old/);
 assert.match(health, /session log unavailable/);
-assert.match(health, /1 unrecognized Codex record\b/);
 assert.doesNotMatch(health, /private details/);
+
+// An unknown top-level record type is a dim note that names the type, not a
+// warning: Codex adds such records with releases (token_usage_record in
+// 0.153), every one so far arrived beside the records the HUD reads, and the
+// bare count left "what is that?" as the first question.
+assert.doesNotMatch(health, /unrecognized/, 'the warning row does not carry it');
+const note = renderProtocolNoteLine(data, 100);
+assert.ok(note, 'the note renders');
+assert.match(stripAnsi(note), /1 unrecognized Codex record: future$/);
+assert.match(note, /^\x1b\[2m/, 'and it is dim');
+assert.equal(renderProtocolNoteLine({ ...data, protocolHealth: undefined }, 100), null);
+
+// Unknown response/event types can hide tool or turn state, so they stay on
+// the warning row, named and counted.
+{
+  const nested = {
+    ...data,
+    collectorHealth: {},
+    protocolHealth: {
+      unknownTopLevelTypes: {},
+      unknownResponseTypes: { future_call: 1 },
+      unknownEventTypes: { item_started: 3, other: 1 },
+    },
+  };
+  const line = stripAnsi(renderHealthLine(nested, 100, now));
+  assert.match(line, /5 unrecognized Codex records: item_started, future_call, other/);
+  assert.equal(renderProtocolNoteLine(nested, 100), null);
+  const many = {
+    ...nested,
+    protocolHealth: {
+      ...nested.protocolHealth,
+      unknownEventTypes: { a: 1, b: 1, c: 1, d: 1 },
+    },
+  };
+  assert.match(stripAnsi(renderHealthLine(many, 100, now)), /: a, b, c, …/);
+}
 
 // A collector that has not finished its first run is `pending`, not a fault.
 // Reporting it made every HUD start show "project scan not refreshing · git

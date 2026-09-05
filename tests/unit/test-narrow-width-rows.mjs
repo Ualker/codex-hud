@@ -82,7 +82,13 @@ const plain = (value) => (value === null ? null : stripAnsi(value));
   const wide = plain(renderEnvironmentLine(data, 146));
   assert.match(wide, /Approval: ask for approval/);
   assert.match(wide, /Sandbox: workspace-write/);
-  assert.match(wide, /Fast: off/);
+  // The default carries no signal and the Codex footer already states it.
+  assert.doesNotMatch(wide, /Fast:/);
+  assert.match(
+    plain(renderEnvironmentLine({ ...data, config: { ...data.config, service_tier: 'priority' } }, 146)),
+    /Fast: on/,
+    'a non-default fast mode is still stated'
+  );
 
   for (const width of [120, 100, 80, 60, 40, 30]) {
     const line = plain(renderEnvironmentLine(data, width));

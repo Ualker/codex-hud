@@ -39,6 +39,7 @@ run_case() {
   local label="$1"
   local toggle_value="$2"
   local expected_status="${3:-success}"
+  local existing_binding="${4:-}"
   local log_file="$TEST_ROOT/$label.log"
   local output_file="$TEST_ROOT/$label.out"
   local -a env_args=(
@@ -63,6 +64,9 @@ run_case() {
   if [[ -n "$toggle_value" ]]; then
     env_args+=("CODEX_HUD_BIND_TOGGLE=$toggle_value")
   fi
+  if [[ -n "$existing_binding" ]]; then
+    env_args+=("TMUX_LIST_KEYS_OUTPUT=$existing_binding")
+  fi
 
   set +e
   env -u CODEX_HUD_BIND_TOGGLE "${env_args[@]}" \
@@ -81,14 +85,47 @@ run_case() {
   echo "$log_file"
 }
 
+# Unset means "install while the key is free": tmux binds nothing to H by
+# default, and this is the one path that toggles the view without leaving
+# the Codex pane. The HUD is told so its hint advertises the key.
 default_log="$(run_case default "")"
-if grep -q '^bind-key ' "$default_log"; then
-  echo "Prefix+H must not be installed by default" >&2
+if ! grep -q '^bind-key -T prefix H ' "$default_log"; then
+  echo "Prefix+H must be installed by default while the key is unbound" >&2
+  cat "$default_log" >&2
+  exit 1
+fi
+if ! grep -q "CODEX_HUD_TOGGLE_KEY='Prefix+H'" "$default_log"; then
+  echo "the HUD must learn the installed key" >&2
   cat "$default_log" >&2
   exit 1
 fi
 
-enabled_log="$(run_case enabled 1)"
+# A key the user has taken is left alone.
+taken_log="$(run_case taken "" success "bind-key -T prefix H select-window -t 0")"
+if grep -q '^bind-key ' "$taken_log"; then
+  echo "Prefix+H must not replace a user binding" >&2
+  cat "$taken_log" >&2
+  exit 1
+fi
+
+# A binding of our own (an earlier session) is re-installed, not treated as
+# taken.
+ours_log="$(run_case ours "" success "bind-key -T prefix H run-shell \"tmux if-shell -F '#{@codex_hud_pane}' ...\"")"
+if ! grep -q '^bind-key -T prefix H ' "$ours_log"; then
+  echo "our own earlier binding counts as free" >&2
+  cat "$ours_log" >&2
+  exit 1
+fi
+
+disabled_log="$(run_case disabled 0)"
+if grep -q '^bind-key ' "$disabled_log"; then
+  echo "Prefix+H must not be installed when CODEX_HUD_BIND_TOGGLE=0" >&2
+  cat "$disabled_log" >&2
+  exit 1
+fi
+
+# An explicit 1 installs even over a taken key.
+enabled_log="$(run_case enabled 1 success "bind-key -T prefix H select-window -t 0")"
 if ! grep -q '^bind-key -T prefix H ' "$enabled_log"; then
   echo "Prefix+H must be installed when CODEX_HUD_BIND_TOGGLE=1" >&2
   cat "$enabled_log" >&2
@@ -107,4 +144,4 @@ if ! grep -Fq "CODEX_HUD_BIND_TOGGLE must be one of" "$TEST_ROOT/invalid.out"; t
   exit 1
 fi
 
-echo "test-wrapper-toggle-binding: PASS (default=off explicit=on invalid_preflight=1)"
+echo "test-wrapper-toggle-binding: PASS (auto=free-only explicit=on/off invalid_preflight=1)"

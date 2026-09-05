@@ -15,6 +15,8 @@
 
 import { execFile } from 'child_process';
 
+import { startProbe } from '../utils/probe-latency.js';
+
 /**
  * Matches the pane-probe timeout in session-finder, for the same measured
  * reason: on a loaded machine a bare `/bin/sh` spawn takes 0.7-2.1s here, so a
@@ -88,6 +90,7 @@ export interface OpenHudBinding {
 
 function tmux(args: readonly string[]): Promise<string | null> {
   return new Promise((resolve) => {
+    const finishProbe = startProbe('tmux');
     execFile(
       'tmux',
       args,
@@ -97,6 +100,7 @@ function tmux(args: readonly string[]): Promise<string | null> {
         maxBuffer: TMUX_MAX_BUFFER,
       },
       (error, stdout) => {
+        finishProbe();
         // Running outside tmux, a dead server, or a tmux too old for the
         // format used here are all "no data", never a HUD failure.
         resolve(error ? null : stdout);

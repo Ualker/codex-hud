@@ -73,6 +73,9 @@ case "$cmd" in
       @codex_hud_toggle_key)
         echo "${TMUX_STORED_TOGGLE_KEY:-${TMUX_SHOW_OPTION_DEFAULT:-}}"
         ;;
+      @codex_hud_fit_height)
+        echo "${TMUX_FIT_HEIGHT:-}"
+        ;;
       *)
         echo "${TMUX_SHOW_OPTION_DEFAULT:-}"
         ;;
@@ -172,6 +175,20 @@ case "$cmd" in
       echo "bind-key failed" >&2
       exit 1
     fi
+    ;;
+  list-keys)
+    # A bound key prints its binding; an unbound one is `unknown key` and a
+    # non-zero exit, which is what a real tmux 3.x does.
+    append_log "$cmd $*"
+    if [[ -n "${TMUX_LIST_KEYS_OUTPUT:-}" ]]; then
+      printf '%s\n' "${TMUX_LIST_KEYS_OUTPUT}"
+      exit 0
+    fi
+    echo "unknown key" >&2
+    exit 1
+    ;;
+  unbind-key)
+    append_log "$cmd $*"
     ;;
   new-session|send-keys|select-pane|attach-session|kill-session)
     append_log "$cmd $*"

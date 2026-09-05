@@ -34,7 +34,7 @@ try {
 
   const env = { CODEX_HOME: codexHome };
   const refresh = { forceRefresh: true };
-  const initial = collectCodexAssetCounts(cwd, env, undefined, refresh);
+  const initial = await collectCodexAssetCounts(cwd, env, undefined, refresh);
   assert.deepEqual(initial, { skillsCount: 1, hooksCount: 1 });
 
   writeSkill('second');
@@ -42,7 +42,7 @@ try {
     { command: 'first-hook', enabled: true },
     { command: 'second-hook', enabled: true },
   ]);
-  const added = collectCodexAssetCounts(cwd, env, undefined, refresh);
+  const added = await collectCodexAssetCounts(cwd, env, undefined, refresh);
   assert.deepEqual(added, { skillsCount: 2, hooksCount: 2 });
 
   writeSkill('first', false);
@@ -50,14 +50,14 @@ try {
     { command: 'first-hook', enabled: false },
     { command: 'second-hook', enabled: true },
   ]);
-  const disabled = collectCodexAssetCounts(cwd, env, undefined, refresh);
+  const disabled = await collectCodexAssetCounts(cwd, env, undefined, refresh);
   assert.deepEqual(disabled, { skillsCount: 1, hooksCount: 1 });
 
   const runtimeHookOverrides = [
     'hooks.event=[{command="second-hook",enabled=true}]',
     `hooks.Stop=[{hooks=[{type="command",command='''runtime-stop'''}]}]`,
   ];
-  const runtimeAdded = collectCodexAssetCounts(cwd, env, undefined, {
+  const runtimeAdded = await collectCodexAssetCounts(cwd, env, undefined, {
     runtimeHookOverrides,
   });
   assert.deepEqual(runtimeAdded, { skillsCount: 1, hooksCount: 2 });
@@ -65,7 +65,7 @@ try {
   const previousCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHome;
   try {
-    const projectInfo = collectProjectInfo(cwd, {}, { runtimeHookOverrides });
+    const projectInfo = await collectProjectInfo(cwd, {}, { runtimeHookOverrides });
     assert.equal(projectInfo.skillsCount, 1);
     assert.equal(projectInfo.hooksCount, 2);
   } finally {

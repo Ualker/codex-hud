@@ -266,10 +266,10 @@ const resolved = stripAnsi(
     146
   )
 );
-assert.match(
+assert.doesNotMatch(
   resolved,
-  /Fast: off/,
-  'a complete scan lets the config value stand instead of hedging forever'
+  /Fast:/,
+  'a complete scan resolves the hedge to the default, which is omitted'
 );
 assert.doesNotMatch(resolved, /\?/, 'no hedge markers remain');
 

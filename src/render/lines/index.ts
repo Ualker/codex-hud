@@ -15,6 +15,8 @@ export {
   renderTurnActivityLine,
   renderRateLimitLine,
   renderHealthLine,
+  renderProtocolNoteLine,
+  renderNoteLine,
   formatAgentElapsed,
   renderAgentLines,
   renderAgentSummaryLine,

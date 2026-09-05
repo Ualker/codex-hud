@@ -7,6 +7,8 @@
 
 # Codex HUD
 
+> **注意:** この日本語版は 2026-08-04 時点の内容です。2026-08 以降の変更（回合失敗の表示、`/new` 検出、通知フック、配額予測、マウス操作、コンテンツに合わせたペイン高さなど）は英語版 [README.md](./README.md) と中国語版 [README.zh.md](./README.zh.md) のみに反映されています。
+
 [OpenAI Codex CLI](https://github.com/openai/codex) 用のリアルタイムステータスバー HUD。軽量・設定不要・tmux 内で動作。
 
 ## Windows WSL サポート

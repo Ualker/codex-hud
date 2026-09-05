@@ -26,7 +26,11 @@ case "\$cmd" in
     ;;
   list-sessions)
     if [[ -n "\${STUB_SESSIONS:-}" ]]; then
-      printf '%s\n' "\$STUB_SESSIONS"
+      if [[ "\$*" == "-F #{session_name}" ]]; then
+        printf '%s\n' "\$STUB_SESSIONS" | cut -d'|' -f1
+      else
+        printf '%s\n' "\$STUB_SESSIONS"
+      fi
     fi
     ;;
   list-panes)
@@ -114,6 +118,34 @@ assert_contains "$out" "codex-hud-prj-2a51592d-20260812135511-57225  ~/Desktop/p
 assert_contains "$out" "codex-hud-api-9f3c1a20-20260812151832-33905  /srv/api  [detached]" \
   "a path outside HOME is left absolute"
 assert_missing "$out" "work" "sessions that are not codex-hud stay out"
+
+# `codex`, --kill and --reload act on the newest session of the current
+# directory; with two open here the listing says which one that is.
+hash_cwd() {
+  local cwd="$1"
+  if command -v md5sum >/dev/null 2>&1; then
+    printf "%s" "$cwd" | md5sum | awk '{print substr($1, 1, 8)}'
+  elif command -v md5 >/dev/null 2>&1; then
+    printf "%s" "$cwd" | md5 -q 2>/dev/null | cut -c1-8
+  else
+    printf "%s" "$cwd" | shasum -a 256 | awk '{print substr($1, 1, 8)}'
+  fi
+}
+here_hash="$(hash_cwd "$PWD")"
+here_old="codex-hud-codex-hud-${here_hash}-20260812135511-57225"
+here_new="codex-hud-codex-hud-${here_hash}-20260905092810-22918"
+out="$(cd "$PWD" && run_list "$here_old|%1|%2|attached
+$here_new|%3|%4|attached
+codex-hud-api-9f3c1a20-20260812151832-33905|%5|%6|detached" \
+  "%1|live|/x
+%2|live|/x
+%3|live|/x
+%4|live|/x
+%5|live|/srv/api
+%6|live|/srv/api")"
+assert_contains "$out" "$here_new  /x  [attached]  (newest here" "the newest session of this directory is marked"
+assert_missing "$out" "$here_old  /x  [attached]  (newest" "the older one is not"
+assert_missing "$out" "33905  /srv/api  [detached]  (newest" "another directory's session is not"
 
 # A HUD pane that exited leaves a dead pane behind (remain-on-exit). That is
 # exactly the state where the pane looks frozen and the fix is one command.

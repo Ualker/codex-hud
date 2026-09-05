@@ -332,4 +332,37 @@ assert.match(
   'a bound session with no turns reports the exit over "ready"'
 );
 
+// ---- a live Codex pid answers without a spawn ------------------------------
+// The walk hands back the pid it matched; while that pid answers a signal-0
+// check, later probes skip the tmux and ps spawns (0.3-5.4s and 0.5-0.8s of
+// wall time each on this machine). Its death brings the walk back.
+{
+  const alive = new Set(['4242']);
+  const { instance, probes } = probe(
+    [
+      { alive: true, command: 'node /x/bin/codex', pid: '4242' },
+      { alive: false },
+    ],
+    { isAlive: (pid) => alive.has(pid) }
+  );
+  assert.equal(await instance.refresh(quietIdle, now), true, 'the first walk learns the command');
+  assert.equal(probes.length, 1);
+  assert.equal(await instance.refresh(quietIdle, now + 61_000), false);
+  assert.equal(probes.length, 1, 'the live pid answered without a spawn');
+  assert.equal(await instance.refresh(quietIdle, now + 122_000), false);
+  assert.equal(probes.length, 1);
+  alive.delete('4242');
+  assert.equal(await instance.refresh(quietIdle, now + 183_000), true, 'the dead pid brings the walk back');
+  assert.equal(probes.length, 2);
+  assert.equal(instance.isCodexGone(), true);
+}
+
+{
+  // Without a pid (an older probe shape) every interval still walks.
+  const { instance, probes } = probe([{ alive: true, command: 'codex' }, { alive: true, command: 'codex' }]);
+  await instance.refresh(quietIdle, now);
+  await instance.refresh(quietIdle, now + 61_000);
+  assert.equal(probes.length, 2);
+}
+
 console.log('test-codex-liveness: PASS');

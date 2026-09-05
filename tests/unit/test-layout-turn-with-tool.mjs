@@ -157,15 +157,21 @@ const render = (data, maxLines) =>
   );
 }
 
-// When the rows genuinely run out, the added row is the first to go again —
-// live agent and plan rows outrank it.
+// When the rows run out, live agent and plan rows outrank the turn row — but
+// the static environment row (whose content cannot ride on row 1 at this
+// width) yields before the turn row does: it used to outlive the one row that
+// carries the `event N ago` staleness marker.
 {
   const lines = render(makeData({ agentCount: 2, planSteps: 7 }), 7);
   assert.ok(lines.length <= 7, `must fit seven rows, got ${lines.length}`);
-  assert.equal(
+  assert.ok(
     lines.some((line) => line.includes('Running tool')),
+    'the turn row survives once the static environment row has yielded'
+  );
+  assert.equal(
+    lines.some((line) => line.includes('MCP configured')),
     false,
-    'the promoted row yields before agent and plan rows do'
+    'the environment row is what gave way'
   );
   assert.ok(
     lines.some((line) => line.includes('agent-1')),
@@ -175,6 +181,18 @@ const render = (data, maxLines) =>
     lines.some((line) => line.includes('exec_command')),
     'the call in flight survives'
   );
+
+  // One row more and the environment row comes back before the session row.
+  const taller = render(makeData({ agentCount: 2, planSteps: 7 }), 8);
+  assert.ok(taller.some((line) => line.includes('MCP configured')));
+  assert.equal(taller.some((line) => line.startsWith('Dir: ')), false);
+
+  // Agents outrank the turn row: with three of them the frame fills all
+  // seven rows instead of collapsing to six with one blank.
+  const three = render(makeData({ agentCount: 3, planSteps: 7 }), 7);
+  assert.equal(three.length, 7, 'no row is left blank while there is state to show');
+  assert.ok(three.some((line) => line.includes('agent-2')));
+  assert.equal(three.some((line) => line.includes('Running tool')), false);
 }
 
 // Nothing changes when no tool is running: the turn row was never displaced.
@@ -215,8 +233,8 @@ const render = (data, maxLines) =>
   );
   const tool = lines.find((line) => line.includes('exec_command'));
   if (tool) {
-    assert.match(tool, /⏸/, 'a visible suspended tool uses the fixed pause icon');
-    assert.doesNotMatch(tool, /[◐◓◑◒]/, 'no spinner frame remains');
+    assert.match(tool, /^▲/, 'a visible suspended tool uses the fixed pause marker');
+    assert.doesNotMatch(tool, /^[●·]/, 'no spinner frame remains');
   }
 }
 

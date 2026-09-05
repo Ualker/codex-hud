@@ -28,10 +28,13 @@ Because you're flying blind without one. Codex HUD gives you a persistent dashbo
 
 **Q: I run multiple Codex sessions. Can I monitor them all?**
 
-Yes. Click the HUD pane and press `Ctrl+T`, or run
-`codex-hud --toggle-mode` from the main pane; `CODEX_HUD_BIND_TOGGLE=1` installs
-a `Prefix+H` binding that works without moving focus, and the hint line names
-whichever of the two this session actually has. Overview lists sessions worked
+Yes. Click the HUD pane, or run `codex-hud --toggle-mode` from the main pane;
+`Prefix+H` toggles it from the Codex pane too — the wrapper installs that
+binding whenever the key is unbound (`CODEX_HUD_BIND_TOGGLE=0` skips it, `1`
+forces it), and the hint line names what this session actually has. The HUD
+reports mouse events itself, so wheel-scrolling over it cycles the tool-detail
+level instead of dropping the pane into tmux copy-mode (which used to freeze
+the view on its last frame). Overview lists sessions worked
 in the last 30 minutes — not only those mid-turn at that instant — sorted by
 live phase, then by how recently each was touched, with context remaining as the
 tiebreak. It marks the session this HUD is bound to with `▸`, and keeps that row
@@ -45,13 +48,18 @@ idle state. Each row ends with the
 tmux session hosting it — the name `tmux ls` and the session chooser use, so a
 row you want to reach is one you can address; sessions found by the rollout scan
 alone fall back to their session ID. A model column appears only when the
-listed sessions do not all run the same model. The account's quota window is
+listed sessions do not all run the same model, and a title column — the
+session's first prompt, the label `codex resume` lists it under — whenever the
+width allows, because two sessions open in one project used to differ only by
+the tail of an opaque tmux name; the same title sits on the single view's first
+row. The account's quota window is
 listed below the sessions, because it is the one number that applies to every
 row at once; it takes a row from the list only once usage is high enough to be
 a warning. The scan runs when the mode is entered, so the session this HUD is
-bound to is listed immediately and the others join it a moment later. While the
-HUD pane is focused, `t` cycles the tool-detail level (`targets` → `full` →
-`off`) and briefly confirms the new level.
+bound to is listed immediately and the others join it a moment later. The wheel
+over the HUD (or `t` while the pane is focused, or `codex-hud --cycle-details`
+from the main pane) cycles the tool-detail level (`targets` → `full` → `off`,
+wheel-up goes back) and briefly confirms the new level.
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
 
@@ -102,22 +110,28 @@ After the first install, these are available in your shell:
 | `codex-hud --reload` | Rebuild when needed, then restart the newest session's HUD pane in this directory |
 | `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
 | `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
-| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated` |
+| `codex-hud --cycle-details` | Cycle the tool-detail level without moving focus |
+| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory (the one `codex`, `--kill` and `--reload` act on) is marked `(newest here…)` |
 | `codex-hud --hud-version` | Print the package version and checkout revision |
 
 ## What's on the HUD?
 
 ```text
-[gpt-5.6-sol high] my-project git:(main *) up 12m
+[gpt-5.6-sol high] my-project "fix the flaky e2e run" git:(main *) up 12m
 [FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: ███████░░░░░ 55% left (70.4K) | Tokens: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K) | Total: 1.2M
-◐ Thinking 42s · event 8s ago
-◐ exec: npm test 1.4s | ✗ exec: rg pattern @other-repo exit 1 | ✓ read_file ×3
+Ctx: ███████▁▁▁▁▁ 55% left (70.4K) | Turn: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K) | Total: 1.2M
+● Thinking 42s · event 8s ago
+● exec: npm test 1.4s | ✗ exec: rg pattern @other-repo exit 1 | ✓ read_file ×3
 ```
 
 The context gauge is a fuel bar: filled cells show what remains, matching the
-`% left` label, and the color reflects pressure (green → yellow → red). `Total`
-is the session's cumulative token spend, next to the per-turn count.
+`% left` label, and the color reflects pressure (green → yellow → red). `Turn`
+is the last turn's token usage and `Total` the session's cumulative spend. The
+quoted title is the session's first prompt. Every glyph comes from a set
+verified against a terminal font that lacks the half-filled circles and light
+shades (◐ ░ ⏸ rendered wide or at the wrong height there): the activity marker
+is a dot that pulses once per painted frame, the gauge track is a low block,
+and a paused call is marked `▲`.
 
 Before a Codex session is bound the HUD says `○ Waiting for a Codex session…`
 rather than rendering a short frame that could be mistaken for a failure.
@@ -125,21 +139,28 @@ rather than rendering a short frame that could be mistaken for a failure.
 | Line | Shows |
 |------|-------|
 | **Header** | Model + effort, project, git branch, and how long the bound Codex session has run. Before the first collector round the model reads `[…]` and the duration is absent, because neither is known yet |
-| **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is dimmed); then MCP, Codex skills, hooks, AGENTS.md, and config sources. Approval and sandbox come from the session's own records first, then from the launch flags on the pane's live Codex process (`--yolo`, `--ask-for-approval …` — flags override the config file, and until a 0.149 session's first message no record exists for them to have reached), and only then from config; a bound session with no records and no readable flags shows `?`/`[ACCESS ?]` rather than presenting the overridden config as fact. One exception restores the config early: an argv captured and walked to its very end with no policy flag and no profile proves the config un-overridden, so a plain launch no longer waits on `?` until its first message |
+| **Security/environment** | `[FULL ACCESS]`, approval/sandbox/Fast first (cells the badge already implies are dropped, and the default `Fast: off` is omitted — the Codex footer two rows above already states it); then MCP, Codex skills, hooks, AGENTS.md, and config sources. When the pane is short of rows and every one of these cells fits beside row 1, the whole row moves up there instead of costing a row. Approval and sandbox come from the session's own records first, then from the launch flags on the pane's live Codex process (`--yolo`, `--ask-for-approval …` — flags override the config file, and until a 0.149 session's first message no record exists for them to have reached), and only then from config; a bound session with no records and no readable flags shows `?`/`[ACCESS ?]` rather than presenting the overridden config as fact. One exception restores the config early: an argv captured and walked to its very end with no policy flag and no profile proves the config un-overridden, so a plain launch no longer waits on `?` until its first message |
 | **Capacity** | Context percent/tokens remaining, input/cache/output, session total, compact count; the quota window and its reset time are stated whenever the pane has a row to spare — as what remains (`5h 6% left`), the direction the context gauge above and the Codex footer below already use — and highlighted from 70% usage onward, while a window whose reset time has already passed is dropped rather than replayed. Rate limits are account state, so the figure comes from the newest snapshot any Codex session on this machine wrote that actually states one — once a window is spent Codex writes windowless snapshots, and taking the newest of those blanked the row at exactly 100% used. A snapshot carrying no window at all but an empty credit pool reads `credits: 0`; during such an exhaustion stretch the scan keeps walking older files until it finds a reading that still states the reset time, instead of stopping at a fixed count of windowless ones. That reading's windows are retained on the exhaustion snapshot itself, so the row keeps the one number that says when work resumes: `5h 0% left | resets in 3h47m | credits: 0` — measured 2026-08-31, the 5h window's reset time (the Codex pane's own "try again at 9:18 PM") had otherwise left the HUD for the whole 3h47m. A reset less than a day away is stated as a countdown (`resets in 2h13m`); and once a window is half spent — or a full day of readings stands behind the pace, whichever comes first — two dated readings give its burn rate, so a pace that would exhaust it before its reset is stated on the row, named for its window (`→ 7d empty ~08/22`, `→ 5h empty in 40m`). Codex 0.150 turned the single weekly window into a 5h primary with the weekly demoted to secondary; the tracker keeps one baseline per window length, so the weekly forecast survives that swap — a single-series tracker read every 5h snapshot as a stale replay of the stored weekly one and silently stopped learning. The burn-rate baseline is shared through a small per-user state file, so every HUD forecasts the account the same way — two panes used to disagree by a day — and a `--reload` no longer restarts the baseline clock |
-| **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex records this build does not recognize. A collector that has not finished its first run is silent — only something that stopped working is a warning. When `dist/` is rebuilt while a HUD is running, a dim `HUD updated on disk · codex-hud --reload` line appears here, because the pane keeps executing whatever build it was spawned with |
+| **Health** | Plain-language state for Git, session log, agents, project scan, config, overview, and the HUD's own display, plus counts of Codex response/event records this build does not recognize, named (`2 unrecognized Codex records: item_started`). Unknown *top-level* record types (Codex adds one with most releases, `token_usage_record` in 0.153) are a separate dim note that names them and is the first row to go, not a warning; the same note says `probes slow · tmux 5.4s` when a tmux/ps/git probe ran past two seconds, so a dashboard that is stale because the machine is loaded is not mistaken for a dead one. A collector that has not finished its first run is silent — only something that stopped working is a warning. When `dist/` is rebuilt while a HUD is running, a dim `HUD updated on disk · codex-hud --reload` line appears here, because the pane keeps executing whatever build it was spawned with |
 | **Activity** | Thinking/Running tool/Responding/Idle, tool duration/result, plan progress, and active subagents. An idle session also states how long its last turn took. A turn Codex itself ends on an error (`task_complete.error`: a usage-limit hit, a model at capacity, a stream that died) reads `✗ Turn failed · usage limit · after 16m17s` — the provider's verdict and the work it cost, never a completion: measured 2026-08-31, four of twelve turns across two live sessions ended this way, one after 35 minutes, and each had read `✓ Idle · waiting for you` and paged as a completed turn. Every wrapped shell command reads `exec` — one name for one kind of activity, whether Codex sent a single command or a script of several (a wrapped tool that is not a shell command, `web_search` or `update_plan`, still surfaces its own name). The `@dir` tag appears only on a command that ran outside the session's own directory; Codex sends a workdir on every call, and tagging the session cwd itself said nothing. A command that exits non-zero is marked `✗` with its exit code, including when Codex ran it inside a script that itself succeeded. A stream error is drawn only on the Codex TUI and never written to the session log, so a turn it kills would spin as `Thinking` forever; after minutes of silence the HUD checks the Codex pane for the error banner and, only if it is there, reads `✗ Turn likely interrupted`. When Codex itself exits — quit, crash, or a declined trust prompt — the wrapper hands the pane back to your shell and nothing on disk says so; a quiet session's pane is probed for a live Codex process (Codex runs as a grandchild, so tmux's own pane command still reads as the shell), and a pane without one reads `○ Codex exited · run codex to restart` instead of claiming to wait for input nothing will consume. After `/new`, Codex 0.149 registers nothing at all until the session's first message — no rollout, no session-store row — so the previous session's last state would stand indefinitely; a quiet pane whose composer footer shows a brand-new session (`Context 100% left · Ready`) reads `○ New session at the prompt · binds on its first message` instead, and while that hint stands the previous session's context/token and tool-history rows dim, and the session row's Session/CLI/Provider cells with them (the directory and the account quota keep their color), so nothing bright on the HUD contradicts the pane's own footer |
 | **Session** | Working directory, session ID, and CLI version; shown after plan and tool history so small panes keep live state visible. The ID is printed in full whenever the row has room, because it is what `codex resume`, `fork`, `archive`, and `delete` take; narrower panes fall back to the abbreviated form |
 
 The layout adapts in both directions. With rows to spare it keeps the turn row
 alongside the running-tool row, because they count different things: the turn
 row measures how long Codex has been executing tools without pause, the tool row
-how long the call in flight has run. When the pane cannot show every row it
-drops whole low-signal rows in order — the calm quota reading first, then the
-turn row, then session details, then several agent rows collapse into one
-`◐ N agents` count, then the static environment row (its `[FULL ACCESS]` badge
-moves up to the header) — so live plan and agent state survive instead of
-whatever happened to land last.
+how long the call in flight has run. When the pane cannot show every row, the
+frame is built from its most compressed shape — agents collapsed into one
+`● N agents` count, no turn row beside the tool row, no calm quota, the
+environment cells merged onto row 1 (or just the `[FULL ACCESS]` badge when
+they do not fit there), no session row — and rows are handed back by value
+while they fit: expanded agents first, then the turn row, then the calm quota,
+then the environment row, then the session row, and last the dim
+unknown-record note. Nothing is left blank while there is state to show, and a
+taller pane only ever shows more. In adaptive height mode the pane itself
+follows the content: it grows to the rows the unclipped layout wants (up to
+`CODEX_HUD_HEIGHT_MAX`, at most once per ten seconds) and shrinks back after
+the content has stayed smaller for two minutes; a height you set by dragging is
+respected until the content changes (`CODEX_HUD_HEIGHT_FIT=0` turns this off).
 
 Narrow panes shed whole cells rather than cutting words. The header keeps the
 project name and shrinks the branch; the environment row is the longest run of
@@ -219,6 +240,7 @@ codex-hud --doctor           # Run diagnostics (--self-check alias)
 codex-hud --reload           # Restart the newest session's HUD pane here
 codex-hud --reload --all     # Restart the HUD pane of every session here
 codex-hud --toggle-mode      # Toggle single/overview mode
+codex-hud --cycle-details    # Cycle the tool-detail level
 codex-hud --hud-version      # Print version and revision
 ```
 </details>
@@ -236,7 +258,7 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 |----------|---------|-------------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD pane position (`top` / `bottom`) |
 | `CODEX_HUD_HEIGHT` | adaptive `5–12` | One sixth of terminal height, or an explicit fixed row count |
-| `CODEX_HUD_MOUSE` | `1` | Enable mouse/trackpad scrolling |
+| `CODEX_HUD_MOUSE` | `1` | Enable tmux mouse mode for the session; the HUD pane then takes clicks (toggle view) and the wheel (cycle details) itself |
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | Tool detail level: `off`, `targets`, or `full` |
 
 <details>
@@ -247,12 +269,13 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 | `CODEX_HUD_HEIGHT_AUTO` | adaptive: `1`; explicit height: `0` | Add up to three rows on narrow panes |
 | `CODEX_HUD_HEIGHT_MIN` | adaptive: `5`; explicit height: `CODEX_HUD_HEIGHT` | Min height in auto mode |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | Max height in auto mode |
+| `CODEX_HUD_HEIGHT_FIT` | `1` | In adaptive height mode, let the HUD grow the pane to the rows its content needs and shrink it back after two quiet minutes; an explicit `CODEX_HUD_HEIGHT` disables it |
 | `CODEX_HUD_AUTO_ATTACH` | `0` | Auto-attach even when Codex CLI args are provided |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | tmux alternate-screen for codex pane |
-| `CODEX_HUD_BIND_TOGGLE` | `0` | Install the server-wide `Prefix+H` HUD toggle |
+| `CODEX_HUD_BIND_TOGGLE` | `auto` | Server-wide `Prefix+H` HUD toggle: unset installs it while the key is unbound, `1` always, `0` never |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row (the `t` key cycles this at runtime) |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row (the wheel over the HUD, the `t` key, or `codex-hud --cycle-details` cycles this at runtime). Shell builtins never count as the command: `ffmpeg … ; echo ; exit` reads `ffmpeg` |
 | `CODEX_HUD_MODE` | `single` | Initial display mode: `single` or `overview` |
 | `CODEX_HUD_LOG_FILE` | per-user default | Append HUD diagnostics (watcher/render/tracking errors) to this file. Defaults to `~/Library/Logs/codex-hud/hud.log` on macOS, `$XDG_STATE_HOME/codex-hud/hud.log` elsewhere; set `off` to discard them |
 | `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
@@ -313,6 +336,16 @@ npm run test:render            # Run the render examples
 
 | Date | Change |
 |------|--------|
+| 2026-09-05 | Rollout changes paint at once (fs.watch + wake re-arms the render tick); row budget rebuilt as fill-back with the environment row merging onto row 1; content-fitted pane height; mouse reporting (click toggles, wheel cycles details, no more copy-mode freeze); session title from the first prompt on row 1 and in the overview; verified-safe glyph set and a per-frame spinner; `Turn:` label; unknown-record note names the type; slow-probe note; builtins dropped from command heads; process-tree and Codex-pid caches replace most `ps` spawns; git refresh on tool completion; shared account-quota/git snapshots across HUDs; slow collectors in-process (no worker isolate); `Prefix+H` installed while unbound; `--cycle-details`; `--list` marks the newest session; `--doctor` reports the notify hook |
+| 2026-09-03 | codex 0.153 `token_usage_record` whitelisted |
+| 2026-09-02 | Failed-turn phase and `turn-failed` notification; exhaustion snapshots keep their windows; quota row states what remains; 24h-baseline forecast gate |
+| 2026-08-28 | Per-window burn-rate series (0.150 5h/weekly swap); `exec` display name; session row dims under a fresh prompt; same-directory workdir omitted; argv certification |
+| 2026-08-24 | Token carry-over across batches; every consumed variable baked into the pane command; `/new` fresh-prompt detection; 0.149 subcommands passed through; `turn-completed` notification; shared burn-rate baseline; launch flags read off the live process |
+| 2026-08-20 | Quota scan walks past degenerate snapshots; `HUD updated on disk` notice; `CODEX_HUD_NOTIFY_CMD`; reset countdown; burn-rate forecast; `Codex exited` detection |
+| 2026-08-19 | Quota row survives exhaustion; `Fast: ?` resolves on a complete scan; `--kill` scoped to the newest session; last-turn duration; `--doctor` shows the log; stream-error interruption detection |
+| 2026-08-13 | 0.147 code-mode tool details and exit codes; `codex` subcommands passed through; full session id; overview quota and cold-start row |
+| 2026-08-12 | Quota expiry and account-wide source; row-budget layout; overview lists open HUDs; bounded first read; provisional frame; calm quota; overview addresses; `--list` details |
+| 2026-08-05 | Ctrl+C in the pane; remain-on-exit; `--reload --all`; first frame before collectors; render memoization; worker respawn |
 | 2026-08-04 | Command heads for execution tools in `targets` mode, parse-queue/malformed-line freeze fixes, chokidar 5 watcher repair (midnight-safe), async session probes, tracking-error backoff, OSC 8 hyperlinks, aligned overview columns |
 | 2026-07-30 | Incremental protocol parsing, async collector caches, health/rate/turn state, Unicode width, privacy, and HUD controls |
 | 2026-07-12 | Document authoritative subagent activity, timeout semantics, and overview filtering |

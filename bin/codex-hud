@@ -13,7 +13,8 @@
 #   CODEX_HUD_NO_ATTACH - Deprecated: if set to true, do not attach to existing session
 #   CODEX_HUD_ALTERNATE_SCREEN - Use alternate screen in codex pane (default: 0)
 #   CODEX_HUD_MOUSE - Enable tmux mouse mode for this session (default: 1)
-#   CODEX_HUD_BIND_TOGGLE - Install the server-wide Prefix+H toggle (default: 0)
+#   CODEX_HUD_BIND_TOGGLE - Install the server-wide Prefix+H toggle: auto (default: only while the key is unbound), 1, or 0
+#   CODEX_HUD_HEIGHT_FIT - Let the HUD grow/shrink the pane to its content in adaptive mode (default: 1)
 #   CODEX_HUD_CLEAR_SCROLLBACK - If set to 1, clears tmux scrollback on first render
 #   CODEX_HUD_HISTORY_LIMIT - HUD pane scrollback lines (default: 10000)
 #   CODEX_HUD_TOOL_DETAILS - Tool details: off, targets (default), or full
@@ -143,6 +144,35 @@ resolve_attach_policy() {
 
 resolve_alternate_screen_setting() {
     parse_boolean_setting "CODEX_HUD_ALTERNATE_SCREEN" "${CODEX_HUD_ALTERNATE_SCREEN:-}" "0"
+}
+
+# Whether to install the Prefix+H toggle. tmux key tables are server-wide, so
+# the binding used to be opt-in only — which left the one path that works
+# without leaving the Codex pane switched off for everyone. Unset now means
+# "install while the key is free": tmux binds nothing to H by default, and a
+# key the user has taken is left alone. 1 and 0 keep their explicit meaning.
+resolve_bind_toggle() {
+    local raw="${CODEX_HUD_BIND_TOGGLE:-}"
+    if [[ -z "$raw" || "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" == "auto" ]]; then
+        if prefix_h_is_free; then
+            echo "1"
+        else
+            echo "0"
+        fi
+        return 0
+    fi
+    parse_boolean_setting "CODEX_HUD_BIND_TOGGLE" "$raw" "0"
+}
+
+# tmux prints the binding for a bound key and `unknown key` (non-zero) for an
+# unbound one; a binding of our own counts as free so a restart re-installs it.
+prefix_h_is_free() {
+    local existing
+    existing=$(tmux list-keys -T prefix H 2>/dev/null || true)
+    if [[ -z "$existing" ]]; then
+        return 0
+    fi
+    [[ "$existing" == *codex_hud_pane* ]]
 }
 
 hash_cwd() {
@@ -729,6 +759,7 @@ resolve_hud_height_for_tmux_target() {
 # (empty means unset to every consumer, including NO_COLOR per its spec).
 HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HUD_MODE
+    CODEX_HUD_HEIGHT_FIT
     CODEX_HUD_TOOL_DETAILS
     CODEX_HUD_ASCII
     CODEX_HUD_LOG_FILE
@@ -772,7 +803,7 @@ create_session() {
     local cwd_escaped
     local bind_toggle
     cwd_escaped=$(printf "%q" "$cwd")
-    bind_toggle=$(parse_boolean_setting "CODEX_HUD_BIND_TOGGLE" "${CODEX_HUD_BIND_TOGGLE:-}" "0") || return 1
+    bind_toggle=$(resolve_bind_toggle) || return 1
     local hud_history_limit="${CODEX_HUD_HISTORY_LIMIT:-10000}"
     if ! [[ "$hud_history_limit" =~ ^[0-9]+$ ]] || [[ "$hud_history_limit" -lt 100 ]]; then
         error "CODEX_HUD_HISTORY_LIMIT must be an integer of at least 100 (got: $hud_history_limit)"
@@ -1085,16 +1116,20 @@ Options:
   --list              List all codex-hud sessions
   --reload [--all]    Restart the HUD pane (newest session; --all: every session in this directory)
   --toggle-mode       Toggle single/overview without focusing the HUD pane
+  --cycle-details     Cycle tool details (targets -> full -> off) without focusing the HUD pane
   --hud-version       Show HUD package version and checkout revision
   --attach            Attach to latest existing session in this directory
   --new-session       Always create a new session for this launch
 
-HUD Pane Keys (click the HUD pane first):
-  Ctrl+T              Toggle single/overview display
-  t                   Cycle tool details: targets -> full -> off
+HUD Pane Mouse and Keys:
+  Click the HUD       Toggle single/overview display
+  Wheel over the HUD  Cycle tool details (down: targets -> full -> off, up: back)
+  Prefix+H            Toggle the view from the Codex pane (installed while the
+                      key is unbound; CODEX_HUD_BIND_TOGGLE=0 skips, 1 forces)
+  Ctrl+T / t          The same two actions from the keyboard once the pane is focused
   Ctrl+C              Close the HUD pane process
-  Note: wheel-scrolling the HUD pane enters tmux copy-mode, which freezes the
-  view on the current frame; press q there to resume live updates.
+  The HUD reports mouse events itself, so the wheel no longer drops the pane
+  into tmux copy-mode (which froze the view on its last frame).
 
 Environment Variables:
   HUD display variables are captured from your shell when a session starts and
@@ -1107,11 +1142,16 @@ Environment Variables:
   CODEX_HUD_HEIGHT_AUTO Auto-adjust height for narrow panes (default: 1 unless height is explicit)
   CODEX_HUD_HEIGHT_MIN Minimum HUD height when auto-adjusting (default: 5 adaptive, explicit height fixed)
   CODEX_HUD_HEIGHT_MAX Maximum HUD height when auto-adjusting (default: 12)
+  CODEX_HUD_HEIGHT_FIT In adaptive mode, let the HUD grow the pane to the rows its
+                      content needs (up to HEIGHT_MAX, promptly) and shrink it
+                      back after two quiet minutes (default: 1; explicit
+                      CODEX_HUD_HEIGHT disables it)
   CODEX_HUD_AUTO_ATTACH Auto-attach even when Codex args are provided (default: 0)
   CODEX_HUD_NO_ATTACH Deprecated: force new session (overrides auto attach)
   CODEX_HUD_ALTERNATE_SCREEN Use alternate screen in codex pane (default: 0)
   CODEX_HUD_MOUSE Enable tmux mouse mode for this session (default: 1)
-  CODEX_HUD_BIND_TOGGLE Install the server-wide Prefix+H toggle (default: 0)
+  CODEX_HUD_BIND_TOGGLE Server-wide Prefix+H toggle: unset/auto installs it while
+                      the key is unbound, 1 always, 0 never
   CODEX_HUD_CLEAR_SCROLLBACK Clear terminal scrollback on first render (default: 0)
   CODEX_HUD_HISTORY_LIMIT HUD pane scrollback lines (default: 10000)
   CODEX_HUD_TOOL_DETAILS Tool details: off, targets (default), or full
@@ -1140,6 +1180,7 @@ Examples:
   codex-hud --reload           Reload only the HUD pane (newest session)
   codex-hud --reload --all     Reload the HUD pane of every session here
   codex-hud --toggle-mode      Toggle overview from the main shell
+  codex-hud --cycle-details    Cycle tool details from the main shell
   codex-hud --attach            Reuse existing session intentionally
   codex-hud --new-session       Force a new session
   CODEX_HUD_POSITION=top codex-hud  HUD on top
@@ -1211,6 +1252,15 @@ self_check() {
         failures=$((failures + 1))
     fi
     
+    # Not a failure: the hook is optional. But with it unset the states that
+    # need a human (approval, a failed turn, a hit limit) stay on the pane
+    # only, and a user working in another tmux window never hears of them.
+    if [[ -n "${CODEX_HUD_NOTIFY_CMD:-}" ]]; then
+        info "Notify hook configured (CODEX_HUD_NOTIFY_CMD)"
+    else
+        info "Notify hook not configured: set CODEX_HUD_NOTIFY_CMD to be paged for approval / failed-turn / limit events (see --help)"
+    fi
+
     if [[ ! -f "$HUD_DIR/dist/index.js" ]]; then
         warn "HUD build output not found: $HUD_DIR/dist/index.js"
         failures=$((failures + 1))
@@ -1361,6 +1411,10 @@ list_sessions() {
     fi
 
     panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_current_path}" 2>/dev/null) || panes=""
+    # `codex`, --kill and --reload act on the newest session of the current
+    # directory; with two open here the listing has to say which that is.
+    local newest_here
+    newest_here=$(find_existing_session)
 
     while IFS='|' read -r name main_pane hud_pane attached; do
         [[ -n "$name" ]] || continue
@@ -1379,7 +1433,11 @@ list_sessions() {
             dead) hud_state="  HUD: dead (codex-hud --reload)" ;;
             *)    hud_state="  HUD: missing" ;;
         esac
-        printf '  %s  %s  [%s]%s\n' "$name" "$cwd" "$attached" "$hud_state"
+        local newest_marker=""
+        if [[ -n "$newest_here" && "$name" == "$newest_here" ]]; then
+            newest_marker="  (newest here: codex / --kill / --reload target)"
+        fi
+        printf '  %s  %s  [%s]%s%s\n' "$name" "$cwd" "$attached" "$hud_state" "$newest_marker"
     done <<< "$rows"
 }
 
@@ -1510,7 +1568,11 @@ resolve_hud_node_pid() {
     '
 }
 
-toggle_hud_mode() {
+# Deliver one signal to the newest session's HUD process: USR1 toggles the
+# view, USR2 cycles tool details — the `t` key without focusing the pane.
+signal_hud() {
+    local signal="$1"
+    local verb="$2"
     local session_name
     local hud_pane
     local hud_pid
@@ -1526,8 +1588,16 @@ toggle_hud_mode() {
     if ! [[ "$hud_pid" =~ ^[0-9]+$ ]]; then
         error "Unable to resolve the HUD Node process for session: $session_name. Try codex-hud --reload."
     fi
-    kill -USR1 "$hud_pid"
-    info "Toggled HUD mode in session: $session_name"
+    kill "-$signal" "$hud_pid"
+    info "$verb in session: $session_name"
+}
+
+toggle_hud_mode() {
+    signal_hud USR1 "Toggled HUD mode"
+}
+
+cycle_hud_details() {
+    signal_hud USR2 "Cycled HUD tool details"
 }
 
 show_hud_version() {
@@ -1592,6 +1662,14 @@ case "${1:-}" in
     --toggle-mode)
         if command_exists tmux; then
             toggle_hud_mode
+        else
+            error "tmux not installed"
+        fi
+        exit 0
+        ;;
+    --cycle-details)
+        if command_exists tmux; then
+            cycle_hud_details
         else
             error "tmux not installed"
         fi

@@ -129,6 +129,20 @@ if [[ "$auto" != "0" ]]; then
     fi
 fi
 
+# The HUD publishes the rows its content needs (src/utils/height-fit.ts);
+# in adaptive mode that is the target, clamped like every other, and the
+# width extras above no longer apply because the rows were measured.
+fit_height=$(tmux show-option -t "$session_name" -qv @codex_hud_fit_height)
+if [[ "$adaptive" == "1" ]] && is_positive_int "$fit_height"; then
+    target="$fit_height"
+    if [[ "$target" -lt "$min_height" ]]; then
+        target="$min_height"
+    fi
+    if [[ "$target" -gt "$max_height" ]]; then
+        target="$max_height"
+    fi
+fi
+
 if is_positive_int "$window_height" && [[ "$target" -ge "$window_height" ]]; then
     target=$((window_height - 1))
 fi

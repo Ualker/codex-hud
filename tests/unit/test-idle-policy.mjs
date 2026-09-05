@@ -20,7 +20,9 @@ const base = {
   const plan = planCadence(base);
   assert.equal(plan.deepIdle, false);
   assert.equal(plan.renderMs, 1500);
-  assert.equal(plan.gitMs, 5_000);
+  // Fifteen seconds: Codex's own edits refresh git when a tool call
+  // completes, so the poll only covers edits made outside the session.
+  assert.equal(plan.gitMs, 15_000);
   assert.equal(plan.agentsMs, 1_000);
   assert.equal(plan.rolloutFallbackMs, 2_000);
   assert.equal(plan.overviewMs, 5_000);

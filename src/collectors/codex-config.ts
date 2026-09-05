@@ -45,7 +45,10 @@ export function readCodexConfigStrict(): CodexConfig {
     return {};
   }
 
-  const content = fs.readFileSync(configPath, 'utf-8');
+  return parseCodexConfig(fs.readFileSync(configPath, 'utf-8'));
+}
+
+function parseCodexConfig(content: string): CodexConfig {
   const parsed = TOML.parse(content) as Record<string, unknown>;
 
   return {
@@ -64,6 +67,21 @@ export function readCodexConfigStrict(): CodexConfig {
     sandbox_mode: optionalString(parsed, 'sandbox_mode'),
     mcp_servers: parseMcpServers(parsed.mcp_servers),
   };
+}
+
+/** Async twin of readCodexConfigStrict for the in-process slow collector. */
+export async function readCodexConfigStrictAsync(): Promise<CodexConfig> {
+  const configPath = getConfigPath();
+  let content: string;
+  try {
+    content = await fs.promises.readFile(configPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {};
+    }
+    throw error;
+  }
+  return parseCodexConfig(content);
 }
 
 /**

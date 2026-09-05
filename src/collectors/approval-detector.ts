@@ -10,6 +10,8 @@
 
 import { execFile } from 'child_process';
 
+import { startProbe } from '../utils/probe-latency.js';
+
 import type { ToolActivity, TurnActivity } from '../types.js';
 
 export const APPROVAL_STALL_MS = 5_000;
@@ -118,6 +120,7 @@ export function containsApprovalPrompt(screen: string): boolean {
 
 function captureTmuxPane(pane: string): Promise<string | null> {
   return new Promise((resolve) => {
+    const finishProbe = startProbe('tmux');
     execFile(
       'tmux',
       ['capture-pane', '-p', '-J', '-t', pane],
@@ -126,7 +129,10 @@ function captureTmuxPane(pane: string): Promise<string | null> {
         timeout: TMUX_CAPTURE_TIMEOUT_MS,
         maxBuffer: TMUX_CAPTURE_MAX_BUFFER,
       },
-      (error, stdout) => resolve(error ? null : stdout)
+      (error, stdout) => {
+        finishProbe();
+        resolve(error ? null : stdout);
+      }
     );
   });
 }

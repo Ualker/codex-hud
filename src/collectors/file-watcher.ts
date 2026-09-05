@@ -284,8 +284,12 @@ export class HudFileWatcher {
       return;
     }
 
-    // Create new watcher for this specific file
-    this.rolloutWatcher = new FileWatcher([rolloutPath], { usePolling: true });
+    // Create new watcher for this specific file. fs.watch (kqueue on macOS)
+    // reports an append the moment it lands; the previous one-second stat
+    // poll put up to a second between Codex writing a record and the HUD
+    // learning of it, on top of the render tick. The two-second stat sweep
+    // in index.ts remains the safety net for the mounts fs.watch cannot see.
+    this.rolloutWatcher = new FileWatcher([rolloutPath], { usePolling: false });
     this.rolloutWatcher.onChange((filePath) => {
       this.notifyRolloutChange(filePath);
     });

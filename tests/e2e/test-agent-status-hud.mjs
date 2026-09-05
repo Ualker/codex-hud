@@ -283,7 +283,7 @@ function rowFor(frame, label) {
 
 function elapsedSeconds(row, label) {
   const match = new RegExp(
-    `^[◐◓◑◒] ${label} (\\d+)s(?: ↳\\d+)?$`
+    `^[●·] ${label} (\\d+)s(?: ↳\\d+)?$`
   ).exec(row);
   assert.ok(match, `Expected a seconds-based ${label} row, received ${JSON.stringify(row)}`);
   return Number(match[1]);
@@ -368,7 +368,7 @@ async function runSingleModeFlow(testRoot, processStates, metrics) {
     cursor,
     (frame) => {
       const row = rowFor(frame, 'child_e2e');
-      return row !== null && /^[◐◓◑◒] child_e2e \d+s$/.test(row);
+      return row !== null && /^[●·] child_e2e \d+s$/.test(row);
     }
   );
   metrics.transitions.push(['typed seed -> starting', transition.latencyMs]);
@@ -395,7 +395,7 @@ async function runSingleModeFlow(testRoot, processStates, metrics) {
     cursor,
     (frame) => {
       const row = rowFor(frame, 'child_e2e');
-      if (!row || !/^[◐◓◑◒] child_e2e \d+s$/.test(row)) {
+      if (!row || !/^[●·] child_e2e \d+s$/.test(row)) {
         return false;
       }
       return elapsedSeconds(row, 'child_e2e') <= 2;
@@ -437,7 +437,7 @@ async function runSingleModeFlow(testRoot, processStates, metrics) {
     processState,
     'nested Paginated seed -> descendant aggregate',
     cursor,
-    (frame) => /^[◐◓◑◒] child_e2e \d+s ↳1$/.test(rowFor(frame, 'child_e2e') ?? '')
+    (frame) => /^[●·] child_e2e \d+s ↳1$/.test(rowFor(frame, 'child_e2e') ?? '')
   );
   metrics.transitions.push(['nested Paginated seed -> descendant aggregate', transition.latencyMs]);
   cursor = transition.frameCount;
@@ -454,7 +454,7 @@ async function runSingleModeFlow(testRoot, processStates, metrics) {
     processState,
     'direct complete -> descendant keeps aggregate',
     cursor,
-    (frame) => /^[◐◓◑◒] child_e2e \d+s ↳1$/.test(rowFor(frame, 'child_e2e') ?? '')
+    (frame) => /^[●·] child_e2e \d+s ↳1$/.test(rowFor(frame, 'child_e2e') ?? '')
   );
   metrics.transitions.push(['direct complete -> descendant keeps aggregate', transition.latencyMs]);
   cursor = transition.frameCount;
@@ -608,7 +608,7 @@ async function runSingleModeFlow(testRoot, processStates, metrics) {
     processState,
     'exact canonical rollout -> tracking recovery',
     cursor,
-    (frame) => /^[◐◓◑◒] recovery_child \d+s$/.test(rowFor(frame, 'recovery_child') ?? '')
+    (frame) => /^[●·] recovery_child \d+s$/.test(rowFor(frame, 'recovery_child') ?? '')
   );
   metrics.transitions.push(['exact canonical rollout -> tracking recovery', transition.latencyMs]);
   cursor = transition.frameCount;

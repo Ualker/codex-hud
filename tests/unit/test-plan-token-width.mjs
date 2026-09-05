@@ -72,7 +72,7 @@ assert.doesNotMatch(
   `narrow panes drop the breakdown: ${narrowToken}`
 );
 assert.match(narrowToken, /Ctx:/, 'the capacity signal survives');
-assert.match(narrowToken, /Tokens:/, 'the total stays visible');
+assert.match(narrowToken, /Turn:/, 'the turn count stays visible');
 
 // The context gauge is a fuel bar: filled cells are what REMAINS, matching
 // the "% left" label — nearly exhausted context shows a nearly empty bar.
@@ -93,7 +93,7 @@ assert.equal(
   1,
   '88% used leaves a sliver (12% of 12 cells)'
 );
-assert.equal(countGlyph(nearlyOut, '░'), 11);
+assert.equal(countGlyph(nearlyOut, '▁'), 11);
 assert.match(nearlyOut, /12% left/);
 
 console.log('test-plan-token-width: PASS');

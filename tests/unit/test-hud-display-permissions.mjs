@@ -83,11 +83,11 @@ const baseData = {
 
 const tokenLine = stripAnsi(renderTokenLine(baseData));
 assert.match(tokenLine, /^Ctx: /, 'context segment must lead the token row');
-assert.ok(tokenLine.indexOf('Ctx: ') < tokenLine.indexOf('Tokens: '), 'Tokens must follow Ctx');
-assert.match(tokenLine, /Ctx: .*21% left \(71\.0K\) \| Tokens: 282\.4K/);
+assert.ok(tokenLine.indexOf('Ctx: ') < tokenLine.indexOf('Turn: '), 'the turn count must follow Ctx');
+assert.match(tokenLine, /Ctx: .*21% left \(71\.0K\) \| Turn: 282\.4K/);
 assert.match(
   tokenLine,
-  /Tokens: 282\.4K \| \(in: 842, cache: 281\.3K, out: 199\) \| ↻8$/
+  /Turn: 282\.4K \| \(in: 842, cache: 281\.3K, out: 199\) \| ↻8$/
 );
 
 const expandedLines = renderHud(baseData, {
@@ -185,10 +185,13 @@ const compressedUnknownLines = renderHud({
   layout,
   maxLines: 1,
 }).map(stripAnsi);
+// Without its own row the environment content rides on row 1 when it fits
+// there (the case at 160 columns), otherwise the badge alone moves up; either
+// way row 1 says the access is unknown.
 assert.match(
   compressedUnknownLines[0],
-  /\[ACCESS \?\]/,
-  'dropping the environment row moves an unknown-access badge to row one'
+  /\[ACCESS \?\]|Sandbox: \?/,
+  'dropping the environment row keeps the unknown access on row one'
 );
 assert.doesNotMatch(compressedUnknownLines[0], /\[FULL ACCESS\]/);
 
@@ -261,7 +264,7 @@ const blindCompressed = renderHud({
   layout,
   maxLines: 1,
 }).map(stripAnsi);
-assert.match(blindCompressed[0], /\[ACCESS \?\]/);
+assert.match(blindCompressed[0], /\[ACCESS \?\]|Sandbox: \?/);
 
 // A captured argv walked to its end with no policy flag and no profile
 // certifies the config un-overridden: a plain `codex-hud` launch no longer

@@ -180,3 +180,20 @@
 - 取证：0.153.0 仍照常写 `event_msg token_count`，与新记录逐条并存（当日会话 21:21）且数值逐字段相同（usage==last_token_usage、thread_token_usage==total_token_usage）；新记录不带 rate_limits 与 model_context_window，HUD 无需消费。protocolHealth 计数按设计只跳过并告警，屏上 Ctx/Tokens 全部来自 token_count，不受影响。
 - 修复：`token_usage_record` 收进 KNOWN_TOP_LEVEL_TYPES 的「已知且有意忽略」段（与 world_state 同待遇，落到记录循环末尾自然跳过），不消费、不加分支。
 - 验证：`npm test`（typecheck+build+unit+integration）EXIT=0；test-rollout-current-protocol 补 0.153 记录用例（不计入 unknownTopLevelTypes、tokenUsage 与前一批次逐字段相同、既有 future_protocol_record 计数照旧跨批次保留），反向对照：撤掉白名单该断言即失败并列出 `token_usage_record: 1`；两份真实 rollout（08-25 会话 2 条、09-03 会话 21 条）经新构建回放，三类未识别计数均为空、token 累计与文件末条 token_count 一致（333,787 / 1,098,399）。
+
+## 2026-09-05（第十六轮：全面体验审查后的全部修复）
+
+背景：09-05 从用户使用角度做了一次全面审查（性能、UI、交互、信息显示与其他），实机取证：146×7 版面矩阵、两块活 HUD 的 CPU/RSS 采样（0.37/0.53 s/min、RSS 62–77MB、worker isolate 占 14.5MB）、子进程耗时（`ps -axo` 520–800ms、`tmux display` 0.3–5.4s、`git status` ~100ms，load average 96）。用户要求全部实施。
+
+- **状态上屏滞后 1～4s（P1）**：rollout 解析只更新缓存，屏幕等下一次主循环 tick（空闲 1.5s、深闲 3s，定时器不被唤醒打断），绑定文件的 watcher 还是 1s 轮询。改为：解析结果变化即 `renderNow()`；唤醒信号在挂起 tick 剩余超过 500ms 时重排为 100ms；绑定 rollout 改 `fs.watch`（2s stat 兜底不变）；主循环不再等待 git/慢采集首轮（各自落地后自行重绘）。
+- **行预算阶梯改回填式并把环境行并入第 1 行（P1）**：线性阶梯在 146×7 下把带 `event N ago` 的回合行先于静态环境行丢掉，3 个 agent 时折到 6 行留一行空白，且永远试不到"回合行 + 折叠 agent"这个恰好 7 行的变体。改为从最压缩形态按价值回填（agent 展开 > 回合行 > 平静配额 > 环境独立行 > Session 行 > 备注行）；环境单元整体放得下第 1 行（扣除提示语预留宽度）时并入第 1 行，放不下且无行可用时只留徽章。单测 `test-layout-compression`/`test-layout-turn-with-tool` 改写：2 个 agent 时回合行回归、3 个 agent 时 7 行填满。
+- **字形安全集与逐帧 spinner（P1，需真机确认）**：按 2026-08-10 在本机终端验证过的安全集换字形：spinner `◐◓◑◒` → `● ·`（按渲染计数取帧，不再按 `nowMs/100` 取模——0.5～3s 一帧时那是闪烁不是旋转），进度条 `░`→`▁`、`▓`→`▄`，暂停 `⏸`→`▲`。
+- **会话标题（P1）**：解析首条真实用户消息（跳过 `# AGENTS.md instructions`/`<environment_context>`/`<skill>` 等注入消息；有界首读时从 head 记录里单独回收）为 `session.title`，第 1 行 dim 引号显示、概览新增标题列（地址列保住最少 12 列时才显示）。新测 `test-rollout-session-title`。
+- **鼠标上报（P1）**：HUD 自己开 `?1000h/?1006h`，tmux 根键表在 `mouse_any_flag` 为真时把滚轮/点击 `send-keys -M` 交给 pane（本机 `list-keys` 实证），copy-mode 冻结消失；左键点击切视图、滚轮下/上循环详情前进/后退（`cycleToolDetailsMode(now, ±1)`）；退出时关闭。提示语改 `Click HUD: view • wheel: details • drag: resize`。新测 `test-mouse-input`。
+- **pane 高度跟随内容（可选实验，已实施）**：`utils/height-fit.ts` 纯策略——增长立即（≥10s 节流、≤max）、收缩需内容持续变小 120s、手动拖出的高度保留到内容变化；HUD 写 `@codex_hud_fit_height` 后 `resize-pane`，`codex-hud-resize` 钩子在 adaptive 模式下以该值为目标（钳到 min/max）。显式 `CODEX_HUD_HEIGHT` 或 `CODEX_HUD_HEIGHT_FIT=0` 关闭。新测 `test-height-fit` + resize 集成用例 4 组。
+- **采集器性能（P2）**：session-finder 缓存进程树（含活 Codex pid 且全部存活、<5min 不重跑 `ps`；无 Codex 的树不缓存）；liveness 记住 Codex pid，`kill(0)` 存活即免 tmux+ps；git 基础节奏 5s→15s 并在工具完成时触发刷新；`utils/probe-latency.ts` 记录 tmux/ps/git/sqlite 耗时，>2s 时备注行 dim 写 `probes slow · tmux 5.4s`；`utils/shared-snapshot.ts` 让多 HUD 共享账号配额与 git 快照（原子写，TTL 即缓存 TTL）。新测 `test-session-finder-tree-cache`、`test-probe-latency`、`test-shared-snapshot`，liveness 补 pid 快路径。
+- **慢采集器改进程内异步（P2）**：`codex-assets`/`project`/`codex-config` 改 `fs.promises`，`collectSlowProjectSnapshot` 取代 worker（同步扫描实测 240–460ms，异步后不阻塞渲染），删除 `slow-project-client/worker` 与崩溃重建集成测试，新测 `test-slow-project`（含"采集期间事件循环可运行"断言）。
+- **信息显示细节（P3）**：`Tokens:`→`Turn:`；默认态 `Fast: off` 省略（Codex 底栏已写）；未识别记录写明类型名、顶层未知降为 dim 备注行且最先让位，响应/事件级未知仍是告警；命令头过滤 shell 内建（`exit/true/false/:/…` 永远丢，`echo/printf` 仅在有别的命令时丢）；概览地址列不足 12 列整列丢弃。
+- **wrapper（P3）**：`--cycle-details`（USR2）；`CODEX_HUD_BIND_TOGGLE` 未设时 `Prefix+H` 未被占用即安装（自己的旧绑定算未占用）；`--list` 标注 `(newest here…)`；`--doctor` 报告通知钩子是否配置；帮助文案更新；`uninstall.sh` 解绑我们的 `Prefix+H`；`CODEX_HUD_HEIGHT_FIT` 进烘焙变量表。
+- **文档**：README（en/zh）同步以上全部与 Changelog 补齐 08-05 至 09-05 各轮；README.ja/ko 顶部声明内容停留在 2026-08-04。
+- 验证：见本轮提交说明；`npm test` 全量。

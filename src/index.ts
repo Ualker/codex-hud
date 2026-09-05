@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import * as crypto from 'crypto';
 import {
   collectGitStatusAsync,
   emptyGitStatus,
@@ -19,9 +20,9 @@ import {
 } from './collectors/agent-activity.js';
 import { RolloutParser } from './collectors/rollout.js';
 import {
-  SlowProjectWorkerClient,
+  collectSlowProjectSnapshot,
   type SlowProjectSnapshot,
-} from './collectors/slow-project-client.js';
+} from './collectors/slow-project.js';
 import {
   listOpenHudBindings,
   publishHudBinding,
@@ -41,6 +42,17 @@ import { extractCodexCliPolicy } from './collectors/runtime-hooks.js';
 import { FreshPromptDetector } from './collectors/fresh-prompt-detector.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
+import { HeightFitPolicy } from './utils/height-fit.js';
+import { slowProbes } from './utils/probe-latency.js';
+import { interpretMouseInput } from './utils/mouse-input.js';
+import {
+  readSharedSnapshot,
+  writeSharedSnapshot,
+} from './utils/shared-snapshot.js';
+import {
+  applyPaneHeight,
+  readPaneHeightSettings,
+} from './collectors/pane-height.js';
 import {
   GIT_SLOW_MS,
   planCadence,
@@ -50,6 +62,7 @@ import { HudFileWatcher } from './collectors/file-watcher.js';
 import {
   renderToStdout,
   cleanupRenderer,
+  enableMouseReporting,
   invalidateRenderedFrame,
   renderFallbackFrame,
   revealStatusHint,
@@ -66,6 +79,8 @@ import type {
   HudData,
   TokenUsage,
   ContextUsage,
+  CodexConfig,
+  GitStatus,
   HudDisplayMode,
   SessionOverview,
   SessionOverviewItem,
@@ -165,8 +180,35 @@ const TOGGLE_KEYS = ['\u0014']; // Ctrl+T
 // a fresh rollout appearing anywhere — snaps back to the base cadence.
 let lastWakeSignalMs = Date.now();
 
+// The pending render tick. A wake signal re-arms it: a deep-idle tick is
+// three seconds, and the first event after a quiet stretch used to wait it
+// out — Codex showed "Working" while the HUD still read "Idle · waiting for
+// you" for up to four seconds.
+let mainLoopTimer: NodeJS.Timeout | null = null;
+let mainLoopDueAtMs = 0;
+const WAKE_RESCHEDULE_MS = 100;
+const RENDER_ACTIVE_TICK_MS = 500;
+
+function scheduleMainLoop(delayMs: number): void {
+  if (mainLoopTimer) {
+    clearTimeout(mainLoopTimer);
+  }
+  mainLoopDueAtMs = Date.now() + delayMs;
+  mainLoopTimer = setTimeout(() => {
+    mainLoopTimer = null;
+    void mainLoop();
+  }, delayMs);
+}
+
 function noteWakeSignal(): void {
   lastWakeSignalMs = Date.now();
+  // Only a slow tick is worth re-arming; the active cadence is already fast.
+  if (
+    mainLoopTimer &&
+    mainLoopDueAtMs - lastWakeSignalMs > RENDER_ACTIVE_TICK_MS
+  ) {
+    scheduleMainLoop(WAKE_RESCHEDULE_MS);
+  }
 }
 
 function toggleDisplayMode(): void {
@@ -377,7 +419,8 @@ const initialProject: ProjectInfo = {
   hooksCount: 0,
   globalConfigActive: false,
 };
-const slowProjectClient = new SlowProjectWorkerClient();
+// A config that fails to parse keeps serving the last one that did.
+let lastGoodConfig: CodexConfig = {};
 let forceNextAssetRefresh = false;
 const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
   {
@@ -389,11 +432,19 @@ const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
     const forceAssetRefresh = forceNextAssetRefresh;
     forceNextAssetRefresh = false;
     try {
-      return await slowProjectClient.collect(HUD_CWD, {
-        runtimeHookOverrides: sessionFinder.getRuntimeHookOverrides(),
-        runtimeHooksEnabled: sessionFinder.getRuntimeHooksEnabled(),
-        forceAssetRefresh,
-      });
+      const snapshot = await collectSlowProjectSnapshot(
+        HUD_CWD,
+        {
+          runtimeHookOverrides: sessionFinder.getRuntimeHookOverrides(),
+          runtimeHooksEnabled: sessionFinder.getRuntimeHooksEnabled(),
+          forceAssetRefresh,
+        },
+        lastGoodConfig
+      );
+      if (!snapshot.configError) {
+        lastGoodConfig = snapshot.config;
+      }
+      return snapshot;
     } catch (error) {
       if (forceAssetRefresh) {
         forceNextAssetRefresh = true;
@@ -413,9 +464,42 @@ const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
  * falls back to the bound session's own snapshot, which is a well-defined
  * degradation rather than a fault worth spending a warning row on.
  */
+// Several HUDs scanning the same account is the same answer found several
+// times; whichever scans first shares it (utils/shared-snapshot.ts).
+const ACCOUNT_LIMITS_SHARE = 'account-limits';
+function reviveAccountLimits(raw: unknown): AccountRateLimits | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null;
+  }
+  const { limits, observedAt } = raw as Record<string, unknown>;
+  if (typeof limits !== 'object' || limits === null || typeof observedAt !== 'string') {
+    return null;
+  }
+  const at = new Date(observedAt);
+  return Number.isFinite(at.getTime())
+    ? { limits: limits as AccountRateLimits['limits'], observedAt: at }
+    : null;
+}
 const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
   null,
-  () => findLatestAccountRateLimits(),
+  async () => {
+    const shared = readSharedSnapshot(
+      ACCOUNT_LIMITS_SHARE,
+      ACCOUNT_LIMITS_TTL_MS,
+      reviveAccountLimits
+    );
+    if (shared) {
+      return shared;
+    }
+    const fresh = await findLatestAccountRateLimits();
+    if (fresh) {
+      writeSharedSnapshot(ACCOUNT_LIMITS_SHARE, {
+        limits: fresh.limits,
+        observedAt: fresh.observedAt.toISOString(),
+      });
+    }
+    return fresh;
+  },
   { ttlMs: ACCOUNT_LIMITS_TTL_MS, staleAfterMs: ACCOUNT_LIMITS_TTL_MS * 10 }
 );
 // Two observed readings of the current quota window; the burn-rate slope
@@ -425,9 +509,34 @@ const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
 const quotaTrend = new QuotaTrendTracker({
   stateFilePath: resolveHudStateFile('quota-trend.json'),
 });
+// One `git status` per repository per cadence across HUDs, not per HUD.
+const GIT_SHARE = `git-${crypto
+  .createHash('md5')
+  .update(HUD_CWD_REAL)
+  .digest('hex')
+  .slice(0, 12)}`;
+function reviveGitStatus(raw: unknown): GitStatus | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null;
+  }
+  const status = raw as Record<string, unknown>;
+  return typeof status.isGitRepo === 'boolean' &&
+    typeof status.isDirty === 'boolean' &&
+    (status.branch === null || typeof status.branch === 'string')
+    ? (raw as GitStatus)
+    : null;
+}
 const gitCache = new AsyncSnapshotCache(
   emptyGitStatus(),
-  () => collectGitStatusAsync(HUD_CWD),
+  async () => {
+    const shared = readSharedSnapshot(GIT_SHARE, GIT_CACHE_TTL_MS, reviveGitStatus);
+    if (shared) {
+      return shared;
+    }
+    const fresh = await collectGitStatusAsync(HUD_CWD);
+    writeSharedSnapshot(GIT_SHARE, fresh);
+    return fresh;
+  },
   {
     ttlMs: GIT_CACHE_TTL_MS,
     // The cadence policy legitimately stretches git refreshes to GIT_SLOW_MS
@@ -559,6 +668,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       cwd,
       projectName: cwd ? path.basename(cwd) : undefined,
       tmuxSession: binding?.tmuxSession,
+      title: result.session?.title,
       model: result.session?.model,
       turnActivity,
       lastActivityAt:
@@ -690,9 +800,37 @@ async function refreshPaneDetectors(): Promise<void> {
   renderNow();
 }
 
+// Newest tool completion already reflected in the git snapshot. Codex's own
+// edits are what change the repository during a session, and the call that
+// made them completing is the moment the dirty marker should move.
+let lastToolCompletionMs = 0;
+
+function noteToolCompletions(): void {
+  const calls = rolloutParser.getCached()?.toolActivity.recentCalls ?? [];
+  let newest = lastToolCompletionMs;
+  for (const call of calls) {
+    if (call.status === 'running') {
+      continue;
+    }
+    const finishedAt = call.timestamp.getTime() + (call.duration ?? 0);
+    if (finishedAt > newest) {
+      newest = finishedAt;
+    }
+  }
+  if (newest > lastToolCompletionMs) {
+    lastToolCompletionMs = newest;
+    // The cache TTL coalesces a burst of completions into one spawn.
+    void gitCache.refresh().catch(() => {
+      // Cache health is rendered from the retained last-good snapshot.
+    });
+  }
+}
+
 /**
  * Parse rollout updates outside the render clock. Returns false when there is
- * no bound rollout or the parse failed.
+ * no bound rollout or the parse failed. A parse that changed the result paints
+ * at once: the state used to sit in the cache until the next render tick,
+ * which is up to three seconds in deep idle.
  */
 async function refreshRolloutOnly(): Promise<boolean> {
   const session = sessionFinder.getCurrentSession();
@@ -702,14 +840,19 @@ async function refreshRolloutOnly(): Promise<boolean> {
   }
 
   recordCollectorAttempt('rollout');
+  const before = rolloutParser.getCached();
   try {
     await parseRolloutSafely();
     recordCollectorSuccess('rollout');
-    return true;
   } catch (error) {
     recordCollectorError('rollout', error);
     return false;
   }
+  if (rolloutParser.getCached() !== before) {
+    noteToolCompletions();
+    renderNow();
+  }
+  return true;
 }
 
 /**
@@ -718,6 +861,7 @@ async function refreshRolloutOnly(): Promise<boolean> {
 async function refreshRolloutAndAgents(): Promise<void> {
   if (await refreshRolloutOnly()) {
     await refreshAgents();
+    renderNow();
   }
 }
 
@@ -776,6 +920,7 @@ function collectData(): HudData {
     project: slowData.project,
     sessionStart: SESSION_START,
     ...(hudBuildUpdated ? { hudBuildUpdated: true } : {}),
+    slowProbes: slowProbes(),
     collectorHealth: {
       ...collectorHealth,
       ...slowCollectorHealth,
@@ -946,6 +1091,47 @@ function computeCadence(nowMs: number = Date.now()): CadencePlan {
   });
 }
 
+// Content-fitted pane height (utils/height-fit.ts). Null until the tmux
+// sizing policy has been read and says the wrapper's adaptive mode is on;
+// an explicit CODEX_HUD_HEIGHT or CODEX_HUD_HEIGHT_FIT=0 leaves it null.
+let heightFit: HeightFitPolicy | null = null;
+let heightFitInFlight = false;
+const HUD_PANE_ID = process.env.TMUX_PANE || undefined;
+
+async function setupHeightFit(): Promise<void> {
+  if (
+    process.env.CODEX_HUD_HEIGHT_FIT === '0' ||
+    !HUD_TMUX_SESSION ||
+    !HUD_PANE_ID
+  ) {
+    return;
+  }
+  const settings = await readPaneHeightSettings(HUD_TMUX_SESSION);
+  if (!settings || !settings.adaptive) {
+    return;
+  }
+  heightFit = new HeightFitPolicy({
+    minRows: settings.minRows,
+    maxRows: settings.maxRows,
+  });
+}
+
+function fitPaneHeight(wantedRows: number, height: number): void {
+  if (!heightFit || heightFitInFlight || !HUD_TMUX_SESSION || !HUD_PANE_ID) {
+    return;
+  }
+  const rows = heightFit.observe(wantedRows, height, Date.now());
+  if (rows === null) {
+    return;
+  }
+  heightFitInFlight = true;
+  void applyPaneHeight(HUD_TMUX_SESSION, HUD_PANE_ID, rows)
+    .catch(() => false)
+    .finally(() => {
+      heightFitInFlight = false;
+    });
+}
+
 /**
  * Main render loop
  */
@@ -956,7 +1142,8 @@ async function mainLoop(): Promise<void> {
 
   try {
     const data = collectData();
-    renderToStdout(data);
+    const { wantedRows, height } = renderToStdout(data);
+    fitPaneHeight(wantedRows, height);
     delete collectorHealth.renderer;
     // Observed after the frame so a notification can never precede the pane
     // stating the same thing. Rising edges only; see notify.ts.
@@ -982,7 +1169,7 @@ async function mainLoop(): Promise<void> {
     );
     const plan = computeCadence();
     sessionFinder.setDeepIdle(plan.deepIdle);
-    setTimeout(mainLoop, plan.renderMs);
+    scheduleMainLoop(plan.renderMs);
   } catch (error) {
     // stderr would land inside the rendered frame, so diagnostics go to the
     // log file. That is not enough on its own: the screen keeps whatever was
@@ -992,7 +1179,7 @@ async function mainLoop(): Promise<void> {
     renderFallbackFrame(
       collectorHealth.renderer?.errorSummary ?? 'unknown error'
     );
-    setTimeout(mainLoop, RENDER_ERROR_RETRY_INTERVAL);
+    scheduleMainLoop(RENDER_ERROR_RETRY_INTERVAL);
   }
 }
 
@@ -1006,6 +1193,10 @@ async function shutdown(): Promise<void> {
   isShuttingDown = true;
   isRunning = false;
 
+  if (mainLoopTimer) {
+    clearTimeout(mainLoopTimer);
+    mainLoopTimer = null;
+  }
   if (gitRefreshTimer) {
     clearInterval(gitRefreshTimer);
   }
@@ -1028,10 +1219,7 @@ async function shutdown(): Promise<void> {
     clearInterval(approvalRefreshTimer);
   }
   sessionFinder.stop();
-  await Promise.allSettled([
-    hudFileWatcher.stop(),
-    slowProjectClient.close(),
-  ]);
+  await Promise.allSettled([hudFileWatcher.stop()]);
   cleanupRenderer();
   process.exit(0);
 }
@@ -1149,6 +1337,9 @@ function setupKeyListener(): void {
   }
 
   process.stdin.setRawMode(true);
+  // With reporting on, tmux hands the wheel to this pane instead of entering
+  // copy-mode over it, which froze the frame on screen.
+  enableMouseReporting();
   process.stdin.on('data', (data: Buffer) => {
     noteWakeSignal();
     const input = data.toString('utf8');
@@ -1160,6 +1351,16 @@ function setupKeyListener(): void {
     }
     // Any interaction with the pane re-arms the hotkey hint.
     revealStatusHint();
+    const mouse = interpretMouseInput(input);
+    if (mouse.handled) {
+      if (mouse.click) {
+        toggleDisplayMode();
+      } else if (mouse.wheel !== 0) {
+        cycleToolDetailsMode(Date.now(), mouse.wheel);
+      }
+      renderNow();
+      return;
+    }
     if (TOGGLE_KEYS.some((key) => input.includes(key))) {
       toggleDisplayMode();
       renderNow();
@@ -1193,6 +1394,12 @@ async function main(): Promise<void> {
   // kept the old frame until the next tick — up to three seconds when idle.
   process.on('SIGUSR1', () => {
     toggleDisplayMode();
+    renderNow();
+  });
+  // `codex-hud --cycle-details`: the `t` key without focusing the pane.
+  process.on('SIGUSR2', () => {
+    noteWakeSignal();
+    cycleToolDetailsMode();
     renderNow();
   });
 
@@ -1253,16 +1460,19 @@ async function main(): Promise<void> {
   // to gate the first frame (~940ms measured, longer under load) and the
   // pane stayed blank for that whole time.
   renderNow();
-  // Not awaited: quota is a slow-moving number and must not sit between the
-  // provisional frame and the first real one.
+  // None of the first rounds is awaited: the render loop used to wait for
+  // git and the project scan, so a session bound in the meantime stayed off
+  // the pane until both finished — seconds under load. Each paints on its
+  // own when it lands; the health row stays silent while they are pending.
   void accountLimitsCache.refresh(true).catch(() => {
     // Falls back to the bound session's own snapshot.
   });
-  await Promise.allSettled([
+  void Promise.allSettled([
     gitCache.refresh(true),
     refreshSlowProject(true),
     ...(displayMode === 'overview' ? [overviewCache.refresh(true)] : []),
-  ]);
+  ]).then(() => renderNow());
+  void setupHeightFit();
   startCollectorTimers();
 
   // Start the render loop
