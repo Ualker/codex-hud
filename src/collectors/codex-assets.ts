@@ -1,8 +1,12 @@
 /**
  * Collect effective Codex skills and hooks without starting app-server.
+ *
+ * Async throughout: this runs in the HUD process (see slow-project.ts), and
+ * the walk is a few hundred stats and reads that must not block the render
+ * loop between them.
  */
 
-import * as fs from 'fs';
+import { promises as fs, type Dirent } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as TOML from '@iarna/toml';
@@ -38,38 +42,47 @@ interface SkillManifest {
   enabled: boolean;
 }
 
-function canonicalPath(filePath: string): string {
+async function canonicalPath(filePath: string): Promise<string> {
   try {
-    return fs.realpathSync(filePath);
+    return await fs.realpath(filePath);
   } catch {
     return path.resolve(filePath);
   }
 }
 
-function existingDirectory(candidate: string | undefined): string | null {
+async function existingDirectory(candidate: string | undefined): Promise<string | null> {
   if (!candidate) return null;
   try {
-    return fs.statSync(candidate).isDirectory() ? candidate : null;
+    return (await fs.stat(candidate)).isDirectory() ? candidate : null;
   } catch {
     return null;
   }
 }
 
-function existingFile(candidate: string | undefined): string | null {
+async function existingFile(candidate: string | undefined): Promise<string | null> {
   if (!candidate) return null;
   try {
-    return fs.statSync(candidate).isFile() ? candidate : null;
+    return (await fs.stat(candidate)).isFile() ? candidate : null;
   } catch {
     return null;
   }
 }
 
-function ancestorDirectories(cwd: string): string[] {
+async function pathExists(candidate: string): Promise<boolean> {
+  try {
+    await fs.access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ancestorDirectories(cwd: string): Promise<string[]> {
   const directories: string[] = [];
   let current = path.resolve(cwd);
   while (true) {
     directories.push(current);
-    if (fs.existsSync(path.join(current, '.git'))) break;
+    if (await pathExists(path.join(current, '.git'))) break;
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
@@ -88,10 +101,10 @@ function parseScalar(value: string): string {
   return trimmed;
 }
 
-function parseSkillManifest(filePath: string): SkillManifest | null {
+async function parseSkillManifest(filePath: string): Promise<SkillManifest | null> {
   let content: string;
   try {
-    content = fs.readFileSync(filePath, 'utf8');
+    content = await fs.readFile(filePath, 'utf8');
   } catch {
     return null;
   }
@@ -122,20 +135,20 @@ function parseSkillManifest(filePath: string): SkillManifest | null {
   return { name, enabled };
 }
 
-function skillFiles(root: string): string[] {
+async function skillFiles(root: string): Promise<string[]> {
   const files: string[] = [];
   const visited = new Set<string>();
   const pending = [root];
 
   while (pending.length > 0) {
     const current = pending.pop() as string;
-    const resolved = canonicalPath(current);
+    const resolved = await canonicalPath(current);
     if (visited.has(resolved)) continue;
     visited.add(resolved);
 
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
+      entries = await fs.readdir(current, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -147,7 +160,7 @@ function skillFiles(root: string): string[] {
         continue;
       }
       if (entry.isDirectory() || entry.isSymbolicLink()) {
-        if (existingDirectory(entryPath)) pending.push(entryPath);
+        if (await existingDirectory(entryPath)) pending.push(entryPath);
       }
     }
   }
@@ -155,16 +168,16 @@ function skillFiles(root: string): string[] {
   return files;
 }
 
-function collectSkillCount(roots: string[]): number {
+async function collectSkillCount(roots: string[]): Promise<number> {
   const seen = new Set<string>();
   let count = 0;
   for (const root of roots) {
-    if (!existingDirectory(root)) continue;
-    for (const filePath of skillFiles(root)) {
-      const key = canonicalPath(filePath);
+    if (!(await existingDirectory(root))) continue;
+    for (const filePath of await skillFiles(root)) {
+      const key = await canonicalPath(filePath);
       if (seen.has(key)) continue;
       seen.add(key);
-      const manifest = parseSkillManifest(filePath);
+      const manifest = await parseSkillManifest(filePath);
       if (manifest?.enabled) count++;
     }
   }
@@ -250,24 +263,24 @@ function runtimeHookFallback(override: string): {
   };
 }
 
-function collectHookCount(
+async function collectHookCount(
   files: string[],
   runtimeHookOverrides: readonly string[] = []
-): number {
+): Promise<number> {
   const seenFiles = new Set<string>();
   const seenEntries = new Set<string>();
   let count = 0;
 
   for (const filePath of files) {
-    const existing = existingFile(filePath);
+    const existing = await existingFile(filePath);
     if (!existing) continue;
-    const canonical = canonicalPath(existing);
+    const canonical = await canonicalPath(existing);
     if (seenFiles.has(canonical)) continue;
     seenFiles.add(canonical);
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(fs.readFileSync(existing, 'utf8'));
+      parsed = JSON.parse(await fs.readFile(existing, 'utf8'));
     } catch {
       continue;
     }
@@ -295,22 +308,22 @@ function collectHookCount(
   return count;
 }
 
-function resolveOptionalRoot(env: AssetEnvironment, key: string): string | null {
+async function resolveOptionalRoot(env: AssetEnvironment, key: string): Promise<string | null> {
   const value = env[key];
   if (!value) return null;
-  return existingDirectory(value) ?? existingFile(value);
+  return (await existingDirectory(value)) ?? (await existingFile(value));
 }
 
 /**
  * Count enabled skills and hooks for the current cwd and configured scopes.
  */
-export function collectCodexAssetCounts(
+export async function collectCodexAssetCounts(
   cwd: string,
   env: AssetEnvironment = process.env,
   config?: CodexConfig,
   options: CodexAssetCollectionOptions = {}
-): CodexAssetCounts {
-  const breakdown = collectCodexAssetBreakdown(cwd, env, config, options);
+): Promise<CodexAssetCounts> {
+  const breakdown = await collectCodexAssetBreakdown(cwd, env, config, options);
   return {
     skillsCount:
       breakdown.codexSkillsCount + breakdown.otherAgentSkillsCount,
@@ -322,12 +335,12 @@ export function collectCodexAssetCounts(
  * Keep Codex-authoritative skills separate from `.agents` copies owned by
  * other Agent runtimes. The legacy aggregate remains available above.
  */
-export function collectCodexAssetBreakdown(
+export async function collectCodexAssetBreakdown(
   cwd: string,
   env: AssetEnvironment = process.env,
   config?: CodexConfig,
   options: CodexAssetCollectionOptions = {}
-): CodexAssetBreakdown {
+): Promise<CodexAssetBreakdown> {
   const runtimeHookOverrides = [...new Set(options.runtimeHookOverrides ?? [])].sort();
   const runtimeHooksEnabled = options.runtimeHooksEnabled ?? null;
   const hooksEnabled = runtimeHooksEnabled ?? (config?.hooks !== false);
@@ -348,7 +361,7 @@ export function collectCodexAssetBreakdown(
     return cached.breakdown;
   }
 
-  const ancestors = ancestorDirectories(cwd);
+  const ancestors = await ancestorDirectories(cwd);
   const codexSkillsRoots: string[] = [];
   const otherAgentSkillsRoots: string[] = [];
   const hooksFiles: string[] = [];
@@ -365,18 +378,18 @@ export function collectCodexAssetBreakdown(
   }
 
   for (const key of ['CODEX_SYSTEM_SKILLS_DIR', 'CODEX_ADMIN_SKILLS_DIR']) {
-    const root = resolveOptionalRoot(env, key);
+    const root = await resolveOptionalRoot(env, key);
     if (root) codexSkillsRoots.push(root);
   }
   for (const key of ['CODEX_SYSTEM_HOOKS_FILE', 'CODEX_ADMIN_HOOKS_FILE']) {
-    const file = resolveOptionalRoot(env, key);
+    const file = await resolveOptionalRoot(env, key);
     if (file) hooksFiles.push(file);
   }
 
   const breakdown = {
-    codexSkillsCount: collectSkillCount(codexSkillsRoots),
-    otherAgentSkillsCount: collectSkillCount(otherAgentSkillsRoots),
-    hooksCount: collectHookCount(
+    codexSkillsCount: await collectSkillCount(codexSkillsRoots),
+    otherAgentSkillsCount: await collectSkillCount(otherAgentSkillsRoots),
+    hooksCount: await collectHookCount(
       hooksEnabled ? hooksFiles : [],
       hooksEnabled ? runtimeHookOverrides : []
     ),

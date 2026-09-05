@@ -65,7 +65,7 @@ try {
     CODEX_ADMIN_SKILLS_DIR: adminSkills,
     CODEX_ADMIN_HOOKS_FILE: path.join(root, 'admin', 'hooks.json'),
   };
-  const counts = collectCodexAssetCounts(cwd, env);
+  const counts = await collectCodexAssetCounts(cwd, env);
 
   assert.deepEqual(counts, { skillsCount: 5, hooksCount: 4 });
   const runtimeHookOverrides = [
@@ -73,25 +73,25 @@ try {
     `hooks.Stop=[{hooks=[{type="command",command='''/hooks/runtime-stop'''}]}]`,
   ];
   assert.deepEqual(
-    collectCodexAssetCounts(cwd, env, undefined, {
+    await collectCodexAssetCounts(cwd, env, undefined, {
       runtimeHookOverrides,
     }),
     { skillsCount: 5, hooksCount: 5 },
     'runtime hooks should merge with static entries and deduplicate the same handler'
   );
   assert.deepEqual(
-    collectCodexAssetCounts(cwd, env, { hooks: false }),
+    await collectCodexAssetCounts(cwd, env, { hooks: false }),
     { skillsCount: 5, hooksCount: 0 }
   );
   assert.deepEqual(
-    collectCodexAssetCounts(cwd, env, { hooks: false }, {
+    await collectCodexAssetCounts(cwd, env, { hooks: false }, {
       runtimeHookOverrides,
     }),
     { skillsCount: 5, hooksCount: 0 },
     'runtime overrides alone must not imply that the hook feature is enabled'
   );
   assert.deepEqual(
-    collectCodexAssetCounts(cwd, env, { hooks: false }, {
+    await collectCodexAssetCounts(cwd, env, { hooks: false }, {
       runtimeHookOverrides,
       runtimeHooksEnabled: true,
     }),
@@ -99,7 +99,7 @@ try {
     'an explicit runtime enable should reactivate static hooks and merge runtime entries'
   );
   assert.deepEqual(
-    collectCodexAssetCounts(cwd, env, undefined, {
+    await collectCodexAssetCounts(cwd, env, undefined, {
       runtimeHookOverrides,
       runtimeHooksEnabled: false,
     }),
@@ -107,7 +107,7 @@ try {
     'an explicit runtime disable should suppress both static and runtime hooks'
   );
   assert.deepEqual(
-    collectCodexAssetCounts(cwd, env, { hooks: false }, {
+    await collectCodexAssetCounts(cwd, env, { hooks: false }, {
       runtimeHooksEnabled: true,
     }),
     { skillsCount: 5, hooksCount: 4 },

@@ -123,6 +123,8 @@ export interface SessionOverviewItem {
    * the rollout scan alone.
    */
   tmuxSession?: string;
+  /** First prompt of the session; see SessionInfo.title. */
+  title?: string;
   model?: string;
   turnActivity?: TurnActivity;
   lastActivityAt?: Date;
@@ -597,6 +599,12 @@ export interface SessionInfo {
   startTime: Date;
   cwd: string;
   cliVersion: string;
+  /**
+   * The session's first real prompt, sanitized and bounded — the same label
+   * `codex resume` lists sessions under. Injected user-role messages (the
+   * AGENTS.md wrapper, environment context, skill bodies) are skipped.
+   */
+  title?: string;
   model?: string;
   reasoningEffort?: string;
   approvalPolicy?: string;
@@ -708,6 +716,13 @@ export interface HudData {
    */
   runtimeStateComplete?: boolean;
 
+  /**
+   * Subprocess probes (tmux, ps, git) whose latest sample ran past the slow
+   * threshold, slowest first (utils/probe-latency.ts). Rendered as a dim note
+   * so a stale dashboard on a loaded machine is not mistaken for a dead one.
+   */
+  slowProbes?: { name: string; ms: number }[];
+
   // Display mode and overview data
   displayMode?: HudDisplayMode;
   overview?: SessionOverview;
@@ -728,6 +743,12 @@ export interface RenderOptions {
    * fit instead of letting the viewport clip whatever happened to land last.
    */
   maxLines?: number;
+  /**
+   * Columns at the end of row 1 the caller will use (the hotkey hint while it
+   * is on screen); the environment cells merge onto row 1 only when they fit
+   * beside it.
+   */
+  reservedRow1Width?: number;
 }
 
 export const DEFAULT_LAYOUT: LayoutConfig = {

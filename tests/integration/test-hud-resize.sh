@@ -125,4 +125,17 @@ run_case 70 60 5 5 5 "0" "0" "" "0" "0" "%1"
 # If stored main pane is stale, fallback still finds and focuses the real main pane.
 run_case 70 60 5 5 5 "0" "0" "" "0" "1" "%9"
 
+# The HUD publishes the rows its content needs; in adaptive mode that is the
+# target (clamped), and the width extras no longer apply. An explicit height
+# (non-adaptive) ignores it.
+export TMUX_FIT_HEIGHT="9"
+run_case 50 60 5 10 9 "1" "1" "" "0" "1" "%1"
+export TMUX_FIT_HEIGHT="30"
+run_case 120 60 5 10 12 "1" "1" "" "0" "1" "%1"
+export TMUX_FIT_HEIGHT="2"
+run_case 120 60 5 10 5 "1" "1" "" "0" "1" "%1"
+export TMUX_FIT_HEIGHT="9"
+run_case 70 60 5 5 5 "0" "0" "" "0" "1" "%1"
+unset TMUX_FIT_HEIGHT
+
 echo "test-hud-resize: PASS"

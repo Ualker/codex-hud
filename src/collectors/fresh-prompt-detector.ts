@@ -18,6 +18,8 @@
 
 import { execFile } from 'child_process';
 
+import { startProbe } from '../utils/probe-latency.js';
+
 import type { TurnActivity } from '../types.js';
 
 /** Quiet time before the pane is worth asking; a turn boundary is not `/new`. */
@@ -100,6 +102,7 @@ export function containsFreshSessionFooter(screen: string): boolean {
 
 function captureTmuxPane(pane: string): Promise<string | null> {
   return new Promise((resolve) => {
+    const finishProbe = startProbe('tmux');
     execFile(
       'tmux',
       ['capture-pane', '-p', '-J', '-t', pane],
@@ -108,7 +111,10 @@ function captureTmuxPane(pane: string): Promise<string | null> {
         timeout: TMUX_CAPTURE_TIMEOUT_MS,
         maxBuffer: TMUX_CAPTURE_MAX_BUFFER,
       },
-      (error, stdout) => resolve(error ? null : stdout)
+      (error, stdout) => {
+        finishProbe();
+        resolve(error ? null : stdout);
+      }
     );
   });
 }

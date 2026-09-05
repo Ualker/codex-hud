@@ -5,7 +5,13 @@
 
 import type { HudData, RenderOptions, LayoutConfig, LayoutMode } from '../types.js';
 import { renderHud } from './header.js';
-import { colors, padEnd, visualLength, truncateAnsi } from './colors.js';
+import {
+  advanceSpinnerFrame,
+  colors,
+  padEnd,
+  visualLength,
+  truncateAnsi,
+} from './colors.js';
 
 // ANSI escape codes for cursor/screen control
 const CURSOR_HOME = '\x1b[H';
@@ -14,6 +20,13 @@ const CLEAR_LINE = '\x1b[2K';
 const CLEAR_SCROLLBACK = '\x1b[3J';
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
+// X10 button reporting plus SGR encoding. With reporting on, tmux's root
+// WheelUpPane binding sees `mouse_any_flag` and hands wheel and click events
+// to the pane (`send-keys -M`) instead of entering copy-mode — which froze
+// the view on its last frame, indistinguishable from a dead HUD. The events
+// double as controls: click toggles the view, the wheel cycles tool details.
+const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
+const MOUSE_OFF = '\x1b[?1006l\x1b[?1000l';
 
 let lastStdoutFrame: string | null = null;
 let hasEverRendered = false;
@@ -22,8 +35,8 @@ let hasEverRendered = false;
 // path (focus the pane first) even when the wrapper had installed a global
 // toggle that works from the Codex pane.
 const STATUS_HINT = process.env.CODEX_HUD_TOGGLE_KEY
-  ? `${process.env.CODEX_HUD_TOGGLE_KEY} view • click HUD: t details • drag resize`
-  : 'Click HUD: Ctrl+T view • t details • drag resize';
+  ? `${process.env.CODEX_HUD_TOGGLE_KEY} view • click HUD: view • wheel: details`
+  : 'Click HUD: view • wheel: details • drag: resize';
 // The hint is for discoverability; after a few minutes it has served its
 // purpose and the first line gets its full width back.
 const STATUS_HINT_VISIBLE_MS = 5 * 60_000;
@@ -199,24 +212,40 @@ function createDefaultLayout(width: number, height: number): LayoutConfig {
  * Restores terminal state
  */
 export function cleanupRenderer(): void {
-  // Show cursor
-  process.stdout.write(SHOW_CURSOR);
+  // Stop mouse reporting before the shell gets the terminal back, then show
+  // the cursor.
+  process.stdout.write(MOUSE_OFF + SHOW_CURSOR);
 
   // Clear screen
   process.stdout.write(CLEAR_SCREEN + CURSOR_HOME);
+}
+
+/** Ask the terminal to report mouse clicks and wheel motion to stdin. */
+export function enableMouseReporting(): void {
+  if (process.stdout.isTTY) {
+    process.stdout.write(MOUSE_ON);
+  }
+}
+
+export interface RenderedFrame {
+  /** Rows the layout renders when nothing is compressed away. */
+  wantedRows: number;
+  /** Rows the pane currently has. */
+  height: number;
 }
 
 /**
  * Output HUD to stdout without screen control
  * Used when running in a tmux pane
  */
-export function renderToStdout(data: HudData): void {
+export function renderToStdout(data: HudData): RenderedFrame {
   const width = getTerminalWidth();
   const height = getTerminalHeight();
   const layout = createDefaultLayout(width, height);
   const clearScrollback = process.env.CODEX_HUD_CLEAR_SCROLLBACK === '1';
   
   const maxLines = Math.max(1, height);
+  const hintVisible = statusHintVisible();
   const options: RenderOptions = {
     width,
     showDetails: true,
@@ -224,17 +253,33 @@ export function renderToStdout(data: HudData): void {
     // The layout compresses low-signal rows to this budget; the viewport fit
     // below stays as a backstop for the cases it cannot compress away.
     maxLines,
+    // The hint is appended to row 1 below; the layout must not fill those
+    // columns while it is on screen.
+    reservedRow1Width: hintVisible
+      ? visualLength(colors.dim(STATUS_HINT)) + 1
+      : 0,
   };
 
+  // One spinner step per painted frame, whatever the render cadence.
+  advanceSpinnerFrame();
   const fitted = fitLinesToViewport(renderHud(data, options), maxLines, width);
   const lines = truncateLines(
-    statusHintVisible() ? applyStatusHint(fitted, width) : fitted,
+    hintVisible ? applyStatusHint(fitted, width) : fitted,
     width
   );
+  // What the pane would need to show everything; the height fitter asks tmux
+  // for it. The unclipped layout is a second cheap string render.
+  const rendered: RenderedFrame = {
+    wantedRows: renderHud(data, {
+      ...options,
+      maxLines: Number.POSITIVE_INFINITY,
+    }).length,
+    height,
+  };
 
   const frame = `${width}x${height}\n${lines.join('\n')}`;
   if (frame === lastStdoutFrame) {
-    return;
+    return rendered;
   }
 
   const needsFullClear = lastStdoutFrame === null;
@@ -257,4 +302,5 @@ export function renderToStdout(data: HudData): void {
   // One write per frame: fewer syscalls and no partially painted frame when
   // the terminal refreshes mid-update.
   process.stdout.write(frameOut);
+  return rendered;
 }

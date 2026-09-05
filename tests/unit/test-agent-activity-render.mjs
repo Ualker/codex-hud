@@ -5,6 +5,7 @@ import * as lineExports from '../../dist/render/lines/index.js';
 import * as headerRender from '../../dist/render/header.js';
 import { renderToStdout } from '../../dist/render/index.js';
 import {
+  advanceSpinnerFrame,
   colors,
   stripAnsi,
   theme,
@@ -184,29 +185,23 @@ assert.equal(
   'unknown runtime statuses degrade to a display-error row'
 );
 
-const spinnerCases = [
-  { nowMs: 0, expected: '◐' },
-  { nowMs: 99, expected: '◐' },
-  { nowMs: 100, expected: '◓' },
-  { nowMs: 199, expected: '◓' },
-  { nowMs: 200, expected: '◑' },
-  { nowMs: 299, expected: '◑' },
-  { nowMs: 300, expected: '◒' },
-  { nowMs: 399, expected: '◒' },
-  { nowMs: 400, expected: '◐' },
-];
-
-for (const testCase of spinnerCases) {
-  const [rendered] = renderAgentLines(
-    makeAgentActivity({ rows: [makeRow()] }),
-    80,
-    testCase.nowMs
-  );
-  assert.equal(
-    [...stripAnsi(rendered)][0],
-    testCase.expected,
-    `spinner frame at ${testCase.nowMs} ms`
-  );
+// The spinner advances once per painted frame, not with the wall clock: a
+// clock-driven index sampled every 0.5-3s landed on an arbitrary frame each
+// paint, so the "spinner" flickered instead of turning. Any instant renders
+// the same frame; only advanceSpinnerFrame() moves it.
+{
+  const frameAt = (nowMs) =>
+    [...stripAnsi(renderAgentLines(makeAgentActivity({ rows: [makeRow()] }), 80, nowMs)[0])][0];
+  assert.equal(frameAt(0), frameAt(999_999), 'the clock does not pick the frame');
+  const first = frameAt(134000);
+  advanceSpinnerFrame();
+  const second = frameAt(134000);
+  assert.notEqual(first, second, 'a painted frame advances the spinner');
+  advanceSpinnerFrame();
+  assert.equal(frameAt(134000), first, 'the frames cycle');
+  for (const frame of [first, second]) {
+    assert.ok(['●', '·'].includes(frame), `spinner frames stay inside the verified glyph set: ${frame}`);
+  }
 }
 
 // Starting and running rows share the deterministic spinner presentation.
@@ -221,7 +216,7 @@ for (const status of ['starting', 'running']) {
   );
   assert.equal(
     stripAnsi(rendered),
-    '◐ codex_cli_explore 2m14s ↳2',
+    '● codex_cli_explore 2m14s ↳2',
     `${status} row must render spinner, label, elapsed time, and descendants`
   );
   assert.doesNotMatch(stripAnsi(rendered), /starting|running/, 'normal rows omit state words');
@@ -238,7 +233,7 @@ const [withoutDescendants] = renderAgentLines(
   80,
   134000
 );
-assert.equal(stripAnsi(withoutDescendants), '◐ codex_cli_explore 2m14s');
+assert.equal(stripAnsi(withoutDescendants), '● codex_cli_explore 2m14s');
 assert.doesNotMatch(stripAnsi(withoutDescendants), /↳0/, 'zero descendants are omitted');
 
 const [trackingError] = renderAgentLines(
@@ -268,7 +263,7 @@ const [normalWidth20] = renderAgentLines(
   20,
   134000
 );
-assert.equal(stripAnsi(normalWidth20), '◐ codex_cl… 2m14s ↳2');
+assert.equal(stripAnsi(normalWidth20), '● codex_cl… 2m14s ↳2');
 assert.equal(visualLength(normalWidth20), 20);
 if (process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb') {
   assert.ok(normalWidth20.endsWith('\x1b[0m'), 'truncated normal ANSI must be terminated');
@@ -636,8 +631,8 @@ const metrics = {
   visiblePhysicalLinesActual: physicalLines.length,
   hiddenPhysicalLinesExpected: 2,
   hiddenPhysicalLinesActual: Number(finalPhysicalLine.match(/…(\d+) more lines hidden/)?.[1]),
-  spinnerBoundaryCasesExpected: 9,
-  spinnerBoundaryCasesActual: spinnerCases.length,
+  spinnerFramesExpected: 2,
+  spinnerFramesActual: 2,
   shortenedProjectBudgetExpected: 8,
   shortenedProjectBudgetActual: smallProjectBudget,
   overWideProjectLimit: 1,

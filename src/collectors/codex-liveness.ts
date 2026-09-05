@@ -23,6 +23,7 @@
 import { execFile } from 'child_process';
 
 import type { TurnActivity } from '../types.js';
+import { startProbe } from '../utils/probe-latency.js';
 import { isCodexProcessCommand } from './runtime-hooks.js';
 
 export const LIVENESS_PROBE_INTERVAL_MS = 60_000;
@@ -74,17 +75,23 @@ export function isLivenessProbeCandidate(
   return true;
 }
 
+export interface CodexProcess {
+  pid: string;
+  command: string;
+}
+
 /**
- * The Codex invocation found in the descendant tree of `rootPid`, or
- * undefined when there is none. Exported so the walk is provable against the
+ * The Codex process found in the descendant tree of `rootPid`, or undefined
+ * when there is none. Exported so the walk is provable against the
  * live-calibrated process shape (shell -> node .../bin/codex). The command
  * line itself is the only witness for launch flags (`--yolo`,
- * `--ask-for-approval`) while a fresh 0.149 session has written no rollout.
+ * `--ask-for-approval`) while a fresh 0.149 session has written no rollout;
+ * the pid lets later probes answer with a signal-0 check instead of a walk.
  */
-export function codexCommandInTree(
+export function codexProcessInTree(
   psOutput: string,
   rootPid: string
-): string | undefined {
+): CodexProcess | undefined {
   if (!/^\d+$/.test(rootPid)) {
     return undefined;
   }
@@ -111,11 +118,18 @@ export function codexCommandInTree(
     seen.add(pid);
     const command = commandsByPid.get(pid);
     if (command && isCodexProcessCommand(command)) {
-      return command;
+      return { pid, command };
     }
     queue.push(...(childrenByParent.get(pid) ?? []));
   }
   return undefined;
+}
+
+export function codexCommandInTree(
+  psOutput: string,
+  rootPid: string
+): string | undefined {
+  return codexProcessInTree(psOutput, rootPid)?.command;
 }
 
 export function treeContainsCodex(psOutput: string, rootPid: string): boolean {
@@ -126,6 +140,22 @@ export interface PaneCodexProbeResult {
   alive: boolean;
   /** The matched invocation's `ps` command line; set only when alive. */
   command?: string;
+  /** The matched process id; set only when alive and known. */
+  pid?: string;
+}
+
+/** Signal 0 asks the kernel whether a pid exists without touching it. */
+export function isProcessAlive(pid: string): boolean {
+  if (!/^\d+$/.test(pid)) {
+    return false;
+  }
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 type PaneProcessProbe = (pane: string) => Promise<PaneCodexProbeResult | null>;
@@ -138,6 +168,7 @@ async function probePaneForCodex(
     args: readonly string[]
   ): Promise<string | null> =>
     new Promise((resolve) => {
+      const finishProbe = startProbe(file === 'ps' ? 'ps' : 'tmux');
       execFile(
         file,
         args,
@@ -147,6 +178,7 @@ async function probePaneForCodex(
           maxBuffer: PS_MAX_BUFFER,
         },
         (error, stdout) => {
+          finishProbe();
           resolve(error ? null : stdout);
         }
       );
@@ -162,10 +194,10 @@ async function probePaneForCodex(
   if (table === null) {
     return null;
   }
-  const command = codexCommandInTree(table, panePid);
-  return command === undefined
+  const found = codexProcessInTree(table, panePid);
+  return found === undefined
     ? { alive: false }
-    : { alive: true, command };
+    : { alive: true, command: found.command, pid: found.pid };
 }
 
 export interface CodexLivenessOptions {
@@ -173,6 +205,8 @@ export interface CodexLivenessOptions {
   probeIntervalMs?: number;
   eventGraceMs?: number;
   probePane?: PaneProcessProbe;
+  /** Test hook for the pid fast path. */
+  isAlive?: (pid: string) => boolean;
 }
 
 export class CodexLivenessProbe {
@@ -180,8 +214,10 @@ export class CodexLivenessProbe {
   private readonly probeIntervalMs: number;
   private readonly eventGraceMs: number;
   private readonly probePane: PaneProcessProbe;
+  private readonly isAlive: (pid: string) => boolean;
   private gone = false;
   private codexCommand: string | undefined;
+  private codexPid: string | undefined;
   private lastProbeMs = 0;
   private generation = 0;
   private inFlight = false;
@@ -192,6 +228,7 @@ export class CodexLivenessProbe {
       options.probeIntervalMs ?? LIVENESS_PROBE_INTERVAL_MS;
     this.eventGraceMs = options.eventGraceMs ?? LIVENESS_EVENT_GRACE_MS;
     this.probePane = options.probePane ?? probePaneForCodex;
+    this.isAlive = options.isAlive ?? isProcessAlive;
   }
 
   isCodexGone(): boolean {
@@ -211,6 +248,7 @@ export class CodexLivenessProbe {
   reset(): void {
     this.gone = false;
     this.codexCommand = undefined;
+    this.codexPid = undefined;
     this.lastProbeMs = 0;
     this.generation++;
   }
@@ -237,6 +275,17 @@ export class CodexLivenessProbe {
     if (this.inFlight || nowMs - this.lastProbeMs < this.probeIntervalMs) {
       return false;
     }
+    // The Codex pid the last walk found answers with one syscall while it
+    // lives; only its death (or a pid never learned) is worth the tmux and
+    // ps spawns — 0.3-5.4s and 0.5-0.8s of wall time each on this machine.
+    if (
+      !this.gone &&
+      this.codexPid !== undefined &&
+      this.isAlive(this.codexPid)
+    ) {
+      this.lastProbeMs = nowMs;
+      return false;
+    }
     this.lastProbeMs = nowMs;
     this.inFlight = true;
     const generationAtStart = this.generation;
@@ -253,6 +302,7 @@ export class CodexLivenessProbe {
     }
     const gone = !probed.alive;
     const command = probed.alive ? probed.command : undefined;
+    this.codexPid = probed.alive ? probed.pid : undefined;
     if (gone === this.gone && command === this.codexCommand) {
       return false;
     }

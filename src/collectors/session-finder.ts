@@ -9,7 +9,12 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
-import { extractCodexRuntimeHookState } from './runtime-hooks.js';
+import { startProbe } from '../utils/probe-latency.js';
+import {
+  extractCodexRuntimeHookState,
+  isCodexProcessCommand,
+} from './runtime-hooks.js';
+import { isProcessAlive } from './codex-liveness.js';
 import type { SessionInfo } from '../types.js';
 
 /**
@@ -777,6 +782,7 @@ async function querySqlite(
     }
   }
 
+  const finishProbe = startProbe('sqlite');
   try {
     const { stdout } = await execFileAsync(
       'sqlite3',
@@ -789,6 +795,8 @@ async function querySqlite(
     return stdout.trimEnd();
   } catch {
     return null;
+  } finally {
+    finishProbe();
   }
 }
 
@@ -822,6 +830,7 @@ function getStateDatabaseCandidates(): string[] {
 }
 
 async function getPaneProcessId(mainPaneId: string): Promise<string | null> {
+  const finishProbe = startProbe('tmux');
   try {
     const { stdout } = await execFileAsync(
       'tmux',
@@ -835,22 +844,39 @@ async function getPaneProcessId(mainPaneId: string): Promise<string | null> {
     return /^\d+$/.test(output) ? output : null;
   } catch {
     return null;
+  } finally {
+    finishProbe();
   }
 }
 
 interface ProcessTreeSnapshot {
   processIds: string[];
   commands: string[];
+  /** Pids in the tree whose command line is a Codex invocation. */
+  codexPids: string[];
+}
+
+/**
+ * How long a cached process tree is trusted while every Codex pid in it
+ * lives. Children of Codex (tool commands) come and go without changing
+ * which threads log, so only the Codex processes are checked.
+ */
+const PROCESS_TREE_CACHE_MAX_MS = 5 * 60_000;
+
+interface CachedProcessTree {
+  snapshot: ProcessTreeSnapshot;
+  capturedAtMs: number;
 }
 
 async function getProcessTreeSnapshot(
   rootPid: string
 ): Promise<ProcessTreeSnapshot | null> {
   if (!/^\d+$/.test(rootPid)) {
-    return { processIds: [], commands: [] };
+    return { processIds: [], commands: [], codexPids: [] };
   }
 
   let output: string;
+  const finishProbe = startProbe('ps');
   try {
     ({ stdout: output } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,command='], {
       encoding: 'utf8',
@@ -859,6 +885,8 @@ async function getProcessTreeSnapshot(
     }));
   } catch {
     return null;
+  } finally {
+    finishProbe();
   }
 
   const childrenByParent = new Map<string, string[]>();
@@ -897,6 +925,9 @@ async function getProcessTreeSnapshot(
     commands: result
       .map((pid) => commandsByPid.get(pid))
       .filter((command): command is string => Boolean(command)),
+    codexPids: result.filter((pid) =>
+      isCodexProcessCommand(commandsByPid.get(pid) ?? '')
+    ),
   };
 }
 
@@ -1180,6 +1211,7 @@ export class SessionFinder {
   private fullResolveIntervalMaxMs = FULL_RESOLVE_INTERVAL_MAX_MS;
   private boundViaProcess = false;
   private cachedPanePid: string | null = null;
+  private processTree: CachedProcessTree | null = null;
   private runtimeHookOverrides: string[] = [];
   private runtimeHooksEnabled: boolean | null = null;
   private threadFactsCache = new Map<string, ThreadFacts>();
@@ -1430,9 +1462,36 @@ export class SessionFinder {
     this.snapshotNonceHighWater = null;
     this.boundViaProcess = false;
     this.cachedPanePid = null;
+    this.processTree = null;
     this.runtimeHookOverrides = [];
     this.runtimeHooksEnabled = null;
     return paneChanged;
+  }
+
+  /**
+   * The pane's process tree, re-walked with `ps` only when a Codex process in
+   * it died, none was ever found, or the cache aged out. The full-table walk
+   * cost 520-800ms of wall time on this machine (1170 processes) and ran every
+   * 4-12s while nothing had changed; a signal-0 check per Codex pid is a
+   * syscall. A tree without Codex is never cached: the user may launch one
+   * in the pane at any moment.
+   */
+  private async getProcessTree(
+    panePid: string,
+    nowMs: number
+  ): Promise<ProcessTreeSnapshot | null> {
+    const cached = this.processTree;
+    if (
+      cached &&
+      nowMs - cached.capturedAtMs < PROCESS_TREE_CACHE_MAX_MS &&
+      cached.snapshot.codexPids.length > 0 &&
+      cached.snapshot.codexPids.every(isProcessAlive)
+    ) {
+      return cached.snapshot;
+    }
+    const snapshot = await getProcessTreeSnapshot(panePid);
+    this.processTree = snapshot ? { snapshot, capturedAtMs: nowMs } : null;
+    return snapshot;
   }
 
   /**
@@ -1515,7 +1574,7 @@ export class SessionFinder {
       return { threadId: null, keepCurrent: this.boundViaProcess };
     }
 
-    const processTree = await getProcessTreeSnapshot(panePid);
+    const processTree = await this.getProcessTree(panePid, now);
     if (processTree) {
       const hookState = extractCodexRuntimeHookState(processTree.commands);
       this.runtimeHookOverrides = hookState.overrides;

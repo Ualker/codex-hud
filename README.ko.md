@@ -7,6 +7,8 @@
 
 # Codex HUD
 
+> **참고:** 이 한국어 문서는 2026-08-04 시점의 내용입니다. 2026-08 이후의 변경(턴 실패 표시, `/new` 감지, 알림 훅, 할당량 예측, 마우스 조작, 내용에 맞춘 창 높이 등)은 영어 [README.md](./README.md)와 중국어 [README.zh.md](./README.zh.md)에만 반영되어 있습니다.
+
 [OpenAI Codex CLI](https://github.com/openai/codex)를 위한 실시간 상태 표시줄 HUD. 경량, 무설정, tmux 내 동작.
 
 ## Windows WSL 지원

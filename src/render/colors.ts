@@ -108,11 +108,15 @@ export const theme = {
   tokenDanger: colors.red,
 };
 
-// Progress bar characters
+// Progress bar characters. Every glyph here stays inside the block-element
+// family: the light shade `░` was drawn at a different height from `█` on the
+// user's terminal font (measured on this machine, 2026-08-10), so the gauge
+// read as a broken staircase. A lower-eighth block keeps the track visible in
+// the same font and at the same height.
 export const progressChars = {
   filled: ASCII_MODE ? '#' : '█',
-  empty: ASCII_MODE ? '-' : '░',
-  half: ASCII_MODE ? '=' : '▓',
+  empty: ASCII_MODE ? '-' : '▁',
+  half: ASCII_MODE ? '=' : '▄',
 };
 
 // Status icons
@@ -126,12 +130,16 @@ export const icons = {
   deleted: '✘',
   untracked: '?',
   
-  // Activity
+  // Activity. The half-filled circles ◐◓◑◒ and the pause glyph ⏸ are absent
+  // from the user's terminal font: the fallback glyph is wider than one cell
+  // and smears into its neighbour (measured on this machine, 2026-08-10). The
+  // verified-safe set is ● ○ · ▲ ▸ and the block elements, so the spinner is
+  // a pulsing dot and the pause marker a triangle.
   check: ASCII_MODE ? 'OK' : '✓',
   cross: ASCII_MODE ? 'X' : '✗',
-  running: ASCII_MODE ? '|' : '◐',       // In-progress spinner character
-  spinner: ASCII_MODE ? ['|', '/', '-', '\\'] : ['◐', '◓', '◑', '◒'],
-  pause: ASCII_MODE ? 'II' : '⏸',
+  running: ASCII_MODE ? '|' : '●',       // In-progress marker
+  spinner: ASCII_MODE ? ['|', '/', '-', '\\'] : ['●', '·'],
+  pause: ASCII_MODE ? 'II' : '▲',
   
   // Info
   // Text-style glyph: emoji have ambiguous VS16 widths in some terminals
@@ -442,11 +450,24 @@ export function separator(width: number): string {
   return colors.dim('─'.repeat(width));
 }
 
+// The spinner advances once per painted frame, not with the wall clock. A
+// clock-driven index sampled every 0.5-3s landed on an arbitrary frame each
+// paint, so the "spinner" flickered between frames instead of turning.
+let spinnerTick = 0;
+
+/** Called once per painted frame (render/index.ts). */
+export function advanceSpinnerFrame(): void {
+  spinnerTick = (spinnerTick + 1) % 1_000_000;
+}
+
 /**
- * Get current spinner frame based on time
+ * Current spinner frame; an explicit index selects a frame directly.
  */
 export function getSpinnerFrame(frameIndex?: number): string {
   const frames = icons.spinner;
-  const idx = frameIndex ?? Math.floor(Date.now() / 100) % frames.length;
+  const idx =
+    frameIndex === undefined
+      ? spinnerTick % frames.length
+      : ((frameIndex % frames.length) + frames.length) % frames.length;
   return frames[idx];
 }

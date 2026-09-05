@@ -82,6 +82,23 @@ const CONTROL_FLOW_ONLY = new Set([
 ]);
 const SHELL_TEST_COMMANDS = new Set(['[', '[[', 'test']);
 const MULTI_SEGMENT_NOISE = new Set(['cd', 'set', 'export']);
+// Builtins that never describe what a command did: `ffmpeg … ; echo ; exit`
+// spent two of the three visible head slots on them (measured live).
+const BUILTIN_NOISE = new Set([
+  'exit',
+  'true',
+  'false',
+  ':',
+  'shift',
+  'return',
+  'break',
+  'continue',
+  'unset',
+  'wait',
+]);
+// Output-only builtins are the action when nothing else runs (`echo done`)
+// but noise beside a real program (`grep … ; echo found`).
+const TRACE_NOISE = new Set(['echo', 'printf']);
 
 const MAX_SEGMENTS = 3;
 const MAX_RECURSION = 2;
@@ -589,6 +606,9 @@ function commandHead(command: string, depth: number): string | undefined {
     ) {
       continue;
     }
+    if (BUILTIN_NOISE.has(head.toLowerCase())) {
+      continue;
+    }
 
     const separatorBefore = index > 0 ? separators[index - 1] : undefined;
     const previous = heads[heads.length - 1];
@@ -614,7 +634,13 @@ function commandHead(command: string, depth: number): string | undefined {
     return undefined;
   }
 
-  const visible = heads.slice(0, MAX_SEGMENTS);
+  // Keep `echo`/`printf` only when they are all there is.
+  const informative = heads.filter(
+    (entry) => !TRACE_NOISE.has(entry.head.toLowerCase())
+  );
+  const shown = informative.length > 0 ? informative : heads;
+
+  const visible = shown.slice(0, MAX_SEGMENTS);
   let output = '';
   visible.forEach((entry, position) => {
     if (position > 0) {
@@ -625,7 +651,7 @@ function commandHead(command: string, depth: number): string | undefined {
       output += ` ×${entry.count}`;
     }
   });
-  if (heads.length > MAX_SEGMENTS) {
+  if (shown.length > MAX_SEGMENTS) {
     output += ' …';
   }
   return output;

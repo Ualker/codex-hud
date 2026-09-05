@@ -189,13 +189,25 @@ assert.ok(
   'one agent is never rendered as a count'
 );
 
-// The environment row is the last whole category to go, and the sandbox badge
-// moves up to row 1 rather than vanishing with it.
+// The sandbox badge moves up to row 1 rather than vanishing with the
+// environment row.
 const crowded = render(makeData({ agentCount: 6 }), HEIGHT);
 assert.ok(
   crowded.some((line) => line.includes('[FULL ACCESS]')),
   'the sandbox badge survives even when its row does not'
 );
+
+// Rows are handed back by value until the frame is full: two agents leave a
+// row for the turn row, and nothing sits blank while there is state to show.
+{
+  const two = render(makeData({ agentCount: 2 }), HEIGHT);
+  assert.equal(two.length, HEIGHT, 'the frame is filled');
+  assert.ok(two.some((line) => line.includes('Running tool')), 'the turn row is added back');
+  assert.ok(two.some((line) => line.includes('agent-1')), 'both agents stay expanded');
+  const three = render(makeData({ agentCount: 3 }), HEIGHT);
+  assert.equal(three.length, HEIGHT, 'three agents also fill the frame');
+  assert.ok(three.some((line) => line.includes('agent-2')));
+}
 
 // An unbound HUD says so rather than rendering a short frame that reads as
 // broken.

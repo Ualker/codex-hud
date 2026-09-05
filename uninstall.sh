@@ -171,6 +171,11 @@ remove_alias() {
 kill_sessions() {
     if command -v tmux >/dev/null 2>&1; then
         local sessions
+        # The Prefix+H toggle is installed server-wide; only a binding of ours
+        # (it targets @codex_hud_pane) is removed.
+        if tmux list-keys -T prefix H 2>/dev/null | grep -q codex_hud_pane; then
+            tmux unbind-key -T prefix H 2>/dev/null || true
+        fi
         sessions=$(tmux list-sessions 2>/dev/null | grep "^codex-hud-" | cut -d: -f1 || true)
         
         if [[ -n "$sessions" ]]; then

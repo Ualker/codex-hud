@@ -44,6 +44,7 @@ import {
   renderTurnActivityLine,
   renderRateLimitLine,
   renderHealthLine,
+  renderNoteLine,
   renderAgentSummaryLine,
   renderBindingHintLine,
   renderToolDetailsNotice,
@@ -172,47 +173,94 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
  * Row 3: Ctx: ████░░░░ 45% (50K/128K) | Tokens: 12.5K
  * Row 4+: Current activity and agents, then Dir/Session, plan, and tool history
  */
+/** Longest a session title gets on row 1; the overview column is narrower. */
+const SESSION_TITLE_WIDTH = 32;
+
+/**
+ * The session's first prompt, dim and quoted. Two sessions open in the same
+ * project rendered identical headers (measured live: both read `prj`) and the
+ * only distinguishing cell was the session id on the last row, which is the
+ * first row to go.
+ */
+function renderSessionTitleCell(title: string | undefined): string | null {
+  if (!title) {
+    return null;
+  }
+  const clean = sanitizeTerminalText(title);
+  if (!clean) {
+    return null;
+  }
+  return colors.dim(`"${truncate(clean, SESSION_TITLE_WIDTH)}"`);
+}
+
+/** Cells joining the environment content to row 1 when it rides there. */
+const ENV_MERGE_SEPARATOR = '  ';
+
 function renderExpandedLayout(
   data: HudData,
   layout: LayoutConfig,
   width: number,
-  maxLines: number = Number.POSITIVE_INFINITY
+  maxLines: number = Number.POSITIVE_INFINITY,
+  reservedRow1Width: number = 0
 ): string[] {
   const separator = layout.showSeparators ? theme.separator(' │ ') : ' ';
 
-  // Row 1: Identity | Project | Duration
+  // Row 1: Identity | Project | Title | Duration | suffix. Cells yield from
+  // the right when the row does not fit: the title first, then the uptime,
+  // and finally the project shrinks its branch.
   const identityLine = renderIdentityLine(data, layout, { maxWidth: width, showContext: false });
+  const titleCell = renderSessionTitleCell(data.session?.title);
   const buildRow1 = (suffix: string | null): string => {
-    const parts: string[] = [identityLine, renderProjectLine(data)];
+    const projectLine = renderProjectLine(data);
     const usageLine = renderUsageLine(data, layout);
-    if (usageLine) {
-      parts.push(usageLine);
+    const attempts: (string | null)[][] = [
+      [identityLine, projectLine, titleCell, usageLine, suffix],
+      [identityLine, projectLine, usageLine, suffix],
+      [identityLine, projectLine, suffix],
+    ];
+    for (const attempt of attempts) {
+      const row = attempt
+        .filter((part): part is string => Boolean(part))
+        .join(separator);
+      if (visualLength(row) <= width) {
+        return row;
+      }
     }
-    if (suffix) {
-      parts.push(suffix);
-    }
-
-    let row = parts.join(separator);
-    if (usageLine && visualLength(row) > width) {
-      row = [...parts.slice(0, 2), ...(suffix ? [suffix] : [])].join(separator);
-    }
-    if (visualLength(row) > width) {
-      const reserved =
-        visualLength(identityLine) +
-        visualLength(separator) +
-        (suffix ? visualLength(suffix) + visualLength(separator) : 0);
-      const projectLine = renderProjectLine(data, {
-        includeFileStats: false,
-        maxWidth: Math.max(0, width - reserved),
-      });
-      row = [identityLine, projectLine, ...(suffix ? [suffix] : [])].join(separator);
-    }
-    return row;
+    const reserved =
+      visualLength(identityLine) +
+      visualLength(separator) +
+      (suffix ? visualLength(suffix) + visualLength(separator) : 0);
+    const shrunkProject = renderProjectLine(data, {
+      includeFileStats: false,
+      maxWidth: Math.max(0, width - reserved),
+    });
+    return [identityLine, shrunkProject, ...(suffix ? [suffix] : [])].join(separator);
   };
 
   const envLine = renderEnvironmentLine(data, width);
+  // Row 1 can host the environment cells when every one of them fits beside
+  // it (minus the hotkey hint's reservation while that is on screen). The
+  // environment row is static for the whole session, and at the live 146x7
+  // geometry row 1 had about a hundred columns to spare, so merging it frees
+  // a row for live state without dropping a single cell. Only a complete
+  // merge counts: a partial one would trade cells for the row.
+  const envFull = renderEnvironmentLine(data, Number.POSITIVE_INFINITY);
+  const row1Plain = buildRow1(null);
+  const mergedRow1 =
+    envFull !== null &&
+    visualLength(row1Plain) +
+      ENV_MERGE_SEPARATOR.length +
+      visualLength(envFull) <=
+      width - reservedRow1Width
+      ? `${row1Plain}${ENV_MERGE_SEPARATOR}${envFull}`
+      : null;
+  const canMergeEnv = mergedRow1 !== null;
+
   // Collector/protocol warnings outrank ordinary usage details.
   const healthLine = renderHealthLine(data, width);
+  // Unknown top-level record types and slow probes are a dim note, not a
+  // warning, and the last row the budget ladder hands out.
+  const noteLine = renderNoteLine(data, width);
   // The pane keeps rendering with whatever build it was spawned on; after a
   // rebuild this is the one place that says so, and the fix is one command.
   const buildLine =
@@ -368,37 +416,41 @@ function renderExpandedLayout(
       data.config.sandbox_mode === 'danger-full-access');
 
   /**
-   * One rung of the layout ladder, from most to least informative. The ladder
-   * used to only ever remove rows; `keepTurnWithTool` is the first rung that
-   * adds one, because the running-tool row displaced the turn row at every
-   * height — including heights with rows to spare.
+   * The rows the budget can hand out, each independent of the others. The
+   * frame is assembled from the most compressed shape and the features are
+   * added back by value, so a taller pane only ever shows more.
    */
   interface LayoutVariant {
-    showCalmQuota?: boolean;
-    keepTurnWithTool?: boolean;
-    dropSession?: boolean;
-    collapseAgents?: boolean;
-    dropEnv?: boolean;
+    /** One row per agent instead of the `N agents` count. */
+    expandAgents: boolean;
+    /** The turn row beside the running-tool row: it counts a different thing. */
+    keepTurnWithTool: boolean;
+    /** The calm quota reading (pressure always renders). */
+    showCalmQuota: boolean;
+    /** The environment content on its own row rather than row 1 or the badge. */
+    envRow: boolean;
+    showSession: boolean;
+    /** The dim unknown-record note. */
+    showNote: boolean;
   }
 
-  const assemble = (compression: LayoutVariant): string[] => {
+  const assemble = (variant: LayoutVariant): string[] => {
     const lines: string[] = [];
-    // The environment row is static for the whole session, so it is the first
-    // whole category to go — but it is also where the sandbox badge lives, so
-    // that badge moves up to row 1 rather than disappearing with it.
-    const keepEnv = Boolean(envLine) && !compression.dropEnv;
+    const envOnRow = Boolean(envLine) && variant.envRow;
+    // Without its own row the environment content rides on row 1 when it
+    // fits; otherwise only the sandbox badge moves up, so the permission mode
+    // never disappears with the row.
     const movedAccessBadge = fullAccess
       ? theme.error('[FULL ACCESS]')
       : accessUnknown
         ? colors.dim('[ACCESS ?]')
         : null;
-    lines.push(
-      buildRow1(
-        !keepEnv ? movedAccessBadge : null
-      )
-    );
-    if (keepEnv && envLine) {
-      lines.push(envLine);
+    if (envOnRow && envLine) {
+      lines.push(buildRow1(null), envLine);
+    } else if (mergedRow1 !== null) {
+      lines.push(mergedRow1);
+    } else {
+      lines.push(buildRow1(movedAccessBadge));
     }
     if (healthLine) {
       lines.push(healthLine);
@@ -408,7 +460,7 @@ function renderExpandedLayout(
     }
     lines.push(
       ...buildUsageRows(
-        compression.showCalmQuota
+        variant.showCalmQuota
           ? rateLimitCalmLine ?? rateLimitAlertLine
           : rateLimitAlertLine
       )
@@ -420,7 +472,7 @@ function renderExpandedLayout(
     // one that separates a long grind from a fresh call — and the turn row is
     // also where the `event N ago` staleness marker lives.
     const showTurnWithTool = Boolean(
-      compression.keepTurnWithTool &&
+      variant.keepTurnWithTool &&
         hasRunningTool &&
         turnLineShown &&
         toolsLine
@@ -436,7 +488,7 @@ function renderExpandedLayout(
       lines.push(bindingHintLine);
     }
 
-    if (compression.collapseAgents && agentSummaryLine) {
+    if (!variant.expandAgents && agentSummaryLine) {
       lines.push(agentSummaryLine);
     } else {
       lines.push(...agentLines);
@@ -451,34 +503,60 @@ function renderExpandedLayout(
     }
     // Static identity (Dir/Session/CLI) never changes mid-session; keep it
     // last so small panes hide it before live plan/tool state.
-    if (sessionLine && !compression.dropSession) {
+    if (sessionLine && variant.showSession) {
       lines.push(sessionLine);
+    }
+    if (noteLine && variant.showNote) {
+      lines.push(noteLine);
     }
 
     return lines;
   };
 
-  // Degrade by dropping whole low-signal rows rather than letting the viewport
-  // clip the tail, which used to hide the plan row and even a running agent
-  // while keeping a static config row that had not changed all session.
-  const steps: LayoutVariant[] = [
-    { showCalmQuota: true, keepTurnWithTool: true },
-    { showCalmQuota: true, keepTurnWithTool: true, dropSession: true },
-    { showCalmQuota: true, dropSession: true },
-    { keepTurnWithTool: true, dropSession: true },
-    { dropSession: true },
-    { dropSession: true, collapseAgents: true },
-    { dropSession: true, collapseAgents: true, dropEnv: true },
-  ];
-
-  let rendered = assemble(steps[0]);
+  const everything: LayoutVariant = {
+    expandAgents: true,
+    keepTurnWithTool: true,
+    showCalmQuota: true,
+    envRow: true,
+    showSession: true,
+    showNote: true,
+  };
   if (!Number.isFinite(maxLines)) {
+    return assemble(everything);
+  }
+
+  // Start from the most compressed frame and add rows back by value, keeping
+  // each addition only while the frame still fits. A linear ladder used to
+  // stop at the first rung that fit: at the live 146x7 geometry it left one
+  // row blank with three agents on screen, and it could never reach "turn row
+  // plus collapsed agents", which fit exactly — while the static environment
+  // row outlived the turn row and its staleness marker.
+  //
+  // With its content merged onto row 1 the environment row is cosmetic and
+  // comes last; when it cannot be merged it still yields to live turn state
+  // but outranks the static session row it used to outlive.
+  const order: (keyof LayoutVariant)[] = canMergeEnv
+    ? ['expandAgents', 'keepTurnWithTool', 'showCalmQuota', 'showSession', 'envRow', 'showNote']
+    : ['expandAgents', 'keepTurnWithTool', 'showCalmQuota', 'envRow', 'showSession', 'showNote'];
+  let variant: LayoutVariant = {
+    expandAgents: false,
+    keepTurnWithTool: false,
+    showCalmQuota: false,
+    envRow: false,
+    showSession: false,
+    showNote: false,
+  };
+  let rendered = assemble(variant);
+  if (rendered.length > maxLines) {
+    // Nothing left to give back; the viewport clips what remains.
     return rendered;
   }
-  for (const step of steps) {
-    rendered = assemble(step);
-    if (rendered.length <= maxLines) {
-      break;
+  for (const feature of order) {
+    const candidate = { ...variant, [feature]: true };
+    const lines = assemble(candidate);
+    if (lines.length <= maxLines) {
+      variant = candidate;
+      rendered = lines;
     }
   }
   return rendered;
@@ -527,6 +605,13 @@ function orderForViewport(
  * 19-21 columns. Wider only re-prints part of the hash every row shares.
  */
 const OVERVIEW_ADDRESS_WIDTH = 22;
+/**
+ * Below this the tail says nothing (`…-20…` was measured at 80 columns), so
+ * the column is dropped whole instead of printing a stub.
+ */
+const OVERVIEW_ADDRESS_MIN_WIDTH = 12;
+/** The session's first prompt; narrower than on row 1, it shares a table. */
+const OVERVIEW_TITLE_WIDTH = 24;
 
 /**
  * The one field on an overview row the user can act on.
@@ -538,11 +623,14 @@ const OVERVIEW_ADDRESS_WIDTH = 22;
  * from the head because codex-hud names share a
  * `codex-hud-<project>-<hash>-` prefix and differ only in the tail.
  */
-function overviewAddress(session: SessionOverviewItem): string {
+function overviewAddress(
+  session: SessionOverviewItem,
+  maxWidth: number = OVERVIEW_ADDRESS_WIDTH
+): string {
   if (session.tmuxSession) {
     return truncateStart(
       sanitizeTerminalText(session.tmuxSession),
-      OVERVIEW_ADDRESS_WIDTH
+      Math.min(OVERVIEW_ADDRESS_WIDTH, maxWidth)
     );
   }
   // Not running under a codex-hud pane: the id is all there is.
@@ -692,14 +780,60 @@ function renderOverviewLayout(
     ? Math.max(...modelDisplays.map((display) => visualLength(display)))
     : 0;
 
+  // The first prompt of each session, which is how a user tells two rows of
+  // the same project apart. It competes with the address for the columns the
+  // fixed cells leave over: shown only while the address keeps its minimum.
+  const titleDisplays = overview.sessions.map((session) =>
+    session.title
+      ? colors.dim(
+          truncate(sanitizeTerminalText(session.title), OVERVIEW_TITLE_WIDTH)
+        )
+      : ''
+  );
+  const titleColumnWidth = Math.max(
+    0,
+    ...titleDisplays.map((display) => visualLength(display))
+  );
+  const columnSeparator = ` ${colors.dim('│')} `;
+  const separatorWidth = visualLength(columnSeparator);
+  const fixedColumns = [
+    projectColumnWidth,
+    ...(showModel ? [modelColumnWidth] : []),
+    phaseColumnWidth,
+    ctxColumnWidth,
+    ageColumnWidth,
+  ];
+  const markerWidth = 2;
+  const fixedWidth =
+    markerWidth +
+    fixedColumns.reduce((total, column) => total + column, 0) +
+    separatorWidth * (fixedColumns.length - 1);
+  const showTitle =
+    titleColumnWidth > 0 &&
+    fixedWidth +
+      separatorWidth +
+      titleColumnWidth +
+      separatorWidth +
+      OVERVIEW_ADDRESS_MIN_WIDTH <=
+      width;
+  const addressBudget =
+    width -
+    fixedWidth -
+    (showTitle ? separatorWidth + titleColumnWidth : 0) -
+    separatorWidth;
+  const showAddress = addressBudget >= OVERVIEW_ADDRESS_MIN_WIDTH;
+
   const rows = overview.sessions.map((session, index) => {
     const parts = [
       padEnd(theme.projectName(projectNames[index]), projectColumnWidth),
+      ...(showTitle ? [padEnd(titleDisplays[index], titleColumnWidth)] : []),
       ...(showModel ? [padEnd(modelDisplays[index], modelColumnWidth)] : []),
       padEnd(phaseLabels[index], phaseColumnWidth),
       padEnd(ctxDisplays[index], ctxColumnWidth),
       padEnd(ageDisplays[index], ageColumnWidth),
-      colors.dim(overviewAddress(session)),
+      ...(showAddress
+        ? [colors.dim(overviewAddress(session, addressBudget))]
+        : []),
     ];
     // Mark the row this HUD is bound to; the address column tells the rows
     // apart, but not which one you are already looking at.
@@ -708,10 +842,7 @@ function renderOverviewLayout(
       session.id === data.overviewSelfSessionId
         ? theme.info(`${icons.bullet} `)
         : '  ';
-    return truncateAnsi(
-      marker + parts.join(` ${colors.dim('│')} `),
-      width
-    );
+    return truncateAnsi(marker + parts.join(columnSeparator), width);
   });
 
   if (scanningNote) {
@@ -747,6 +878,7 @@ function boundSessionAsOverviewItem(
     id: session.id,
     cwd: session.cwd ?? data.project.cwd,
     projectName: data.project.projectName,
+    title: session.title,
     model: session.model,
     turnActivity: data.turnActivity,
     lastActivityAt: data.turnActivity?.lastActivityAt,
@@ -777,6 +909,7 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
     data,
     layout,
     options.width,
-    options.maxLines ?? Number.POSITIVE_INFINITY
+    options.maxLines ?? Number.POSITIVE_INFINITY,
+    options.reservedRow1Width ?? 0
   );
 }

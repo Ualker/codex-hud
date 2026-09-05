@@ -175,6 +175,47 @@ function sanitizeDisplayText(value: string, maxLength: number): string | undefin
   return `${sanitized.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
+/** Longest stored session title; renderers truncate further. */
+const MAX_SESSION_TITLE_LENGTH = 60;
+/**
+ * User-role messages Codex injects around the real prompt: the AGENTS.md
+ * wrapper (`# AGENTS.md instructions` / `<INSTRUCTIONS>`), `<environment_context>`,
+ * `<user_instructions>`, and skill bodies (`<skill>`), all measured on live
+ * rollouts. A prompt starting with a tag is rare enough to accept the miss.
+ */
+const INJECTED_USER_MESSAGE_PATTERN = /^\s*(?:#\s*AGENTS\.md\b|<[a-z_]+[\s>/])/i;
+
+function messageText(payload: ResponseItemPayload): string {
+  return (payload.content ?? [])
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join(' ')
+    .trim();
+}
+
+/**
+ * The text a session is remembered by: its first real prompt, the label
+ * `codex resume` lists it under. Undefined for injected messages.
+ */
+function sessionTitleFromMessage(
+  payload: ResponseItemPayload
+): string | undefined {
+  if (payload.type !== 'message' || payload.role !== 'user') {
+    return undefined;
+  }
+  const text = messageText(payload);
+  if (!text || INJECTED_USER_MESSAGE_PATTERN.test(text)) {
+    return undefined;
+  }
+  return sanitizeDisplayText(text, MAX_SESSION_TITLE_LENGTH);
+}
+
+function isTitleMessageRecord(record: RolloutLine): boolean {
+  return (
+    record.type === 'response_item' &&
+    sessionTitleFromMessage(record.payload as ResponseItemPayload) !== undefined
+  );
+}
+
 function parseJsonValue(value?: string): unknown {
   if (!value) {
     return undefined;
@@ -1454,6 +1495,12 @@ async function readRolloutBatch(
   const headState = head.records
     .map(recoverHistoryStateRecord)
     .filter((record): record is RolloutLine => record !== undefined);
+  // The first prompt names the session; it sits right after session_meta and
+  // the injected preamble, so the bounded head is where it is found.
+  const titleRecord = head.records.find(isTitleMessageRecord);
+  if (titleRecord) {
+    headState.push(titleRecord);
+  }
   const middleState = await readSkippedHistoryState(
     rolloutPath,
     head.nextOffset,
@@ -1906,6 +1953,11 @@ export async function parseRolloutFile(
           'responding',
           timestamp
         );
+      } else if (session && !session.title) {
+        const title = sessionTitleFromMessage(payload);
+        if (title) {
+          session.title = title;
+        }
       }
       continue;
     }

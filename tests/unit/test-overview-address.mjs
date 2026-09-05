@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { renderHud } from '../../dist/render/header.js';
-import { stripAnsi } from '../../dist/render/colors.js';
+import { stripAnsi, visualLength } from '../../dist/render/colors.js';
 
 const WIDTH = 146;
 const layout = {
@@ -88,6 +88,69 @@ const view = (sessions, selfSessionId) =>
 {
   const lines = view([session('019ff4e2-aaaa-7aaa-8aaa-aaaaaaaaaaaa')]);
   assert.ok(lines[0].includes('019ff4e2'), 'the id remains the fallback');
+}
+
+// Below a dozen columns the tail says nothing (`…-20…` was measured at 80
+// columns), so the column goes whole rather than printing a stub.
+{
+  const narrow = (width) =>
+    renderHud(
+      {
+        config: {},
+        git: { isGitRepo: false },
+        project: { cwd: '/x', projectName: 'x' },
+        collectorHealth: {},
+        displayMode: 'overview',
+        overview: {
+          sessions: [
+            session('019ff4e2-aaaa-7aaa-8aaa-aaaaaaaaaaaa', {
+              tmuxSession: 'codex-hud-prj-2a51592d-20260812135511-57225',
+              model: 'gpt-5.6-sol',
+            }),
+            session('019ff48b-bbbb-7bbb-8bbb-bbbbbbbbbbbb', {
+              tmuxSession: 'codex-hud-prj-2a51592d-20260812151832-33905',
+              model: 'gpt-5.6-codex',
+            }),
+          ],
+          updatedAt: new Date(now),
+        },
+      },
+      { width, showDetails: true, layout: { ...layout, barWidth: 8 }, maxLines: 12 }
+    ).map(stripAnsi);
+  const wide = narrow(146);
+  assert.ok(wide[0].includes('135511-57225'), 'the address stays while it fits');
+  // Sixteen columns are still a distinguishing tail; below twelve the column
+  // goes whole rather than printing a stub.
+  const tailOnly = narrow(76);
+  assert.ok(tailOnly[0].includes('135511-57225'), 'a shortened tail still tells the rows apart');
+  const cramped = narrow(68);
+  assert.equal(cramped[0].includes('…'), false, 'no stub is printed');
+  assert.equal(cramped[0].includes('57225'), false, 'the address column is dropped whole');
+  assert.ok(cramped[0].includes('Idle'), 'the phase column survives');
+}
+
+// The first prompt names the row: two sessions of one project used to differ
+// only by the tail of an opaque tmux name.
+{
+  const titled = view([
+    session('019ff4e2-aaaa-7aaa-8aaa-aaaaaaaaaaaa', {
+      tmuxSession: 'codex-hud-prj-2a51592d-20260812135511-57225',
+      title: '把视频转成 1080p 并检查音轨',
+    }),
+    session('019ff48b-bbbb-7bbb-8bbb-bbbbbbbbbbbb', {
+      tmuxSession: 'codex-hud-prj-2a51592d-20260812151832-33905',
+      title: 'review the render ladder',
+    }),
+  ]);
+  assert.ok(titled[0].includes('把视频转成 1080p'), 'the title is on the row');
+  assert.ok(titled[1].includes('review the render ladder'));
+  assert.ok(titled[0].includes('135511-57225'), 'and the address is kept beside it');
+  const phaseColumn = (line) => visualLength(line.slice(0, line.indexOf('Idle')));
+  assert.equal(
+    phaseColumn(titled[0]),
+    phaseColumn(titled[1]),
+    'the title column is padded like every other column (in cells, not code units)'
+  );
 }
 
 // ---- the model column only exists when it separates rows ------------------

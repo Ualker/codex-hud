@@ -104,8 +104,9 @@ export function renderEnvironmentLine(
           : theme.info(sanitizeTerminalText(sandbox)))
     : null;
 
-  // The default state carries no signal; it stays visible but recedes, and it
-  // is the first critical cell to go when the row cannot fit them all.
+  // The default state carries no signal, and since 0.149 the Codex footer two
+  // rows above already states `Fast off`; the cell is omitted rather than
+  // dimmed. `Fast: on` and the hedged `Fast: ?` still render.
   const runtimeServiceTier = data.session?.serviceTier;
   const fastUnknown = partialRuntime && runtimeServiceTier === undefined;
   const fastDisplay = fastUnknown
@@ -113,9 +114,11 @@ export function renderEnvironmentLine(
     : getFastModeDisplay(data.config, {
         serviceTier: runtimeServiceTier,
       });
-  const fastPart = fastUnknown || fastDisplay === 'Fast: off'
+  const fastPart = fastUnknown
     ? colors.dim(fastDisplay)
-    : theme.value(fastDisplay);
+    : fastDisplay === 'Fast: off'
+      ? null
+      : theme.value(fastDisplay);
 
   const mcpCount =
     data.project.mcpCount || getMcpServerCount(data.config);

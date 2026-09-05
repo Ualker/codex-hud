@@ -123,10 +123,10 @@ const hintBody = `
   const text = raw.slice(0, raw.indexOf(MARKER)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
   assert.match(
     text,
-    /Click HUD: Ctrl\+T view/,
-    'without a global binding the hint says the pane must be focused first'
+    /Click HUD: view/,
+    'without a global binding the hint teaches the click'
   );
-  assert.match(text, /t details/, 'and still names the details key');
+  assert.match(text, /wheel: details/, 'and the wheel');
 }
 
 {
@@ -136,11 +136,11 @@ const hintBody = `
   const text = raw.slice(0, raw.indexOf(MARKER)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
   assert.match(text, /Prefix\+H view/, 'the working key is the one advertised');
   assert.equal(
-    /Click HUD: Ctrl\+T/.test(text),
+    /Ctrl\+T/.test(text),
     false,
-    'and the focus-first path is no longer the headline'
+    'and the focus-first key path is no longer the headline'
   );
-  assert.match(text, /t details/, 'the details key still needs the pane');
+  assert.match(text, /wheel: details/, 'the wheel still cycles details');
 }
 
 console.log('test-render-failure-and-hint: PASS');

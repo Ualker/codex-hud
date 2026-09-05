@@ -37,6 +37,9 @@ fs.writeFileSync(counterFile, String(count + 1));
 process.on('SIGUSR1', () => {
   fs.appendFileSync(signalFile, 'toggle\n');
 });
+process.on('SIGUSR2', () => {
+  fs.appendFileSync(signalFile, 'details\n');
+});
 
 setInterval(() => {}, 1000);
 EOF
@@ -92,6 +95,19 @@ for _ in $(seq 1 200); do
 done
 if [[ ! -s "$SIGNAL_FILE" ]]; then
   echo "Expected --toggle-mode to signal the exact HUD pane process" >&2
+  exit 1
+fi
+
+# --cycle-details is the `t` key without focusing the pane: USR2 to the same
+# process.
+(cd "$ROOT_DIR" && env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+  "$ROOT_DIR/bin/codex-hud" --cycle-details >/dev/null)
+for _ in $(seq 1 200); do
+  grep -q '^details$' "$SIGNAL_FILE" 2>/dev/null && break
+  sleep 0.05
+done
+if ! grep -q '^details$' "$SIGNAL_FILE"; then
+  echo "Expected --cycle-details to signal the HUD pane process with USR2" >&2
   exit 1
 fi
 

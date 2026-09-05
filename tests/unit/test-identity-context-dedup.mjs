@@ -8,7 +8,7 @@ import { stripAnsi } from '../../dist/render/colors.js';
 // line, because Row 3 (the token line) already renders the context bar with
 // more detail. The compact layout has no token line, so it must keep the bar.
 
-const BAR_CHARS = /[█░]/; // █ (filled) or ░ (empty)
+const BAR_CHARS = /[█▁]/; // █ (filled) or ▁ (empty)
 
 const layout = {
   mode: 'expanded',

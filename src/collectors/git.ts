@@ -5,6 +5,7 @@
 
 import { execFile } from 'child_process';
 import type { GitStatus } from '../types.js';
+import { startProbe } from '../utils/probe-latency.js';
 
 const GIT_STATUS_ARGS = [
   'status',
@@ -127,6 +128,7 @@ export function parsePorcelainV2Status(output: string): GitStatus {
  */
 export function collectGitStatusAsync(cwd?: string): Promise<GitStatus> {
   return new Promise((resolve, reject) => {
+    const finishProbe = startProbe('git');
     execFile(
       'git',
       GIT_STATUS_ARGS,
@@ -138,6 +140,7 @@ export function collectGitStatusAsync(cwd?: string): Promise<GitStatus> {
         env: gitEnvironment(),
       },
       (error, stdout, stderr) => {
+        finishProbe();
         if (!error) {
           resolve(parsePorcelainV2Status(stdout));
           return;
