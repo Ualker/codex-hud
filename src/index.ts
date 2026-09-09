@@ -44,7 +44,8 @@ import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import { HeightFitPolicy } from './utils/height-fit.js';
 import { slowProbes } from './utils/probe-latency.js';
-import { interpretMouseInput } from './utils/mouse-input.js';
+import { createMouseInputParser } from './utils/mouse-input.js';
+import { getCodexDataNamespace } from './utils/codex-path.js';
 import {
   readSharedSnapshot,
   writeSharedSnapshot,
@@ -66,6 +67,7 @@ import {
   invalidateRenderedFrame,
   renderFallbackFrame,
   revealStatusHint,
+  isViewToggleClick,
 } from './render/index.js';
 import {
   cycleToolDetailsMode,
@@ -363,6 +365,7 @@ function withDetectorPhases(
 }
 
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
+  if (isShuttingDown) return;
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
   approvalDetector.reset();
   stallDetector.reset();
@@ -466,7 +469,8 @@ const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
  */
 // Several HUDs scanning the same account is the same answer found several
 // times; whichever scans first shares it (utils/shared-snapshot.ts).
-const ACCOUNT_LIMITS_SHARE = 'account-limits';
+const CODEX_DATA_NAMESPACE = getCodexDataNamespace();
+const ACCOUNT_LIMITS_SHARE = `account-limits-${CODEX_DATA_NAMESPACE}`;
 function reviveAccountLimits(raw: unknown): AccountRateLimits | null {
   if (typeof raw !== 'object' || raw === null) {
     return null;
@@ -507,7 +511,7 @@ const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
 // The baseline is shared through a state file so every HUD forecasts the
 // account the same way and a --reload does not restart the clock.
 const quotaTrend = new QuotaTrendTracker({
-  stateFilePath: resolveHudStateFile('quota-trend.json'),
+  stateFilePath: resolveHudStateFile(`quota-trend-${CODEX_DATA_NAMESPACE}.json`),
 });
 // One `git status` per repository per cadence across HUDs, not per HUD.
 const GIT_SHARE = `git-${crypto
@@ -581,9 +585,9 @@ async function refreshOverviewData(): Promise<SessionOverview> {
   // dashboard is for, but only those running under a codex-hud pane.
   const [scanned, openBindings] = await Promise.all([
     Promise.resolve(
-      findActiveRollouts(OVERVIEW_ACTIVE_WINDOW_SECONDS, undefined, 1)
+      findActiveRollouts(OVERVIEW_ACTIVE_WINDOW_SECONDS, undefined, 1, { strict: true })
     ),
-    listOpenHudBindings(),
+    listOpenHudBindings({ strict: true }),
   ]);
 
   const activeSessions = [...scanned];
@@ -631,17 +635,31 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       overviewParsers.set(sessionFile.path, cached);
     }
 
+    let unavailable = false;
     try {
       if (cached.size !== sessionFile.size || !cached.parser.getCached()) {
         await cached.parser.parse();
         cached.size = sessionFile.size;
       }
     } catch {
-      continue;
+      unavailable = true;
     }
 
     const result = cached.parser.getCached();
-    if (!result || isSubagentSessionSource(result.session?.source)) {
+    if (!result?.session) {
+      const binding = bindingById.get(sessionFile.sessionId);
+      const previous = overviewCache.get().sessions.find((item) => item.id === sessionFile.sessionId);
+      sessions.push({
+        ...previous,
+        id: sessionFile.sessionId,
+        cwd: previous?.cwd ?? binding?.cwd,
+        projectName: previous?.projectName ?? (binding?.cwd ? path.basename(binding.cwd) : undefined),
+        tmuxSession: binding?.tmuxSession ?? previous?.tmuxSession,
+        unavailable: true,
+      });
+      continue;
+    }
+    if (isSubagentSessionSource(result.session?.source)) {
       continue;
     }
     const contextUsage = buildContextUsage(
@@ -674,6 +692,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       lastActivityAt:
         result.lastEventTime ?? result.turnActivity?.lastActivityAt,
       contextUsage,
+      ...(unavailable ? { unavailable: true } : {}),
       // The owning HUD saw a fresh `/new` prompt over this binding: the
       // row's state describes the previous session until the first message.
       ...(binding?.freshPrompt === true ? { freshPrompt: true } : {}),
@@ -689,7 +708,8 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       cwd: binding.cwd,
       projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
       tmuxSession: binding.tmuxSession,
-      neverStarted: true,
+      neverStarted: !binding.rolloutPath,
+      ...(binding.rolloutPath ? { unavailable: true } : {}),
     });
   }
 
@@ -714,11 +734,13 @@ const overviewCache = new AsyncSnapshotCache<SessionOverview>(
   refreshOverviewData,
   {
     ttlMs: OVERVIEW_CACHE_TTL_MS,
-    staleAfterMs: OVERVIEW_CACHE_TTL_MS * 3,
+    // Deep idle refreshes every 30s; allow a slow tmux probe before warning.
+    staleAfterMs: 45_000,
   }
 );
 
 async function publishCurrentHudBinding(): Promise<void> {
+  if (isShuttingDown) return;
   const session = sessionFinder.getCurrentSession();
   const rolloutSession =
     session && fs.existsSync(session.path) ? session : null;
@@ -1042,7 +1064,7 @@ function computeCadence(nowMs: number = Date.now()): CadencePlan {
   const session = sessionFinder.getCurrentSession();
   const approvalNeeded = approvalDetector.isApprovalNeeded();
   const hasRunningTool =
-    !approvalNeeded && (rolloutData?.toolActivity?.recentCalls.some(
+    !approvalNeeded && ((rolloutData?.toolActivity?.runningCalls ?? rolloutData?.toolActivity?.recentCalls)?.some(
       (call) => call.status === 'running'
     ) ?? false);
   const hasActiveTurn = isWorkingPhase(
@@ -1072,6 +1094,7 @@ function computeCadence(nowMs: number = Date.now()): CadencePlan {
   let overviewWorking = false;
   if (overviewVisible) {
     for (const item of overviewCache.get().sessions) {
+      if (item.unavailable || item.freshPrompt) continue;
       overviewWorking ||= isWorkingPhase(item.turnActivity?.phase);
       lastActivityMs = Math.max(
         lastActivityMs,
@@ -1220,6 +1243,7 @@ async function shutdown(): Promise<void> {
   }
   sessionFinder.stop();
   await Promise.allSettled([hudFileWatcher.stop()]);
+  await publishHudBinding(HUD_TMUX_SESSION, null, null, HUD_CWD);
   cleanupRenderer();
   process.exit(0);
 }
@@ -1324,6 +1348,7 @@ function startCollectorTimers(): void {
 }
 
 function renderNow(): void {
+  if (isShuttingDown) return;
   try {
     renderToStdout(collectData());
   } catch {
@@ -1340,9 +1365,10 @@ function setupKeyListener(): void {
   // With reporting on, tmux hands the wheel to this pane instead of entering
   // copy-mode over it, which froze the frame on screen.
   enableMouseReporting();
+  const parseInput = createMouseInputParser(isViewToggleClick);
   process.stdin.on('data', (data: Buffer) => {
     noteWakeSignal();
-    const input = data.toString('utf8');
+    const { mouse, keys: input } = parseInput(data.toString('utf8'));
     // Raw mode suppresses the terminal's SIGINT; handle Ctrl+C explicitly so
     // the pane stays killable and the cursor is restored on the way out.
     if (input.includes('\u0003')) {
@@ -1351,7 +1377,6 @@ function setupKeyListener(): void {
     }
     // Any interaction with the pane re-arms the hotkey hint.
     revealStatusHint();
-    const mouse = interpretMouseInput(input);
     if (mouse.handled) {
       if (mouse.click) {
         toggleDisplayMode();

@@ -11,13 +11,15 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex)를 위한 실시간 상태 표시줄 HUD. 경량, 무설정, tmux 내 동작.
 
+제어 명령은 현재 tmux pane의 세션을 우선합니다. tmux 밖에서는 현재 디렉터리의 후보가 하나일 때만 자동 선택합니다. 여러 후보가 있으면 `--target 세션이름` 또는 `--target %pane번호`를 지정하세요. 클릭 전환은 화면의 `[view]` 버튼에서만 가능합니다. `Last call`은 마지막 모델 요청, `Total`은 세션 누계입니다.
+
 ## Windows WSL 지원
 
 Windows 지원은 Ubuntu WSL을 통해 `feature/windows-support-dual-entry` branch에서 제공됩니다. macOS/Linux 사용자는 `main`을, Windows (WSL) 사용자는 해당 feature branch를 사용하세요.
 
 > Claude Code의 [claude-hud](https://github.com/jarrodwatts/claude-hud)에서 영감을 받았습니다.
 
-![Codex HUD — 단일 세션](./doc/fig/2a00eaf0-496a-4039-a0ce-87a9453df30d.png)
+![Codex HUD — 단일 세션](./doc/fig/single.svg)
 
 ## 왜 Codex HUD가 필요한가요?
 
@@ -35,7 +37,7 @@ Windows 지원은 Ubuntu WSL을 통해 `feature/windows-support-dual-entry` bran
 
 네. HUD pane을 클릭한 뒤 `Ctrl+T`를 누르거나 main pane에서 `codex-hud --toggle-mode`를 실행하면 **멀티 세션 개요 모드**로 전환할 수 있습니다.
 
-![Codex HUD — 멀티 세션 개요](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
+![Codex HUD — 멀티 세션 개요](./doc/fig/overview.svg)
 
 **Q: tmux를 수동으로 설정해야 하나요?**
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { interpretMouseInput } from '../../dist/utils/mouse-input.js';
+import { interpretMouseInput, createMouseInputParser } from '../../dist/utils/mouse-input.js';
 import { cycleToolDetailsMode } from '../../dist/render/lines/activity-line.js';
 
 // With mouse reporting on, tmux hands wheel and click events to the pane
@@ -35,4 +35,18 @@ assert.equal(cycleToolDetailsMode(Date.now(), -1), 'targets');
 assert.equal(cycleToolDetailsMode(Date.now(), -1), 'off');
 assert.equal(cycleToolDetailsMode(Date.now(), 1), 'targets');
 
+const hitTest = (x, y) => y === 1 && x >= 20 && x <= 25;
+assert.equal(interpretMouseInput(press(0, 10, 1), hitTest).click, false, 'clicking text does not toggle');
+assert.equal(interpretMouseInput(press(0, 20, 1), hitTest).click, true, 'only the displayed button toggles');
+for (let split = 1; split < press(0, 20, 1).length; split++) {
+  const parse = createMouseInputParser(hitTest);
+  const event = press(0, 20, 1);
+  const first = parse(event.slice(0, split));
+  assert.equal(first.mouse.click, false);
+  assert.equal(first.keys, '', 'partial mouse bytes never become keyboard input');
+  const second = parse(event.slice(split));
+  assert.equal(second.mouse.click, true, `mouse split at byte ${split}`);
+  assert.equal(second.keys, '');
+}
+assert.equal(createMouseInputParser(hitTest)('t').keys, 't');
 console.log('test-mouse-input: PASS');

@@ -51,6 +51,11 @@ const fullLine = stripAnsi(renderToolsLine(toolActivity, 120) ?? '');
 assert.match(fullLine, /Authorization/);
 
 process.env.CODEX_HUD_TOOL_DETAILS = 'off';
-assert.equal(renderToolsLine(toolActivity, 120), null);
+const offLine = stripAnsi(renderToolsLine(toolActivity, 120));
+assert.match(offLine, /1 tool running/);
+assert.doesNotMatch(offLine, /exec_command|curl|Authorization|private-project|secret/);
+const failed = stripAnsi(renderToolsLine({ ...toolActivity, recentCalls: [{ ...toolActivity.recentCalls[0], status: 'error', result: { kind: 'exited', exitCode: 1 } }] }, 120));
+assert.match(failed, /exit 1/);
+assert.doesNotMatch(failed, /curl|Authorization|private-project|secret/);
 
 console.log('test-tool-details-privacy: PASS');

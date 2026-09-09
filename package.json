@@ -16,7 +16,8 @@
     "test:unit": "npm run build && bash tests/run-suite.sh unit",
     "test:integration": "npm run build && bash tests/run-suite.sh integration",
     "test:e2e:agent": "npm run build && node tests/e2e/test-agent-status-hud.mjs",
-    "test:render": "npm run build && node dist/test-render.js"
+    "test:render": "npm run build && node dist/test-render.js",
+    "docs:previews": "npm run build && node scripts/render-previews.mjs"
   },
   "keywords": [
     "codex",

@@ -182,10 +182,10 @@ const render = (data, maxLines) =>
     'the call in flight survives'
   );
 
-  // One row more and the environment row comes back before the session row.
+  // Compact inventory fits inline, leaving the extra row for session identity.
   const taller = render(makeData({ agentCount: 2, planSteps: 7 }), 8);
-  assert.ok(taller.some((line) => line.includes('MCP configured')));
-  assert.equal(taller.some((line) => line.startsWith('Dir: ')), false);
+  assert.ok(taller.some((line) => line.includes('MCP:')), 'compact inventory remains visible');
+  assert.ok(taller.some((line) => line.startsWith('Dir: ')));
 
   // Agents outrank the turn row: with three of them the frame fills all
   // seven rows instead of collapsing to six with one blank.

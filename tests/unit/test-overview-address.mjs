@@ -124,8 +124,8 @@ const view = (sessions, selfSessionId) =>
   const tailOnly = narrow(76);
   assert.ok(tailOnly[0].includes('135511-57225'), 'a shortened tail still tells the rows apart');
   const cramped = narrow(68);
-  assert.equal(cramped[0].includes('…'), false, 'no stub is printed');
-  assert.equal(cramped[0].includes('57225'), false, 'the address column is dropped whole');
+  assert.ok(cramped[0].includes('…'), 'the distinguishing address tail remains');
+  assert.ok(cramped[0].includes('57225'), 'optional columns yield before the address');
   assert.ok(cramped[0].includes('Idle'), 'the phase column survives');
 }
 

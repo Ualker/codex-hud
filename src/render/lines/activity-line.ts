@@ -43,7 +43,7 @@ type ToolDetailsMode = 'off' | 'targets' | 'full';
 // provides the initial mode.
 let toolDetailsModeOverride: ToolDetailsMode | null = null;
 
-function toolDetailsMode(): ToolDetailsMode {
+export function toolDetailsMode(): ToolDetailsMode {
   if (toolDetailsModeOverride !== null) {
     return toolDetailsModeOverride;
   }
@@ -980,7 +980,9 @@ function renderToolCallDetail(
   // is re-derived here as defense in depth: even if a raw command ends up in
   // `target`, only program names and known subcommands reach the screen.
   const detail =
-    detailsMode === 'full'
+    detailsMode === 'off'
+      ? undefined
+      : detailsMode === 'full'
       ? call.summary ?? call.target
       : executionTool
         ? executionDisplayHead(call)
@@ -990,7 +992,7 @@ function renderToolCallDetail(
   // so an unconditional `@prj` stood in the row's most detailed slot as a
   // no-op. Only a call that ran somewhere else keeps the tag.
   const workdir =
-    call.workdir && !isSessionCwd(call.workdir, sessionCwd)
+    detailsMode !== 'off' && call.workdir && !isSessionCwd(call.workdir, sessionCwd)
       ? `@${formatToolWorkdir(call.workdir)}`
       : undefined;
   const durationMs = call.status === 'running'
@@ -1158,17 +1160,14 @@ export function renderToolsLine(
   paused: boolean = false,
   sessionCwd?: string
 ): string | null {
-  if (toolDetailsMode() === 'off') {
-    return null;
-  }
-  if (!toolActivity || toolActivity.recentCalls.length === 0) {
+  if (!toolActivity || (toolActivity.recentCalls.length === 0 && !toolActivity.runningCalls?.length)) {
     return null;
   }
   
   const parts: string[] = [];
   
   // Currently running tool (if any)
-  const running = toolActivity.recentCalls.filter(c => c.status === 'running');
+  const running = toolActivity.runningCalls ?? toolActivity.recentCalls.filter(c => c.status === 'running');
   const current = running.length > 0 ? running[running.length - 1] : undefined;
   const finishedCalls = toolActivity.recentCalls.filter(
     (call) =>
@@ -1182,6 +1181,30 @@ export function renderToolsLine(
       (call) => call.status === 'error' && toolCallHasDetail(call)
     ) ??
     reversedFinished.find((call) => toolCallHasDetail(call));
+  if (toolDetailsMode() === 'off') {
+    const failure = reversedFinished.find((call) => call.status === 'error');
+    const summary = running.length
+      ? theme.toolRunning(`${paused ? icons.pause : getSpinnerFrame()} ${running.length} ${running.length === 1 ? 'tool' : 'tools'} ${paused ? 'paused' : 'running'}`)
+      : null;
+    return joinToolParts([
+      ...(summary ? [summary] : []),
+      ...(failure ? [renderToolCallDetail(failure, width, nowMs, false, sessionCwd)] : []),
+    ], null, width);
+  }
+  if (running.length > 1) {
+    const summary = theme.toolRunning(`${paused ? icons.pause : getSpinnerFrame()} ${running.length} tools ${paused ? 'paused' : 'running'}`);
+    const failure = reversedFinished.find((call) => call.status === 'error');
+    const detailCount = !Number.isFinite(width) || width >= 100 ? 2 : 1;
+    const budget = Number.isFinite(width)
+      ? Math.max(12, Math.floor((width - visualLength(summary) - 3) / (detailCount + (failure ? 1 : 0))) - 3)
+      : width;
+    const active = [...running].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    return joinToolParts([
+      summary,
+      ...(failure ? [renderToolCallDetail(failure, budget, nowMs, false, sessionCwd)] : []),
+      ...active.slice(0, detailCount).map((call) => renderToolCallDetail(call, budget, nowMs, paused, sessionCwd)),
+    ], null, width);
+  }
   // A failed call is more actionable than a running one, so its detail is
   // never dropped for width; successful details still yield to the running
   // tool on narrow panes.
@@ -1355,8 +1378,8 @@ export function renderTokenLine(
 
   const parts: string[] = [];
   const atLeast = data.partialHistory ? '≥' : '';
-  // Everything but the context gauge, in the order it is given up when the row
-  // does not fit. Trimming whole cells beats letting the outer truncation
+  // Optional cells are selected after context by value, compact count first.
+  // When a larger cell cannot fit, shorter cells can still fill the space. Trimming whole cells beats letting the outer truncation
   // slice through a parenthesised group mid-token.
   let tokensPart: string | null = null;
   let breakdownPart: string | null = null;
@@ -1405,10 +1428,10 @@ export function renderTokenLine(
     const cachedInput = usage.cached_input_tokens ?? 0;
     const nonCachedInput = Math.max(0, (usage.input_tokens ?? 0) - cachedInput);
 
-    // "Turn", not "Tokens": this is the last turn's usage, and beside the
-    // session `Total:` the generic label read as the cumulative number.
+    // A user turn can contain many model requests. last_token_usage is only
+    // the latest request, never the aggregate spend of that user turn.
     tokensPart = theme.tokenCount(
-      `Turn: ${formatTokenCount(usage.total_tokens ?? 0)}`
+      `${data.tokenUsage?.last_token_usage ? 'Last call' : 'Total'}: ${formatTokenCount(usage.total_tokens ?? 0)}`
     );
     parts.push(tokensPart);
 
@@ -1455,23 +1478,16 @@ export function renderTokenLine(
 
   // Dim pipes match every other row's separator style.
   const tokenSeparator = ` ${colors.dim(icons.pipe)} `;
-  let line = parts.join(tokenSeparator);
-  if (Number.isFinite(width) && visualLength(line) > width) {
-    // Least informative first. The context gauge is never a candidate: it is
-    // why this row leads the layout.
-    const dropOrder = [compactPart, totalPart, breakdownPart, tokensPart];
-    const dropped = new Set<string>();
-    for (const candidate of dropOrder) {
-      if (visualLength(line) <= width) {
-        break;
-      }
-      if (candidate === null) {
-        continue;
-      }
-      dropped.add(candidate);
-      line = parts.filter((part) => !dropped.has(part)).join(tokenSeparator);
-    }
+  const optional = [compactPart, totalPart, tokensPart, breakdownPart];
+  const selected = parts.filter((part) => !optional.includes(part));
+  // Fill by value, reconsidering every cell after a larger one fails to
+  // fit. A compact count is short and must survive quota-row compression.
+  for (const part of optional) {
+    if (!part || (part === breakdownPart && (toolDetailsMode() !== 'full' || !tokensPart || !selected.includes(tokensPart)))) continue;
+    const candidate = [...selected, part].join(tokenSeparator);
+    if (!Number.isFinite(width) || visualLength(candidate) <= width) selected.push(part);
   }
+  const line = selected.length ? selected.join(tokenSeparator) : (tokensPart ?? '');
   // Below roughly 28 columns even the lone context cell overflows; clamp here
   // so this renderer honours its width contract like every other row.
   return truncateAnsi(line, width);

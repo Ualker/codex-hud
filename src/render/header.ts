@@ -48,6 +48,7 @@ import {
   renderAgentSummaryLine,
   renderBindingHintLine,
   renderToolDetailsNotice,
+  toolDetailsMode,
 } from './lines/index.js';
 import { formatCompactAge } from '../utils/format-age.js';
 
@@ -237,14 +238,15 @@ function renderExpandedLayout(
     return [identityLine, shrunkProject, ...(suffix ? [suffix] : [])].join(separator);
   };
 
-  const envLine = renderEnvironmentLine(data, width);
+  const envOptions = { compact: toolDetailsMode() !== 'full' };
+  const envLine = renderEnvironmentLine(data, width, envOptions);
   // Row 1 can host the environment cells when every one of them fits beside
   // it (minus the hotkey hint's reservation while that is on screen). The
   // environment row is static for the whole session, and at the live 146x7
   // geometry row 1 had about a hundred columns to spare, so merging it frees
   // a row for live state without dropping a single cell. Only a complete
   // merge counts: a partial one would trade cells for the row.
-  const envFull = renderEnvironmentLine(data, Number.POSITIVE_INFINITY);
+  const envFull = renderEnvironmentLine(data, Number.POSITIVE_INFINITY, envOptions);
   const row1Plain = buildRow1(null);
   const mergedRow1 =
     envFull !== null &&
@@ -366,7 +368,7 @@ function renderExpandedLayout(
   const toolsLine =
     staleSessionRows && rawToolsLine ? dimStaleRow(rawToolsLine) : rawToolsLine;
   const hasRunningTool = Boolean(
-    data.toolActivity?.recentCalls.some(
+    (data.toolActivity?.runningCalls ?? data.toolActivity?.recentCalls)?.some(
       (call) => call.status === 'running'
     )
   );
@@ -374,6 +376,9 @@ function renderExpandedLayout(
   const turnLineShown = paneFreshLine ?? turnLine;
   const awaitingApproval =
     data.turnActivity?.phase === 'awaiting-approval';
+  const urgentTurn = Boolean(turnLineShown &&
+    ['awaiting-approval', 'failed', 'interrupted', 'aborted'].includes(data.turnActivity?.phase ?? '') &&
+    !paneFreshLine);
   const agentLines = renderAgentLines(data.agentActivity, width);
   const agentSummaryLine = renderAgentSummaryLine(data.agentActivity, width);
   const planLine = renderTodosLine(data.planProgress, width);
@@ -432,6 +437,7 @@ function renderExpandedLayout(
     showSession: boolean;
     /** The dim unknown-record note. */
     showNote: boolean;
+    showBuild: boolean;
   }
 
   const assemble = (variant: LayoutVariant): string[] => {
@@ -452,10 +458,13 @@ function renderExpandedLayout(
     } else {
       lines.push(buildRow1(movedAccessBadge));
     }
+    // A request for human action gets a reserved row before diagnostics and
+    // capacity. This remains visible even if the minimum frame overflows.
+    if (urgentTurn && turnLineShown) lines.push(turnLineShown);
     if (healthLine) {
       lines.push(healthLine);
     }
-    if (buildLine) {
+    if (buildLine && variant.showBuild) {
       lines.push(buildLine);
     }
     lines.push(
@@ -477,7 +486,9 @@ function renderExpandedLayout(
         turnLineShown &&
         toolsLine
     );
-    if (hasRunningTool && toolsLine && !showTurnWithTool) {
+    if (urgentTurn) {
+      // Already pinned above; paused tool details can use any spare row.
+    } else if (hasRunningTool && toolsLine && !showTurnWithTool) {
       // A suspended call is detail about the approval wait, not the primary
       // state. When one row must win, keep the action the user can take and
       // drop the paused tool detail instead of showing a fake running spinner.
@@ -520,6 +531,7 @@ function renderExpandedLayout(
     envRow: true,
     showSession: true,
     showNote: true,
+    showBuild: true,
   };
   if (!Number.isFinite(maxLines)) {
     return assemble(everything);
@@ -536,8 +548,8 @@ function renderExpandedLayout(
   // comes last; when it cannot be merged it still yields to live turn state
   // but outranks the static session row it used to outlive.
   const order: (keyof LayoutVariant)[] = canMergeEnv
-    ? ['expandAgents', 'keepTurnWithTool', 'showCalmQuota', 'showSession', 'envRow', 'showNote']
-    : ['expandAgents', 'keepTurnWithTool', 'showCalmQuota', 'envRow', 'showSession', 'showNote'];
+    ? ['expandAgents', 'keepTurnWithTool', 'showCalmQuota', 'showSession', 'envRow', 'showBuild', 'showNote']
+    : ['expandAgents', 'keepTurnWithTool', 'showCalmQuota', 'envRow', 'showSession', 'showBuild', 'showNote'];
   let variant: LayoutVariant = {
     expandAgents: false,
     keepTurnWithTool: false,
@@ -545,6 +557,7 @@ function renderExpandedLayout(
     envRow: false,
     showSession: false,
     showNote: false,
+    showBuild: false,
   };
   let rendered = assemble(variant);
   if (rendered.length > maxLines) {
@@ -644,6 +657,11 @@ function renderOverviewLayout(
   maxLines: number
 ): string[] {
   const scanned = (data.overview?.updatedAt?.getTime() ?? 0) > 0;
+  const healthLine = renderHealthLine({
+    ...data,
+    protocolHealth: undefined,
+    collectorHealth: { overview: data.collectorHealth?.overview },
+  }, width);
   let allSessions = data.overview?.sessions;
   let scanning = false;
   if (!allSessions || allSessions.length === 0) {
@@ -657,7 +675,7 @@ function renderOverviewLayout(
       scanning = true;
     } else {
       return [
-        colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
+        healthLine ?? colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
       ];
     }
   }
@@ -674,10 +692,14 @@ function renderOverviewLayout(
   const scanningNote = scanning
     ? colors.dim('Looking for other sessions…')
     : null;
+  const unavailableCount = allSessions.filter((session) => session.unavailable).length;
+  const overviewWarning = healthLine ?? (unavailableCount > 0
+    ? theme.warning(`${unavailableCount} session log${unavailableCount === 1 ? '' : 's'} unavailable · retrying`)
+    : null);
   // The rows are clipped by the viewport, not here, so that its "+N hidden"
   // stamp keeps counting what it actually dropped. Reserving a line therefore
   // means telling orderForViewport that the budget is one smaller.
-  const reserved = (quotaAlert ? 1 : 0) + (scanningNote ? 1 : 0);
+  const reserved = (quotaAlert ? 1 : 0) + (scanningNote ? 1 : 0) + (overviewWarning ? 1 : 0);
   const overview = {
     sessions: orderForViewport(
       allSessions,
@@ -691,6 +713,9 @@ function renderOverviewLayout(
   const phaseLabel = (
     session: SessionOverviewItem
   ): string => {
+    if (session.unavailable) {
+      return theme.warning('Unknown');
+    }
     // An open session that has never run a turn is not unknown; Codex simply
     // has not written a rollout for it yet.
     if (session.neverStarted) {
@@ -736,7 +761,7 @@ function renderOverviewLayout(
       ) || shortId;
     return truncate(project, 24);
   });
-  const projectColumnWidth = Math.max(
+  const desiredProjectWidth = Math.max(
     ...projectNames.map((name) => visualLength(name))
   );
   const phaseLabels = overview.sessions.map((session) => phaseLabel(session));
@@ -747,15 +772,13 @@ function renderOverviewLayout(
   // Sessions without context data (never started, or a rollout that could not
   // be parsed) must still occupy the gauge column, or every column after them
   // shifts left and the table stops scanning as a table.
-  const ctxDisplays = overview.sessions.map((session) => {
-    const ctx = session.contextUsage;
-    return ctx
-      ? `${remainingBar(ctx.percent, layout.barWidth)} ${100 - ctx.percent}% left`
-      : colors.dim('--');
-  });
-  const ctxColumnWidth = Math.max(
-    ...ctxDisplays.map((display) => visualLength(display))
-  );
+  const compactColumns = width < 72;
+  const contextText = (session: SessionOverviewItem): string => {
+    const ctx = session.freshPrompt || session.unavailable ? undefined : session.contextUsage;
+    return ctx ? `${100 - ctx.percent}%${compactColumns ? '' : ' left'}` : colors.dim('--');
+  };
+  let ctxDisplays = overview.sessions.map(contextText);
+  let ctxColumnWidth = Math.max(...ctxDisplays.map(visualLength));
   const ageDisplays = overview.sessions.map((session) =>
     colors.dim(
       session.lastActivityAt ? `${formatAge(session.lastActivityAt)} ago` : '--'
@@ -772,13 +795,11 @@ function renderOverviewLayout(
       .map((session) => session.model)
       .filter((model): model is string => Boolean(model))
   );
-  const showModel = models.size > 1;
+  let showModel = false;
   const modelDisplays = overview.sessions.map((session) =>
     colors.dim(truncate(sanitizeTerminalText(session.model ?? '--'), 20))
   );
-  const modelColumnWidth = showModel
-    ? Math.max(...modelDisplays.map((display) => visualLength(display)))
-    : 0;
+  const modelColumnWidth = Math.max(...modelDisplays.map(visualLength));
 
   // The first prompt of each session, which is how a user tells two rows of
   // the same project apart. It competes with the address for the columns the
@@ -790,47 +811,56 @@ function renderOverviewLayout(
         )
       : ''
   );
-  const titleColumnWidth = Math.max(
+  const desiredTitleWidth = Math.max(
     0,
     ...titleDisplays.map((display) => visualLength(display))
   );
-  const columnSeparator = ` ${colors.dim('│')} `;
+  const columnSeparator = compactColumns ? ' ' : ` ${colors.dim('│')} `;
   const separatorWidth = visualLength(columnSeparator);
-  const fixedColumns = [
-    projectColumnWidth,
-    ...(showModel ? [modelColumnWidth] : []),
-    phaseColumnWidth,
-    ctxColumnWidth,
-    ageColumnWidth,
-  ];
   const markerWidth = 2;
-  const fixedWidth =
-    markerWidth +
-    fixedColumns.reduce((total, column) => total + column, 0) +
-    separatorWidth * (fixedColumns.length - 1);
-  const showTitle =
-    titleColumnWidth > 0 &&
-    fixedWidth +
-      separatorWidth +
-      titleColumnWidth +
-      separatorWidth +
-      OVERVIEW_ADDRESS_MIN_WIDTH <=
-      width;
-  const addressBudget =
-    width -
-    fixedWidth -
-    (showTitle ? separatorWidth + titleColumnWidth : 0) -
-    separatorWidth;
-  const showAddress = addressBudget >= OVERVIEW_ADDRESS_MIN_WIDTH;
+  // Identity, phase and remaining context get a budget before decoration.
+  // A narrow table must still tell two sessions in the same project apart.
+  const addressMinimum = Math.min(OVERVIEW_ADDRESS_MIN_WIDTH,
+    Math.max(...overview.sessions.map((session) => visualLength(overviewAddress(session)))));
+  const projectColumnWidth = Math.max(1, Math.min(desiredProjectWidth,
+    width - markerWidth - phaseColumnWidth - ctxColumnWidth - addressMinimum - separatorWidth * 3));
+  let addressBudget = Math.max(0, Math.min(addressMinimum,
+    width - markerWidth - projectColumnWidth - phaseColumnWidth - ctxColumnWidth - separatorWidth * 3));
+  const showAddress = addressBudget > 0;
+  let spare = width - markerWidth - projectColumnWidth - phaseColumnWidth - ctxColumnWidth
+    - (showAddress ? addressBudget : 0) - separatorWidth * (showAddress ? 3 : 2);
+  let titleColumnWidth = 0;
+  if (desiredTitleWidth > 0 && spare >= separatorWidth + Math.min(8, desiredTitleWidth)) {
+    titleColumnWidth = Math.min(desiredTitleWidth, spare - separatorWidth);
+    spare -= titleColumnWidth + separatorWidth;
+  }
+  const overviewBarWidth = layout.barWidth ?? 12;
+  if (spare >= overviewBarWidth + 1) {
+    const withBars = overview.sessions.map((session) =>
+      `${session.contextUsage && !session.freshPrompt && !session.unavailable
+        ? remainingBar(session.contextUsage.percent, overviewBarWidth)
+        : ' '.repeat(overviewBarWidth)} ${contextText(session)}`);
+    const withBarsWidth = Math.max(...withBars.map(visualLength));
+    spare -= withBarsWidth - ctxColumnWidth;
+    ctxDisplays = withBars;
+    ctxColumnWidth = withBarsWidth;
+  }
+  if (models.size > 1 && spare >= separatorWidth + modelColumnWidth) {
+    showModel = true;
+    spare -= separatorWidth + modelColumnWidth;
+  }
+  const showAge = spare >= separatorWidth + ageColumnWidth;
+  if (showAge) spare -= separatorWidth + ageColumnWidth;
+  if (showAddress) addressBudget += Math.min(spare, OVERVIEW_ADDRESS_WIDTH - addressBudget);
 
   const rows = overview.sessions.map((session, index) => {
     const parts = [
-      padEnd(theme.projectName(projectNames[index]), projectColumnWidth),
-      ...(showTitle ? [padEnd(titleDisplays[index], titleColumnWidth)] : []),
+      padEnd(theme.projectName(truncate(projectNames[index], projectColumnWidth)), projectColumnWidth),
+      ...(titleColumnWidth ? [padEnd(truncateAnsi(titleDisplays[index], titleColumnWidth), titleColumnWidth)] : []),
       ...(showModel ? [padEnd(modelDisplays[index], modelColumnWidth)] : []),
       padEnd(phaseLabels[index], phaseColumnWidth),
       padEnd(ctxDisplays[index], ctxColumnWidth),
-      padEnd(ageDisplays[index], ageColumnWidth),
+      ...(showAge ? [padEnd(ageDisplays[index], ageColumnWidth)] : []),
       ...(showAddress
         ? [colors.dim(overviewAddress(session, addressBudget))]
         : []),
@@ -848,6 +878,7 @@ function renderOverviewLayout(
   if (scanningNote) {
     rows.push(scanningNote);
   }
+  if (overviewWarning) rows.unshift(truncateAnsi(overviewWarning, width));
   if (quotaAlert) {
     // A quota this high outlives the sessions it would be listed under, and
     // the bottom of an overflowing list is exactly where the viewport clips.

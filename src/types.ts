@@ -142,6 +142,8 @@ export interface SessionOverviewItem {
    * the first message rebinds it.
    */
   freshPrompt?: boolean;
+  /** Identity is retained while this session's rollout cannot be read. */
+  unavailable?: boolean;
 }
 
 export interface SessionOverview {
@@ -538,6 +540,8 @@ export interface ToolCall {
 
 export interface ToolActivity {
   recentCalls: ToolCall[];
+  /** Live calls are independent of the bounded completed-call history. */
+  runningCalls?: ToolCall[];
   totalCalls: number;
   callsByType: Record<string, number>;
   lastUpdateTime: Date;

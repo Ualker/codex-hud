@@ -11,7 +11,7 @@ Real-time statusline HUD for [OpenAI Codex CLI](https://github.com/openai/codex)
 
 > Inspired by [claude-hud](https://github.com/jarrodwatts/claude-hud) for Claude Code.
 
-![Codex HUD — Single Session](./doc/fig/2a00eaf0-496a-4039-a0ce-87a9453df30d.png)
+![Codex HUD — Single Session](./doc/fig/single.svg)
 
 ## Why Codex HUD?
 
@@ -28,7 +28,7 @@ Because you're flying blind without one. Codex HUD gives you a persistent dashbo
 
 **Q: I run multiple Codex sessions. Can I monitor them all?**
 
-Yes. Click the HUD pane, or run `codex-hud --toggle-mode` from the main pane;
+Yes. Click the visible `[view]` button, or run `codex-hud --toggle-mode` from the main pane;
 `Prefix+H` toggles it from the Codex pane too — the wrapper installs that
 binding whenever the key is unbound (`CODEX_HUD_BIND_TOGGLE=0` skips it, `1`
 forces it), and the hint line names what this session actually has. The HUD
@@ -61,11 +61,17 @@ over the HUD (or `t` while the pane is focused, or `codex-hud --cycle-details`
 from the main pane) cycles the tool-detail level (`targets` → `full` → `off`,
 wheel-up goes back) and briefly confirms the new level.
 
-![Codex HUD — Multi-Session Overview](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
+![Codex HUD — Multi-Session Overview](./doc/fig/overview.svg)
 
 **Q: Do I need to set up tmux manually?**
 
 No. Codex HUD auto-activates tmux for you. Just type `codex` and the HUD appears. If tmux isn't installed, the installer handles that too.
+
+The default view keeps compact counts beside context remaining, and reserves space for approval, failure, interruption and abort states before diagnostics. `Last call` means `last_token_usage` (one model request); `Total` is the session's accumulated usage. Input/cache/output breakdowns and the longer environment inventory appear in `full` details mode. Concurrent calls keep an accurate running count even when older calls leave the recent-history list.
+
+Control commands prefer the current tmux pane's session. Outside tmux, they auto-select only a unique candidate in the current directory; multiple candidates produce a list and require `--target <exact-session-name>` or `--target %<pane-id>`. `--all` is available only for `--kill` and `--reload`, scoped to the current directory. Clicks on content no longer switch views; use the visible `[view]` button or the existing keyboard controls.
+
+Overview retains the address, phase and numeric context before decorative columns, and abbreviates optional titles to fit. Failed scans retain the last successful rows with a warning; unreadable sessions keep their identity with `Unknown` state. Missing/dead HUD panes no longer count as open bindings. Quota snapshots and burn-rate baselines are shared only between the same resolved `CODEX_HOME` and sessions directory; the first reading after upgrading starts a fresh baseline.
 
 ## Quick Start
 
@@ -106,12 +112,12 @@ After the first install, these are available in your shell:
 | `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
 | `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
 | `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases, and print the most recent HUD diagnostics |
-| `codex-hud --kill` | Kill the newest session in this directory (`--all`: every session here) |
-| `codex-hud --reload` | Rebuild when needed, then restart the newest session's HUD pane in this directory |
+| `codex-hud --kill` | Kill the current tmux session, or the unique session in this directory when outside tmux (`--all`: every session here) |
+| `codex-hud --reload` | Rebuild when needed, then restart the current/unique HUD pane; `--target NAME` or `--target %ID` selects explicitly |
 | `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
 | `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
 | `codex-hud --cycle-details` | Cycle the tool-detail level without moving focus |
-| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory (the one `codex`, `--kill` and `--reload` act on) is marked `(newest here…)` |
+| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory (the automatic launch/attach target) is marked `(newest here…)` |
 | `codex-hud --hud-version` | Print the package version and checkout revision |
 
 ## What's on the HUD?
@@ -119,14 +125,14 @@ After the first install, these are available in your shell:
 ```text
 [gpt-5.6-sol high] my-project "fix the flaky e2e run" git:(main *) up 12m
 [FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: ███████▁▁▁▁▁ 55% left (70.4K) | Turn: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K) | Total: 1.2M
+Ctx: ███████▁▁▁▁▁ 55% left (70.4K) | ↻3 | Total: 1.2M | Last call: 50.2K
 ● Thinking 42s · event 8s ago
 ● exec: npm test 1.4s | ✗ exec: rg pattern @other-repo exit 1 | ✓ read_file ×3
 ```
 
 The context gauge is a fuel bar: filled cells show what remains, matching the
-`% left` label, and the color reflects pressure (green → yellow → red). `Turn`
-is the last turn's token usage and `Total` the session's cumulative spend. The
+`% left` label, and the color reflects pressure (green → yellow → red). `Last call`
+is the latest model request's token usage and `Total` the session's cumulative spend. The
 quoted title is the session's first prompt. Every glyph comes from a set
 verified against a terminal font that lacks the half-filled circles and light
 shades (◐ ░ ⏸ rendered wide or at the wrong height there): the activity marker
@@ -178,7 +184,7 @@ Heredoc bodies are data, not commands: `python3 <<PY` reads as `python3`, its
 body lines neither mint fake heads nor spend the segment budget that later real
 commands need.
 File tools show only sanitized targets. `full` enables sanitized, bounded
-command summaries; `off` hides the tool line. Raw stdout/stderr and raw tool
+command summaries; `off` keeps running counts and failures while hiding targets. Raw stdout/stderr and raw tool
 arguments are never retained or displayed.
 
 Codex CLI 0.147 runs every tool through a single `exec` tool whose argument is a
@@ -232,12 +238,12 @@ documents the wrapper.
 <summary>More commands</summary>
 
 ```bash
-codex-hud --kill             # Kill the newest session here (--all: every one)
+codex-hud --kill             # Kill the current/unique session (--all: every session here)
 codex-hud --list             # List all HUD sessions
 codex-hud --attach           # Attach to existing session
 codex-hud --new-session      # Force a new session
 codex-hud --doctor           # Run diagnostics (--self-check alias)
-codex-hud --reload           # Restart the newest session's HUD pane here
+codex-hud --reload           # Restart the current/unique HUD pane
 codex-hud --reload --all     # Restart the HUD pane of every session here
 codex-hud --toggle-mode      # Toggle single/overview mode
 codex-hud --cycle-details    # Cycle the tool-detail level
@@ -275,7 +281,7 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 | `CODEX_HUD_BIND_TOGGLE` | `auto` | Server-wide `Prefix+H` HUD toggle: unset installs it while the key is unbound, `1` always, `0` never |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` hides the tool row (the wheel over the HUD, the `t` key, or `codex-hud --cycle-details` cycles this at runtime). Shell builtins never count as the command: `ffmpeg … ; echo ; exit` reads `ffmpeg` |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` retains running counts and failures, hiding targets (the wheel over the HUD, the `t` key, or `codex-hud --cycle-details` cycles this at runtime). Shell builtins never count as the command: `ffmpeg … ; echo ; exit` reads `ffmpeg` |
 | `CODEX_HUD_MODE` | `single` | Initial display mode: `single` or `overview` |
 | `CODEX_HUD_LOG_FILE` | per-user default | Append HUD diagnostics (watcher/render/tracking errors) to this file. Defaults to `~/Library/Logs/codex-hud/hud.log` on macOS, `$XDG_STATE_HOME/codex-hud/hud.log` elsewhere; set `off` to discard them |
 | `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
@@ -320,6 +326,8 @@ separately on 20.x).
 | macOS (Apple Silicon) | Supported |
 | macOS (Intel) | Testing pending |
 | Windows (WSL) | Supported on `feature/windows-support-dual-entry` |
+
+The previews above use synthetic data rendered by the current HUD. Regenerate them with `npm run docs:previews`.
 
 ## Development
 

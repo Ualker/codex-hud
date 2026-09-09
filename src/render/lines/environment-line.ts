@@ -25,7 +25,8 @@ import {
  */
 export function renderEnvironmentLine(
   data: HudData,
-  width: number = Number.POSITIVE_INFINITY
+  width: number = Number.POSITIVE_INFINITY,
+  options: { compact?: boolean } = {}
 ): string | null {
   const details: string[] = [];
 
@@ -124,13 +125,13 @@ export function renderEnvironmentLine(
     data.project.mcpCount || getMcpServerCount(data.config);
   if (mcpCount > 0) {
     details.push(
-      colors.dim('MCP configured: ') + theme.info(`${mcpCount}`)
+      colors.dim(options.compact ? 'MCP: ' : 'MCP configured: ') + theme.value(`${mcpCount}`)
     );
   }
   if (data.project.skillsCount > 0) {
     details.push(
-      colors.dim('Codex skills: ') +
-        theme.info(`${data.project.skillsCount}`)
+      colors.dim(options.compact ? 'Skills: ' : 'Codex skills: ') +
+        theme.value(`${data.project.skillsCount}`)
     );
   }
   if (
@@ -144,10 +145,10 @@ export function renderEnvironmentLine(
   }
   if (data.project.hooksCount > 0) {
     details.push(
-      colors.dim('Hooks: ') + theme.info(`${data.project.hooksCount}`)
+      colors.dim('Hooks: ') + theme.value(`${data.project.hooksCount}`)
     );
   }
-  if (data.project.agentsMdCount > 0) {
+  if (!options.compact && data.project.agentsMdCount > 0) {
     details.push(
       colors.dim('AGENTS.md: ') +
         theme.success(`${data.project.agentsMdCount}`)
@@ -157,7 +158,7 @@ export function renderEnvironmentLine(
   const configSources =
     (data.project.globalConfigActive ? 1 : 0) +
     data.project.configsCount;
-  if (configSources > 0) {
+  if (!options.compact && configSources > 0) {
     const sourceLabel = [
       data.project.globalConfigActive ? 'global' : '',
       data.project.configsCount > 0
@@ -166,7 +167,7 @@ export function renderEnvironmentLine(
     ].filter(Boolean).join('+');
     details.push(colors.dim(`Config: ${sourceLabel}`));
   }
-  if (data.project.rulesCount > 0) {
+  if (!options.compact && data.project.rulesCount > 0) {
     details.push(
       colors.dim('Rules: ') + theme.info(`${data.project.rulesCount}`)
     );

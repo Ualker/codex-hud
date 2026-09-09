@@ -87,7 +87,21 @@ env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
 
 wait_for_count 1
 
-(cd "$ROOT_DIR" && env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+# A newer sibling must not steal controls from the current pane. Every
+# control also rejects ambiguous external selection before sending anything.
+other_session="codex-hud-codex-hud-${session_hash}-20990102000000-other"
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux new-session -d -s "$other_session" 'sleep 120'
+for control in --kill --reload --toggle-mode --cycle-details; do
+  if (cd "$ROOT_DIR" && env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$TMUX_DIR" \
+      "$ROOT_DIR/bin/codex-hud" "$control" >"$TEST_ROOT/ambiguous.log" 2>&1); then
+    echo "Expected $control to reject ambiguous selection" >&2
+    exit 1
+  fi
+  grep -q -- '--target' "$TEST_ROOT/ambiguous.log"
+done
+fixture_socket="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux display-message -p -t "$hud_pane" '#{socket_path}')"
+
+(cd "$ROOT_DIR" && env TMUX="$fixture_socket,0,0" TMUX_PANE="$hud_pane" TMUX_TMPDIR="$TMUX_DIR" \
   "$ROOT_DIR/bin/codex-hud" --toggle-mode >/dev/null)
 for _ in $(seq 1 200); do
   [[ -s "$SIGNAL_FILE" ]] && break
@@ -101,7 +115,7 @@ fi
 # --cycle-details is the `t` key without focusing the pane: USR2 to the same
 # process.
 (cd "$ROOT_DIR" && env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
-  "$ROOT_DIR/bin/codex-hud" --cycle-details >/dev/null)
+  "$ROOT_DIR/bin/codex-hud" --cycle-details --target "$session_name" >/dev/null)
 for _ in $(seq 1 200); do
   grep -q '^details$' "$SIGNAL_FILE" 2>/dev/null && break
   sleep 0.05
@@ -112,7 +126,7 @@ if ! grep -q '^details$' "$SIGNAL_FILE"; then
 fi
 
 (cd "$ROOT_DIR" && env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
-  "$ROOT_DIR/bin/codex-hud" --reload >/dev/null)
+  "$ROOT_DIR/bin/codex-hud" --reload --target "$hud_pane" >/dev/null)
 wait_for_count 2
 
 adaptive_height="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
@@ -137,4 +151,5 @@ if ! env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
   exit 1
 fi
 
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux has-session -t "$other_session"
 echo "test-hud-control-commands: PASS"
