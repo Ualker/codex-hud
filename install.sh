@@ -305,16 +305,27 @@ write_aliases() {
 
 strip_managed_aliases() {
     local rc_file="$1"
+    local replacement_file="${2:-}"
     local temp_file
     temp_file=$(mktemp)
 
     awk \
+        -v replacement="$replacement_file" \
         -v marker="$MARKER" \
         -v wrapper="$WRAPPER_PATH" \
         -v install_cmd="$INSTALL_CMD_PATH" \
         -v sync_cmd="$SYNC_CMD_PATH" \
         -v upgrade_cmd="$UPGRADE_CMD_PATH" \
         -v uninstall_cmd="$UNINSTALL_CMD_PATH" '
+        function emit_replacement(    line) {
+            if (replacement != "" && !inserted) {
+                while ((getline line < replacement) > 0) {
+                    print line
+                }
+                close(replacement)
+                inserted = 1
+            }
+        }
         function managed_alias(line) {
             return line ~ /^alias (codex-hud|codex|cx|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)(=| )/
         }
@@ -337,22 +348,31 @@ strip_managed_aliases() {
                 line == "alias codex-hud-uninstall \047" uninstall_cmd "\047"
         }
         index($0, marker) {
+            emit_replacement()
             if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*$") {
                 legacy_block = 1
             }
             next
         }
         legacy_block && managed_alias($0) {
+            emit_replacement()
             next
         }
         legacy_block {
             legacy_block = 0
         }
         current_managed_alias($0) {
+            emit_replacement()
             next
         }
         {
             print
+        }
+        END {
+            if (replacement != "" && !inserted) {
+                print ""
+                emit_replacement()
+            }
         }
     ' "$rc_file" > "$temp_file"
     mv "$temp_file" "$rc_file"
@@ -375,10 +395,19 @@ add_alias() {
         backup_existing_aliases "$rc_file"
     fi
 
-    strip_managed_aliases "$rc_file"
-
-    echo "" >> "$rc_file"
-    write_aliases "$rc_file" "$shell_name"
+    if [[ "$shell_name" == "fish" ]]; then
+        # fish aliases are functions: appending them after user wrappers
+        # would override those wrappers. Refresh our aliases in place.
+        local replacement_file
+        replacement_file=$(mktemp)
+        write_aliases "$replacement_file" "$shell_name"
+        strip_managed_aliases "$rc_file" "$replacement_file"
+        rm -f "$replacement_file"
+    else
+        strip_managed_aliases "$rc_file"
+        echo "" >> "$rc_file"
+        write_aliases "$rc_file" "$shell_name"
+    fi
 
     info "Configured aliases in $rc_file"
 }

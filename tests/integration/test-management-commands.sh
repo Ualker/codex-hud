@@ -10,6 +10,8 @@ ZDOTDIR_DIR="$TEST_HOME/zdotdir"
 FISH_CONFIG_DIR="$TEST_HOME/.config/fish"
 FISH_CONFIG="$FISH_CONFIG_DIR/config.fish"
 MARKER="# codex-hud alias"
+FISH_BIN="$(command -v fish || true)"
+PROXY_FIXTURE="$TEST_HOME/proxy.fish"
 
 cleanup() {
   rm -rf "$FAKE_BIN_DIR" "$TEST_HOME" "$LOG_DIR"
@@ -31,6 +33,32 @@ alias codex-hud-uninstall '$ROOT_DIR/bin/codex-hud-uninstall'
 alias codex-hud '$ROOT_DIR/bin/codex-hud'  $MARKER
 alias codex '$ROOT_DIR/bin/codex-hud'  $MARKER
 EOF
+
+cat > "$PROXY_FIXTURE" <<EOF
+# User-owned overrides must stay after the managed aliases.
+function __codex_hud_test_proxy_run
+    env http_proxy=http://127.0.0.1:9897 "$FAKE_BIN_DIR/proxy-target" \$argv
+end
+function codex
+    __codex_hud_test_proxy_run '$ROOT_DIR/bin/codex-hud' \$argv
+end
+function codex-resume
+    __codex_hud_test_proxy_run '$ROOT_DIR/bin/codex-hud' resume \$argv
+end
+function codex-hud-install
+    __codex_hud_test_proxy_run '$ROOT_DIR/bin/codex-hud-install' \$argv
+end
+# Preserve this unrelated user footer too.
+EOF
+cat "$PROXY_FIXTURE" >> "$FISH_CONFIG"
+
+cat > "$FAKE_BIN_DIR/proxy-target" <<'FAKE'
+#!/usr/bin/env bash
+printf 'proxy=%s' "${http_proxy:-missing}"
+printf ' <%s>' "$@"
+printf '\n'
+FAKE
+chmod +x "$FAKE_BIN_DIR/proxy-target"
 
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
@@ -140,7 +168,37 @@ assert_alias_count() {
   fi
 }
 
+assert_fish_proxy_overrides() {
+  # The user footer must survive verbatim, after every generated alias.
+  tail -n "$(wc -l < "$PROXY_FIXTURE" | tr -d ' ')" "$FISH_CONFIG" > "$TEST_HOME/footer.actual"
+  if ! cmp -s "$PROXY_FIXTURE" "$TEST_HOME/footer.actual"; then
+    echo "expected fish user overrides to remain after the managed aliases" >&2
+    exit 1
+  fi
+  if [[ -n "$FISH_BIN" ]]; then
+    local actual expected
+    actual=$("$FISH_BIN" --no-config -c '
+      set -e http_proxy
+      source $argv[1]
+      codex "argument with spaces" ""
+      codex-resume --last
+      codex-hud-install --help
+      if set -q http_proxy
+        echo "proxy leaked into the calling shell" >&2
+        exit 1
+      end
+    ' -- "$FISH_CONFIG")
+    expected=$(printf 'proxy=http://127.0.0.1:9897 <%s> <argument with spaces> <>\nproxy=http://127.0.0.1:9897 <%s> <resume> <--last>\nproxy=http://127.0.0.1:9897 <%s> <--help>' \
+      "$ROOT_DIR/bin/codex-hud" "$ROOT_DIR/bin/codex-hud" "$ROOT_DIR/bin/codex-hud-install")
+    if [[ "$actual" != "$expected" ]]; then
+      echo "fish proxy overrides or argument forwarding changed: $actual" >&2
+      exit 1
+    fi
+  fi
+}
+
 "$ROOT_DIR/bin/codex-hud-install" >/tmp/codex-hud-manage-install.log 2>&1
+assert_fish_proxy_overrides
 
 for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFIG"; do
   assert_alias_present "$file" "codex-hud"
@@ -156,12 +214,19 @@ for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFI
   assert_alias_count "$file" "codex-resume" "1"
 done
 
+cp "$FISH_CONFIG" "$TEST_HOME/installed.fish"
+"$ROOT_DIR/bin/codex-hud-install" >"$LOG_DIR/reinstall.log" 2>&1
+assert_fish_proxy_overrides
+cmp "$TEST_HOME/installed.fish" "$FISH_CONFIG"
+
 cat > "$HOME/.bashrc" <<EOF
 alias codex='$ROOT_DIR/bin/codex-hud'  $MARKER
 alias codex-resume='$ROOT_DIR/bin/codex-hud resume'  $MARKER
 EOF
 
 "$ROOT_DIR/bin/codex-hud-sync" >/tmp/codex-hud-manage-sync.log 2>&1
+assert_fish_proxy_overrides
+cmp "$TEST_HOME/installed.fish" "$FISH_CONFIG"
 
 assert_alias_present "$HOME/.bashrc" "codex-hud-sync"
 assert_alias_present "$HOME/.bashrc" "codex-hud-upgrade"
