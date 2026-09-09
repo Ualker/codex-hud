@@ -11,13 +11,15 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex) 用のリアルタイムステータスバー HUD。軽量・設定不要・tmux 内で動作。
 
+操作対象は現在の tmux pane のセッションが優先されます。tmux 外では現在のディレクトリに候補が 1 つだけの場合に自動選択します。複数の場合は `--target セッション名` または `--target %pane番号` を指定してください。クリックによる切り替えは表示中の `[view]` ボタンのみです。`Last call` は最後のモデルリクエスト、`Total` はセッション合計です。
+
 ## Windows WSL サポート
 
 Windows サポートは Ubuntu WSL 経由で `feature/windows-support-dual-entry` branch に用意されています。macOS/Linux では `main`、Windows (WSL) ではその feature branch を使用してください。
 
 > Claude Code の [claude-hud](https://github.com/jarrodwatts/claude-hud) にインスパイアされています。
 
-![Codex HUD — シングルセッション](./doc/fig/2a00eaf0-496a-4039-a0ce-87a9453df30d.png)
+![Codex HUD — シングルセッション](./doc/fig/single.svg)
 
 ## なぜ Codex HUD が必要？
 
@@ -35,7 +37,7 @@ Windows サポートは Ubuntu WSL 経由で `feature/windows-support-dual-entry
 
 はい。HUD ペインをクリックして `Ctrl+T` を押すか、メインペインで `codex-hud --toggle-mode` を実行すると、**マルチセッション概要モード**に切り替えられます。
 
-![Codex HUD — マルチセッション概要](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
+![Codex HUD — マルチセッション概要](./doc/fig/overview.svg)
 
 **Q: tmux を手動で設定する必要がありますか？**
 

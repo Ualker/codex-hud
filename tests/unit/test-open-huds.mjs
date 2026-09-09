@@ -37,7 +37,13 @@ function withStubTmux(script, body) {
 /** A stub that emits the given lines verbatim. */
 function emitStub(lines) {
   const file = path.join(fs.mkdtempSync(path.join(tempRoot, 'out-')), 'stdout');
-  fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+  const rows = lines.map((line) => {
+    if (line.includes(' ')) return line;
+    let name = 'codex-hud-invalid';
+    try { name = JSON.parse(Buffer.from(line, 'base64').toString()).tmuxSession ?? name; } catch {}
+    return `${name} %2 0 %2 ${line}`;
+  });
+  fs.writeFileSync(file, `${rows.join('\n')}\n`, 'utf8');
   return `cat ${file}`;
 }
 
@@ -166,6 +172,22 @@ try {
   }
 
   {
+    const payload = encode({ tmuxSession: 'codex-hud-a', sessionId: 'a' });
+    const rows = [
+      `codex-hud-a %1 0 %2 ${payload}`, // main pane, missing HUD
+      `codex-hud-a %2 1 %2 ${payload}`, // dead HUD retained by tmux
+      `codex-hud-other %2 0 %2 ${payload}`, // stale/copy from another session
+    ];
+    assert.deepEqual(JSON.parse(withStubTmux(emitStub(rows), listBody)), []);
+    const strictBody = `
+      const { listOpenHudBindings } = await import(${JSON.stringify(modulePath)});
+      try { await listOpenHudBindings({ strict: true }); process.exit(2); }
+      catch { process.stdout.write('unavailable'); }
+    `;
+    assert.equal(withStubTmux('exit 1', strictBody), 'unavailable');
+  }
+
+  {
     // A slow tmux must still be waited for. Measured on a loaded machine, a
     // bare /bin/sh spawn here takes 0.7-2.1s, and the original two-second
     // budget expired on 10 of 25 consecutive calls — silently dropping every
@@ -217,8 +239,11 @@ try {
     assert.equal(lines.length, 2, 'one option write per binding change');
 
     const encoded = lines[0].slice(lines[0].lastIndexOf(' ') + 1);
+    const published = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    assert.ok(Number.isInteger(published.ownerPid) && published.ownerPid > 0);
+    delete published.ownerPid;
     assert.deepEqual(
-      JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')),
+      published,
       {
         tmuxSession: 'codex-hud-a',
         sessionId: 'session-a',
@@ -232,7 +257,7 @@ try {
       'every field travels together in one write'
     );
     assert.ok(
-      lines[1].trimEnd().endsWith('@codex_hud_bound'),
+      lines[1].startsWith('if-shell -F') && lines[1].includes(encoded) && lines[1].includes("@codex_hud_bound ''"),
       'an unbind clears the whole advertisement'
     );
   }

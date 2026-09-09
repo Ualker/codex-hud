@@ -49,6 +49,7 @@ const BOUND_OPTION = '@codex_hud_bound';
 interface BoundPayload {
   tmuxSession: string;
   sessionId: string;
+  ownerPid?: number;
   rolloutPath?: string;
   cwd?: string;
   approvalNeeded?: boolean;
@@ -112,6 +113,7 @@ function tmux(args: readonly string[]): Promise<string | null> {
 // Bindings are published in call order. Without this an unbind issued before
 // a rebind could still land after it, leaving a stale advertisement behind.
 let publishQueue: Promise<unknown> = Promise.resolve();
+const publishedValues = new Map<string, string>();
 
 /**
  * Publish this HUD's binding onto its own tmux session. Called on every
@@ -135,6 +137,7 @@ export function publishHudBinding(
     ? {
         tmuxSession,
         sessionId,
+        ownerPid: process.pid,
         ...(rolloutPath ? { rolloutPath } : {}),
         ...(cwd ? { cwd } : {}),
         ...(approvalNeeded ? { approvalNeeded: true } : {}),
@@ -147,9 +150,19 @@ export function publishHudBinding(
     ? Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
     : '';
 
-  const next = publishQueue.then(() =>
-    tmux(['set-option', '-t', tmuxSession, '-q', BOUND_OPTION, value])
-  );
+  const previous = publishedValues.get(tmuxSession);
+  if (!payload && !previous) return Promise.resolve();
+  if (payload) publishedValues.set(tmuxSession, value);
+  else publishedValues.delete(tmuxSession);
+  const next = publishQueue.then(() => {
+    if (payload) return tmux(['set-option', '-t', tmuxSession, '-q', BOUND_OPTION, value]);
+    // A slow shutdown may overlap a new HUD in the same pane. Compare and
+    // clear in one tmux command, so the old process cannot erase its successor.
+    const target = tmuxSession.replace(/'/g, "'\\''");
+    return tmux(['if-shell', '-F', '-t', tmuxSession,
+      `#{==:#{${BOUND_OPTION}},${previous}}`,
+      `set-option -q -t '${target}' ${BOUND_OPTION} ''`]);
+  });
   // Keep the chain alive even if one publish fails.
   publishQueue = next.catch(() => undefined);
   return next.then(() => undefined);
@@ -202,18 +215,21 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
  * Returns an empty list when tmux is unavailable, so callers degrade to
  * whatever else they know rather than showing an error.
  */
-export async function listOpenHudBindings(): Promise<OpenHudBinding[]> {
-  // The payload names its own tmux session, so the format needs no delimiter
-  // and no second field.
-  const stdout = await tmux(['list-sessions', '-F', `#{${BOUND_OPTION}}`]);
+export async function listOpenHudBindings(options: { strict?: boolean } = {}): Promise<OpenHudBinding[]> {
+  // A retained session option is not evidence that the owning HUD still
+  // runs. Query identity and pane liveness in the same tmux snapshot.
+  const stdout = await tmux(['list-panes', '-a', '-F', `#{session_name} #{pane_id} #{pane_dead} #{@codex_hud_pane} #{${BOUND_OPTION}}`]);
   if (stdout === null) {
+    if (options.strict) throw new Error('Unable to refresh open HUD panes');
     return [];
   }
 
   const bindings: OpenHudBinding[] = [];
   const seen = new Set<string>();
   for (const line of stdout.split('\n')) {
-    const encoded = line.trim();
+    const match = /^(\S+) (%\d+) ([01]) (%\d+) (\S+)$/.exec(line.trim());
+    if (!match || match[2] !== match[4] || match[3] !== '0') continue;
+    const encoded = match[5];
     // A tmux session with no HUD, or a HUD that is not bound, renders empty.
     if (!encoded) {
       continue;
@@ -222,6 +238,7 @@ export async function listOpenHudBindings(): Promise<OpenHudBinding[]> {
     if (!binding) {
       continue;
     }
+    if (binding.tmuxSession !== match[1]) continue;
     // The same Codex session can be bound by more than one pane; the dashboard
     // shows a session once.
     if (seen.has(binding.sessionId)) {

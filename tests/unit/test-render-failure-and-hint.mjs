@@ -123,7 +123,7 @@ const hintBody = `
   const text = raw.slice(0, raw.indexOf(MARKER)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
   assert.match(
     text,
-    /Click HUD: view/,
+    /\[view\]/,
     'without a global binding the hint teaches the click'
   );
   assert.match(text, /wheel: details/, 'and the wheel');
@@ -143,4 +143,27 @@ const hintBody = `
   assert.match(text, /wheel: details/, 'the wheel still cycles details');
 }
 
+// A busy overview has room for the button but not the full hint. Its exact
+// screen cells are clickable; text, a different row and stale frames are not.
+{
+  const body = `
+    let painted = '';
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (chunk) => { painted += chunk; return true; };
+    render.renderToStdout({ config: {}, git: { isGitRepo: false }, project: { cwd: '/x', projectName: 'x' },
+      displayMode: 'overview', overview: { updatedAt: new Date(), sessions: [
+        { id: 'session-1', projectName: 'long-project', title: 'Review layout and controls',
+          model: 'gpt-6-astra', turnActivity: { phase: 'awaiting-approval' }, contextUsage: { percent: 55 },
+          tmuxSession: 'codex-hud-demo-20260909000000-12345', lastActivityAt: new Date() }
+      ] } });
+    process.stdout.write = originalWrite;
+    const row = painted.replace(/\\x1b\\[[0-?]*[ -/]*[@-~]/g, '').split('\\n')[0];
+    const start = row.indexOf('[view]') + 1;
+    if (start < 1 || !render.isViewToggleClick(start, 1) || !render.isViewToggleClick(start + 5, 1)
+      || render.isViewToggleClick(start - 1, 1) || render.isViewToggleClick(start, 2)) process.exit(2);
+    render.invalidateRenderedFrame();
+    if (render.isViewToggleClick(start, 1)) process.exit(3);
+  `;
+  renderInChild(body);
+}
 console.log('test-render-failure-and-hint: PASS');

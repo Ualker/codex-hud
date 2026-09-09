@@ -37,6 +37,8 @@ CODEX_CLI_PATH=""
 CMUX_TMUX_ENV_ARGS=()
 FORCE_ATTACH="0"
 FORCE_NEW_SESSION="0"
+CONTROL_TARGET=""
+CONTROL_ALL="0"
 
 # Colors for output
 RED='\033[0;31m'
@@ -567,6 +569,67 @@ find_existing_session() {
     if [[ -n "$legacy" ]]; then
         echo "$legacy"
     fi
+}
+
+# Control commands must never infer a target from recency. An explicit pane
+# is resolved on this server; session names must match exactly, not by prefix.
+resolve_control_session() {
+    local sessions current candidates count
+    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+    if [[ -n "$CONTROL_TARGET" ]]; then
+        current="$CONTROL_TARGET"
+        if [[ "$current" =~ ^%[0-9]+$ ]]; then
+            current=$(tmux display-message -p -t "$CONTROL_TARGET" '#{session_name}' 2>/dev/null || true)
+        fi
+        if [[ "$current" == codex-hud-* ]] && printf '%s\n' "$sessions" | grep -Fxq -- "$current"; then
+            printf '%s\n' "$current"
+            return 0
+        fi
+        echo "Error: No exact codex-hud session or pane matches --target $CONTROL_TARGET" >&2
+        return 1
+    fi
+    if [[ -n "${TMUX:-}" && -n "${TMUX_PANE:-}" ]]; then
+        current=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || true)
+        if [[ "$current" == codex-hud-* ]] && printf '%s\n' "$sessions" | grep -Fxq -- "$current"; then
+            printf '%s\n' "$current"
+            return 0
+        fi
+    fi
+    candidates=$(printf '%s\n' "$sessions" | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" | sort || true)
+    count=$(printf '%s\n' "$candidates" | grep -c . || true)
+    if [[ "$count" == "1" ]]; then
+        printf '%s\n' "$candidates"
+    elif [[ "$count" == "0" ]]; then
+        echo 'Error: No codex-hud session found for the current directory.' >&2
+        return 1
+    else
+        echo 'Error: Multiple sessions in this directory; use --target <session-or-pane>:' >&2
+        printf '%s\n' "$candidates" | sed 's/^/  /' >&2
+        return 1
+    fi
+}
+
+parse_control_args() {
+    local command="$1"
+    shift
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --target)
+                [[ "$#" -ge 2 && -n "$2" && "$2" != --* ]] || error '--target requires a session name or pane ID'
+                [[ -z "$CONTROL_TARGET" ]] || error '--target may only be specified once'
+                CONTROL_TARGET="$2"
+                shift
+                ;;
+            --all)
+                [[ "$command" == --kill || "$command" == --reload ]] || error "$command does not support --all"
+                CONTROL_ALL="1"
+                ;;
+            *) error "Unknown option for $command: $1" ;;
+        esac
+        shift
+    done
+    [[ "$CONTROL_ALL" != "1" || -z "$CONTROL_TARGET" ]] || error '--all and --target cannot be combined'
+    return 0
 }
 
 set_fixed_hud_height() {
@@ -1112,17 +1175,18 @@ Options:
   -h, --help          Show this help message
   --self-check        Run environment diagnostics (includes recent HUD log entries)
   --doctor            Alias for --self-check
-  --kill [--all]      Kill the newest session in this directory (--all: every session here)
+  --kill [--all]      Kill the current/unique session (--all: every session in this directory)
   --list              List all codex-hud sessions
-  --reload [--all]    Restart the HUD pane (newest session; --all: every session in this directory)
+  --reload [--all]    Restart the current/unique HUD pane (--all: every session in this directory)
   --toggle-mode       Toggle single/overview without focusing the HUD pane
   --cycle-details     Cycle tool details (targets -> full -> off) without focusing the HUD pane
+  --target NAME|%ID   Select an exact session or pane for a control command
   --hud-version       Show HUD package version and checkout revision
   --attach            Attach to latest existing session in this directory
   --new-session       Always create a new session for this launch
 
 HUD Pane Mouse and Keys:
-  Click the HUD       Toggle single/overview display
+  Click [view]        Toggle single/overview; clicks on content only focus the pane
   Wheel over the HUD  Cycle tool details (down: targets -> full -> off, up: back)
   Prefix+H            Toggle the view from the Codex pane (installed while the
                       key is unbound; CODEX_HUD_BIND_TOGGLE=0 skips, 1 forces)
@@ -1176,8 +1240,8 @@ Examples:
   codex-hud                    Start Codex with HUD
   codex-hud --model gpt-5      Start with specific model
   codex-hud "help me debug"    Start with initial prompt
-  codex-hud --kill             Kill the newest session here (--all: every one)
-  codex-hud --reload           Reload only the HUD pane (newest session)
+  codex-hud --kill             Kill the current session (outside tmux: unique candidate)
+  codex-hud --reload           Reload only the current/unique HUD pane
   codex-hud --reload --all     Reload the HUD pane of every session here
   codex-hud --toggle-mode      Toggle overview from the main shell
   codex-hud --cycle-details    Cycle tool details from the main shell
@@ -1317,19 +1381,15 @@ self_check() {
     info "Self-check passed."
 }
 
-# Kill sessions for this directory. The default scope is the newest session
-# only — it used to be every session here while the help said "Kill existing
-# session" in the singular, so with two sessions open the old one could not be
-# killed without taking the current one down. `--all` restores the wide scope
-# explicitly, mirroring --reload/--reload --all. Each kill is named so the
-# blast radius is visible in the output.
+# --all is directory-scoped; otherwise use the same exact resolver as reload
+# and view controls. A failed resolution must not reach a mutation.
 kill_session() {
-    local scope="${1:-newest}"
+    local scope="${1:-current}"
     local sessions
     if [[ "$scope" == "all" ]]; then
-        sessions=$(find_all_hud_sessions)
+        sessions=$(find_all_hud_sessions || true)
     else
-        sessions=$(find_existing_session)
+        sessions=$(resolve_control_session) || return 1
     fi
     if [[ -z "$sessions" ]]; then
         warn "No session found: $SESSION_PREFIX or $LEGACY_SESSION_PREFIX"
@@ -1411,8 +1471,8 @@ list_sessions() {
     fi
 
     panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_current_path}" 2>/dev/null) || panes=""
-    # `codex`, --kill and --reload act on the newest session of the current
-    # directory; with two open here the listing has to say which that is.
+    # Launch/attach still prefers the newest session; controls resolve their
+    # current pane or require an explicit target when the directory is shared.
     local newest_here
     newest_here=$(find_existing_session)
 
@@ -1435,7 +1495,7 @@ list_sessions() {
         esac
         local newest_marker=""
         if [[ -n "$newest_here" && "$name" == "$newest_here" ]]; then
-            newest_marker="  (newest here: codex / --kill / --reload target)"
+            newest_marker="  (newest here: codex attach target)"
         fi
         printf '  %s  %s  [%s]%s%s\n' "$name" "$cwd" "$attached" "$hud_state" "$newest_marker"
     done <<< "$rows"
@@ -1487,25 +1547,26 @@ reload_hud_pane_for_session() {
 
 reload_hud() {
     local session_name
-    session_name=$(find_existing_session)
+    session_name=$(resolve_control_session) || return 1
     if [[ -z "$session_name" ]]; then
         error "No codex-hud session found for the current directory."
     fi
+    build_hud
     if ! reload_hud_pane_for_session "$session_name"; then
         error "HUD pane is unavailable in session: $session_name"
     fi
 }
 
-# --reload only touches the newest session; older sessions in the same
-# directory previously required a manual respawn-pane.
+# Explicitly reload every HUD in this directory, preserving the main panes.
 reload_hud_all() {
     local session_name
     local sessions
     local reloaded=0
-    sessions=$(find_all_hud_sessions)
+    sessions=$(find_all_hud_sessions || true)
     if [[ -z "$sessions" ]]; then
         error "No codex-hud session found for the current directory."
     fi
+    build_hud
     while IFS= read -r session_name; do
         [[ -z "$session_name" ]] && continue
         if reload_hud_pane_for_session "$session_name"; then
@@ -1568,7 +1629,7 @@ resolve_hud_node_pid() {
     '
 }
 
-# Deliver one signal to the newest session's HUD process: USR1 toggles the
+# Deliver one signal to the resolved session's HUD process: USR1 toggles the
 # view, USR2 cycles tool details — the `t` key without focusing the pane.
 signal_hud() {
     local signal="$1"
@@ -1576,7 +1637,7 @@ signal_hud() {
     local session_name
     local hud_pane
     local hud_pid
-    session_name=$(find_existing_session)
+    session_name=$(resolve_control_session) || return 1
     if [[ -z "$session_name" ]]; then
         error "No codex-hud session found for the current directory."
     fi
@@ -1623,9 +1684,10 @@ case "${1:-}" in
         exit 0
         ;;
     --kill)
+        parse_control_args "$@"
         # Need to check dependencies to ensure tmux is available
         if command_exists tmux; then
-            if [[ "${2:-}" == "--all" ]]; then
+            if [[ "$CONTROL_ALL" == "1" ]]; then
                 kill_session all
             else
                 kill_session
@@ -1644,12 +1706,12 @@ case "${1:-}" in
         exit 0
         ;;
     --reload)
+        parse_control_args "$@"
         if command_exists tmux; then
             if ! command_exists node || ! node_version_supported; then
                 error "Node.js 20.19+ is required to rebuild and reload the HUD."
             fi
-            build_hud
-            if [[ "${2:-}" == "--all" ]]; then
+            if [[ "$CONTROL_ALL" == "1" ]]; then
                 reload_hud_all
             else
                 reload_hud
@@ -1660,6 +1722,7 @@ case "${1:-}" in
         exit 0
         ;;
     --toggle-mode)
+        parse_control_args "$@"
         if command_exists tmux; then
             toggle_hud_mode
         else
@@ -1668,6 +1731,7 @@ case "${1:-}" in
         exit 0
         ;;
     --cycle-details)
+        parse_control_args "$@"
         if command_exists tmux; then
             cycle_hud_details
         else

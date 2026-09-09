@@ -62,17 +62,18 @@ const data = {
   },
 };
 
+process.env.CODEX_HUD_TOOL_DETAILS = 'full';
 const full = stripAnsi(renderTokenLine(data) ?? '');
 assert.match(full, /cache:/, 'unconstrained width keeps the breakdown');
 
-const narrowToken = stripAnsi(renderTokenLine(data, 46) ?? '');
+const narrowToken = stripAnsi(renderTokenLine(data, 52) ?? '');
 assert.doesNotMatch(
   narrowToken,
   /cache:/,
   `narrow panes drop the breakdown: ${narrowToken}`
 );
 assert.match(narrowToken, /Ctx:/, 'the capacity signal survives');
-assert.match(narrowToken, /Turn:/, 'the turn count stays visible');
+assert.match(narrowToken, /Last call:/, 'the last-call count stays visible');
 
 // The context gauge is a fuel bar: filled cells are what REMAINS, matching
 // the "% left" label — nearly exhausted context shows a nearly empty bar.

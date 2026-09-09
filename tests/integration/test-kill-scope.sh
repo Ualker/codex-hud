@@ -34,6 +34,9 @@ case "\$cmd" in
       printf '%s\n' "\$STUB_SESSIONS"
     fi
     ;;
+  display-message)
+    printf '%s\n' "\${STUB_CURRENT:-}"
+    ;;
   kill-session)
     # -t <name>
     printf '%s\n' "\$2" >> "$KILL_LOG"
@@ -84,19 +87,31 @@ assert_killed() {
   fi
 }
 
-# Default scope: only the newest session for this directory.
-out="$(run_kill --kill)"
-assert_killed "$NEW" "--kill takes only the newest session"
-if [[ "$out" != *"$NEW"* ]]; then
-  echo "FAIL: --kill must name what it killed" >&2
-  printf '%s\n' "$out" >&2
+# External ambiguous selection must fail before killing anything.
+if out="$(run_kill --kill 2>&1)"; then
+  echo "FAIL: ambiguous directory must require --target" >&2
   exit 1
 fi
-if [[ "$out" != *"--kill --all"* ]]; then
-  echo "FAIL: --kill must point at the wider scope when sessions remain" >&2
-  printf '%s\n' "$out" >&2
-  exit 1
-fi
+assert_killed "" "ambiguous selection kills nothing"
+[[ "$out" == *"--target"* && "$out" == *"$OLD"* && "$out" == *"$NEW"* ]]
+
+# Inside tmux the current pane wins even when another session is newer.
+out="$(TMUX=isolated-fixture TMUX_PANE=%1 STUB_CURRENT="$OLD" run_kill --kill)"
+assert_killed "$OLD" "--kill selects the current pane's session"
+[[ "$out" == *"$OLD"* ]]
+
+out="$(run_kill --kill --target "$NEW")"
+assert_killed "$NEW" "explicit session selection"
+out="$(STUB_CURRENT="$OLD" run_kill --kill --target %1)"
+assert_killed "$OLD" "explicit pane selection"
+if out="$(run_kill --kill --target missing 2>&1)"; then exit 1; fi
+assert_killed "" "invalid target does not fall back"
+if out="$(run_kill --kill --all --target "$OLD" 2>&1)"; then exit 1; fi
+assert_killed "" "conflicting flags do not mutate"
+
+: > "$KILL_LOG"
+STUB_SESSIONS="$OLD" "$ROOT_DIR/bin/codex-hud" --kill >/dev/null
+assert_killed "$OLD" "an external unique candidate is selected"
 
 # Explicit wide scope: every session for this directory, and nothing else.
 out="$(run_kill --kill --all)"
@@ -115,7 +130,7 @@ if [[ -s "$KILL_LOG" ]]; then
   cat "$KILL_LOG" >&2
   exit 1
 fi
-if [[ "$out" != *"No session found"* ]]; then
+if [[ "$out" != *"No codex-hud session"* ]]; then
   echo "FAIL: expected a no-session warning" >&2
   printf '%s\n' "$out" >&2
   exit 1

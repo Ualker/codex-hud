@@ -2,6 +2,14 @@
 
 set -euo pipefail
 
+# Tests set any behavior overrides they need. An agent/terminal's live HUD
+# configuration must not change fixture output or leak into wrapper cases.
+while IFS= read -r name; do
+    case "$name" in CODEX_HUD_*|CMUX_*) unset "$name" ;; esac
+done < <(compgen -e)
+unset NO_COLOR FORCE_COLOR TMUX TMUX_PANE
+export TERM=xterm-256color
+
 suite="${1:-}"
 case "$suite" in
     unit)

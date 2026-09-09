@@ -81,7 +81,7 @@ case "$cmd" in
         ;;
     esac
     ;;
-  display)
+  display|display-message)
     format="${@: -1}"
     target=$(extract_target "$@")
     case "$format" in

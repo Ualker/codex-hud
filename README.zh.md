@@ -15,7 +15,7 @@ Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu W
 
 > 灵感来源于 Claude Code 的 [claude-hud](https://github.com/jarrodwatts/claude-hud)。
 
-![Codex HUD — 单 Session 模式](./doc/fig/2a00eaf0-496a-4039-a0ce-87a9453df30d.png)
+![Codex HUD — 单 Session 模式](./doc/fig/single.svg)
 
 ## 为什么需要 Codex HUD？
 
@@ -55,11 +55,17 @@ session 名——即 `tmux ls` 和 session 选择器里显示的那个名字，�
 `codex-hud --cycle-details`）可循环切换工具详情级别（`targets` → `full` → `off`，
 向上滚回退），并短暂显示切换后的级别。
 
-![Codex HUD — 多 Session 概览](./doc/fig/6d0edbdd-19b5-4038-b9a3-ca5341fd39d1.png)
+![Codex HUD — 多 Session 概览](./doc/fig/overview.svg)
 
 **Q: 需要手动配置 tmux 吗？**
 
 不需要。Codex HUD 自动激活 tmux。只需输入 `codex`，HUD 就会出现。如果没装 tmux，安装程序也会搞定。
+
+默认布局优先保留需要人工处理的状态（审批、失败、中断、终止）与 compact 次数。compact 紧邻 Context，配额合并到同一行时也会保留；`Last call` 对应 `last_token_usage`，`Total` 表示会话累计用量。输入/cache/输出拆分以及完整环境清单在 `full` 详情模式显示。多个工具并发时显示完整运行数量，历史列表裁剪不会丢掉仍在运行的调用。
+
+控制命令优先选择当前 tmux pane 所属会话；在 tmux 外仅自动选择当前目录的唯一候选，多个候选时列出列表并要求 `--target 完整会话名` 或 `--target %pane编号`。`--all` 只适用于 `--kill` / `--reload`，作用于当前目录。点击正文仅聚焦，不再切换视图；切换使用可见的 `[view]` 按钮或已有快捷键。
+
+概览窄窗优先保留地址、状态和上下文数值，再分配标题、进度条等可选列。扫描失败保留上次成功结果并显示警告；无法读取的会话保留身份、标记 `Unknown`。失效或已关闭的 HUD pane 不再作为在线绑定。配额快照和燃速基线按真实 `CODEX_HOME` 与 sessions 目录隔离共享，升级后的首次读取会建立新基线。
 
 ## 快速开始
 
@@ -100,12 +106,12 @@ codex
 | `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
 | `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
 | `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias，并打印最近的 HUD 诊断日志 |
-| `codex-hud --kill` | 终止当前目录最新的会话（`--all`：本目录全部会话） |
-| `codex-hud --reload` | 必要时先重建，再重启当前目录最新会话的 HUD pane |
+| `codex-hud --kill` | 终止当前/唯一会话（`--all`：本目录全部会话） |
+| `codex-hud --reload` | 必要时先重建，再重启当前/唯一会话的 HUD pane；支持 `--target` 明确指定 |
 | `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
 | `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
 | `codex-hud --cycle-details` | 不切换焦点，循环切换工具详情级别 |
-| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着——HUD 进程比磁盘上的构建更旧时标注 `HUD: outdated`；当前目录最新的那个会话（`codex`、`--kill`、`--reload` 作用的对象）标注 `(newest here…)` |
+| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着——HUD 进程比磁盘上的构建更旧时标注 `HUD: outdated`；当前目录最新的那个会话（启动或 attach 自动选择的对象）标注 `(newest here…)` |
 | `codex-hud --hud-version` | 显示包版本和 checkout revision |
 
 ## HUD 显示了什么？
@@ -113,12 +119,12 @@ codex
 ```text
 [gpt-5.6-sol high] my-project "fix the flaky e2e run" git:(main *) up 12m
 [FULL ACCESS] | Fast: on | MCP configured: 3 | Codex skills: 5
-Ctx: ███████▁▁▁▁▁ 55% left (70.4K) | Turn: 50.2K | (in: 30.0K, cache: 5.0K, out: 15.2K) | Total: 1.2M
+Ctx: ███████▁▁▁▁▁ 55% left (70.4K) | ↻3 | Total: 1.2M | Last call: 50.2K
 ● Thinking 42s · event 8s ago
 ● exec: npm test 1.4s | ✗ exec: rg pattern @other-repo exit 1 | ✓ read_file ×3
 ```
 
-上下文进度条是"油量表"语义：实心格表示剩余量，与旁边的 `% left` 文字一致；颜色反映压力（绿 → 黄 → 红）。`Turn` 是上一轮的 token 用量，`Total` 是本 session 的累计消耗。引号里是会话的首条提示词。全部字形都来自一套在缺少半填充圆和浅色阴影的终端字体上验证过的安全集（◐ ░ ⏸ 在那里会变宽或高度不齐）：活动标记是每绘一帧跳一次的圆点，进度条底纹是低块，暂停的调用标 `▲`。
+上下文进度条是"油量表"语义：实心格表示剩余量，与旁边的 `% left` 文字一致；颜色反映压力（绿 → 黄 → 红）。`Last call` 是最近一次模型请求的 token 用量，一个用户回合可能包含多次模型请求，`Total` 是本 session 的累计消耗。引号里是会话的首条提示词。全部字形都来自一套在缺少半填充圆和浅色阴影的终端字体上验证过的安全集（◐ ░ ⏸ 在那里会变宽或高度不齐）：活动标记是每绘一帧跳一次的圆点，进度条底纹是低块，暂停的调用标 `▲`。
 
 尚未绑定 Codex session 时，HUD 显示 `○ Waiting for a Codex session…`，而不是渲染一个可能被误认为故障的半截画面。
 
@@ -135,7 +141,7 @@ Ctx: ███████▁▁▁▁▁ 55% left (70.4K) | Turn: 50.2K | (in: 
 
 窄 pane 上按"整个单元"舍弃，而不是把词截断。标题行保住项目名、收缩分支名；环境行取其优先级序列中能放下的最长前缀——权限在前、清单计数在后——实在放不下就整行让出，而不是显示半句安全状态。因为取的是前缀而不是能塞就塞，把 pane 拖宽只会增加单元，短的低优先单元也不会再占掉高优先单元的位置。
 
-工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具只显示保护隐私的**命令头部**——程序名加一个已知子命令或脚本名（如 `npm test`、`sed && rg`），不含任何参数、路径或标志；文件类工具只显示脱敏后的目标。heredoc 正文是数据不是命令：`python3 <<PY` 显示为 `python3`，正文行既不会造出假命令头，也不会抢占后续真实命令的显示名额。`full` 才显示已脱敏、限长后的完整命令摘要，`off` 完全隐藏工具行。原始 stdout/stderr 和原始工具参数不会被保留或显示。
+工具活动默认仍只占一行。默认 `CODEX_HUD_TOOL_DETAILS=targets`：执行类工具只显示保护隐私的**命令头部**——程序名加一个已知子命令或脚本名（如 `npm test`、`sed && rg`），不含任何参数、路径或标志；文件类工具只显示脱敏后的目标。heredoc 正文是数据不是命令：`python3 <<PY` 显示为 `python3`，正文行既不会造出假命令头，也不会抢占后续真实命令的显示名额。`full` 才显示已脱敏、限长后的完整命令摘要，`off` 隐藏目标细节，仍保留运行数量与失败结果。原始 stdout/stderr 和原始工具参数不会被保留或显示。
 
 Codex CLI 0.147 把所有工具收敛到单个 `exec` 工具，其参数是一段 JavaScript 程序而
 非 JSON，命令的退出状态也只写在另一条独立记录里。HUD 同时读取这两处，因此命令、
@@ -176,12 +182,12 @@ codex-resume                 # 恢复上次会话
 <summary>更多命令</summary>
 
 ```bash
-codex-hud --kill             # 终止当前目录最新的会话（--all：全部）
+codex-hud --kill             # 终止当前/唯一会话（--all：全部）
 codex-hud --list             # 列出所有 HUD 会话
 codex-hud --attach           # 复用已有会话
 codex-hud --new-session      # 强制新建会话
 codex-hud --doctor           # 运行环境诊断（--self-check 的别名）
-codex-hud --reload           # 重启当前目录最新会话的 HUD pane
+codex-hud --reload           # 重启当前/唯一会话的 HUD pane；支持 `--target` 明确指定
 codex-hud --reload --all     # 重启当前目录所有会话的 HUD pane
 codex-hud --toggle-mode      # 切换单 Session/概览模式
 codex-hud --cycle-details    # 循环切换工具详情级别
@@ -219,7 +225,7 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 | `CODEX_HUD_BIND_TOGGLE` | `auto` | 作用于整个 tmux server 的 `Prefix+H` HUD 切换键：未设置时只要该键未被占用就安装，`1` 总是安装，`0` 从不安装 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | 仅 HUD pane 使用的 scrollback 行数；主 pane 保留继承值 |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏工具行（运行时可用 HUD 上的滚轮、`t` 键或 `codex-hud --cycle-details` 循环切换）。shell 内建命令不算命令：`ffmpeg … ; echo ; exit` 显示为 `ffmpeg` |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏目标细节，仍保留运行数量与失败结果（运行时可用 HUD 上的滚轮、`t` 键或 `codex-hud --cycle-details` 循环切换）。shell 内建命令不算命令：`ffmpeg … ; echo ; exit` 显示为 `ffmpeg` |
 | `CODEX_HUD_MODE` | `single` | 初始显示模式：`single` 或 `overview` |
 | `CODEX_HUD_LOG_FILE` | 每用户默认路径 | 将 HUD 诊断信息（watcher/渲染/追踪错误）追加写入该文件。macOS 默认 `~/Library/Logs/codex-hud/hud.log`，其他平台为 `$XDG_STATE_HOME/codex-hud/hud.log`；设为 `off` 则丢弃 |
 | `CODEX_HUD_NO_ATTACH` | `0` | 已废弃：强制新建会话而不复用 |
@@ -261,6 +267,8 @@ enabled = true
 | macOS (Apple Silicon) | 已支持 |
 | macOS (Intel) | 待测试 |
 | Windows (WSL) | 已在 `feature/windows-support-dual-entry` 支持 |
+
+上方预览由当前 HUD 渲染器使用示例数据生成，可用 `npm run docs:previews` 重新生成。
 
 ## 开发
 

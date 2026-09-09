@@ -24,7 +24,7 @@ const SHOW_CURSOR = '\x1b[?25h';
 // WheelUpPane binding sees `mouse_any_flag` and hands wheel and click events
 // to the pane (`send-keys -M`) instead of entering copy-mode — which froze
 // the view on its last frame, indistinguishable from a dead HUD. The events
-// double as controls: click toggles the view, the wheel cycles tool details.
+// double as controls: click [view] toggles the view; the wheel cycles details.
 const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
 const MOUSE_OFF = '\x1b[?1006l\x1b[?1000l';
 
@@ -35,8 +35,14 @@ let hasEverRendered = false;
 // path (focus the pane first) even when the wrapper had installed a global
 // toggle that works from the Codex pane.
 const STATUS_HINT = process.env.CODEX_HUD_TOGGLE_KEY
-  ? `${process.env.CODEX_HUD_TOGGLE_KEY} view • click HUD: view • wheel: details`
-  : 'Click HUD: view • wheel: details • drag: resize';
+  ? `[view] • ${process.env.CODEX_HUD_TOGGLE_KEY} view • wheel: details`
+  : '[view] • Ctrl+T view • wheel: details';
+let viewHotspot: { start: number; end: number } | undefined;
+
+export function isViewToggleClick(column: number, row: number): boolean {
+  return row === 1 && viewHotspot !== undefined
+    && column >= viewHotspot.start && column <= viewHotspot.end;
+}
 // The hint is for discoverability; after a few minutes it has served its
 // purpose and the first line gets its full width back.
 const STATUS_HINT_VISIBLE_MS = 5 * 60_000;
@@ -66,6 +72,7 @@ function statusHintVisible(): boolean {
  */
 export function invalidateRenderedFrame(): void {
   lastStdoutFrame = null;
+  viewHotspot = undefined;
 }
 
 /**
@@ -77,6 +84,7 @@ export function invalidateRenderedFrame(): void {
  * thing the failure path must do is look broken.
  */
 export function renderFallbackFrame(summary: string): void {
+  viewHotspot = undefined;
   try {
     const width = getTerminalWidth();
     const height = Math.max(1, getTerminalHeight());
@@ -98,24 +106,27 @@ export function renderFallbackFrame(summary: string): void {
   }
 }
 
-function applyStatusHint(lines: string[], width: number): string[] {
+function applyStatusHint(lines: string[], width: number, hint: string): string[] {
+  viewHotspot = undefined;
   if (lines.length === 0 || width <= 0) {
-    return lines;
-  }
-
-  const status = colors.dim(STATUS_HINT);
-  const statusLen = visualLength(status);
-  if (statusLen + 1 > width) {
     return lines;
   }
 
   const firstLine = lines[0] ?? '';
   const firstLen = visualLength(firstLine);
+  const shownHint = firstLen + 1 + visualLength(hint) <= width ? hint : '[view]';
+  const status = colors.dim(shownHint);
+  const statusLen = visualLength(status);
+  if (statusLen + 1 > width) {
+    return lines;
+  }
+
   if (firstLen + 1 + statusLen > width) {
     return lines;
   }
 
   const padded = padEnd(firstLine, width - statusLen - 1);
+  viewHotspot = { start: width - statusLen + 1, end: width - statusLen + 6 };
   const nextLines = [...lines];
   nextLines[0] = `${padded} ${status}`;
   return nextLines;
@@ -246,6 +257,7 @@ export function renderToStdout(data: HudData): RenderedFrame {
   
   const maxLines = Math.max(1, height);
   const hintVisible = statusHintVisible();
+  const hint = hintVisible ? STATUS_HINT : '[view]';
   const options: RenderOptions = {
     width,
     showDetails: true,
@@ -255,16 +267,14 @@ export function renderToStdout(data: HudData): RenderedFrame {
     maxLines,
     // The hint is appended to row 1 below; the layout must not fill those
     // columns while it is on screen.
-    reservedRow1Width: hintVisible
-      ? visualLength(colors.dim(STATUS_HINT)) + 1
-      : 0,
+    reservedRow1Width: visualLength(hint) + 1,
   };
 
   // One spinner step per painted frame, whatever the render cadence.
   advanceSpinnerFrame();
   const fitted = fitLinesToViewport(renderHud(data, options), maxLines, width);
   const lines = truncateLines(
-    hintVisible ? applyStatusHint(fitted, width) : fitted,
+    applyStatusHint(fitted, width, hint),
     width
   );
   // What the pane would need to show everything; the height fitter asks tmux

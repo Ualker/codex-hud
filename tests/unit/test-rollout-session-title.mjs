@@ -108,6 +108,24 @@ try {
   assert.equal(bounded2?.partialHistory, true, 'the first read was bounded');
   assert.equal(bounded2?.session?.title, 'find the leak in the parser');
 
+  // A large injected preamble puts the first real prompt after the 64 KiB
+  // head. Cold reload and incremental parsing must keep the same first title.
+  const preamble = userMessage('2026-09-05T01:27:45.000Z',
+    '# AGENTS.md instructions\n\n<INSTRUCTIONS>' + 'p'.repeat(90_000) + '</INSTRUCTIONS>');
+  const original = userMessage('2026-09-05T01:27:47.000Z', 'ORIGINAL request after a large preamble');
+  fs.writeFileSync(rolloutPath, meta + preamble + original);
+  const warm = new RolloutParser(10);
+  warm.setRolloutPath(rolloutPath);
+  await warm.parse();
+  fs.appendFileSync(rolloutPath, filler.repeat(700) + userMessage('2026-09-05T02:00:00.000Z', 'FOLLOWUP request') + record('2026-09-05T02:00:01.000Z', 'event_msg', { type: 'token_count', info: { last_token_usage: { total_tokens: 500 }, model_context_window: 258000 } }));
+  const warmTitle = (await warm.parse())?.session?.title;
+  const cold = new RolloutParser(10);
+  cold.setRolloutPath(rolloutPath);
+  const coldResult = await cold.parse();
+  assert.equal(coldResult?.partialHistory, true);
+  assert.equal(warmTitle, 'ORIGINAL request after a large preamble');
+  assert.equal(coldResult?.session?.title, warmTitle);
+
   console.log('test-rollout-session-title: PASS');
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 function resolveExistingDirectory(candidate?: string): string | null {
   if (!candidate) {
@@ -64,4 +65,14 @@ export function getSessionsDir(): string {
   }
 
   return resolved;
+}
+
+/** Share quota state only between HUDs reading the same Codex data source. */
+export function getCodexDataNamespace(): string {
+  let home: string;
+  try { home = getCodexHome(); }
+  catch { home = path.resolve(process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex')); }
+  const candidate = process.env.CODEX_SESSIONS_PATH ?? path.join(home, 'sessions');
+  const sessions = resolveExistingDirectory(candidate) ?? path.resolve(candidate);
+  return createHash('sha256').update(JSON.stringify([home, sessions])).digest('hex').slice(0, 16);
 }

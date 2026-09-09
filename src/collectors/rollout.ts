@@ -1233,6 +1233,7 @@ const HISTORY_STATE_MARKERS = [
   '"type":"plan_update"',
   '"type":"context_compacted"',
   '"type":"thread_settings_applied"',
+  '"role":"user"',
   '"name":"update_plan"',
   'tools.update_plan',
 ].map((marker) => Buffer.from(marker));
@@ -1281,6 +1282,16 @@ function recoverHistoryStateRecord(record: RolloutLine): RolloutLine | undefined
     return undefined;
   }
   const payload = record.payload as ResponseItemPayload;
+  const title = sessionTitleFromMessage(payload);
+  if (title) {
+    // Keep only the bounded display value, never an entire prompt. The
+    // first real prompt can follow more than 64 KiB of injected context.
+    return {
+      timestamp: record.timestamp,
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: title }] },
+    };
+  }
   if (!isToolCallPayload(payload)) {
     return undefined;
   }
@@ -1330,6 +1341,7 @@ async function readSkippedHistoryState(
   let candidate = false;
   let rejected = false;
   let scannedBytes = 0;
+  let recoveredTitle = false;
 
   const resetLine = (): void => {
     lineFragments = [];
@@ -1399,7 +1411,9 @@ async function readSkippedHistoryState(
           JSON.parse(line.toString('utf8')) as RolloutLine
         );
         if (recovered) {
-          records.push(recovered);
+          const isTitle = isTitleMessageRecord(recovered);
+          if (!isTitle || !recoveredTitle) records.push(recovered);
+          recoveredTitle ||= isTitle;
         }
       } catch {
         malformedLines++;
@@ -1495,12 +1509,8 @@ async function readRolloutBatch(
   const headState = head.records
     .map(recoverHistoryStateRecord)
     .filter((record): record is RolloutLine => record !== undefined);
-  // The first prompt names the session; it sits right after session_meta and
-  // the injected preamble, so the bounded head is where it is found.
-  const titleRecord = head.records.find(isTitleMessageRecord);
-  if (titleRecord) {
-    headState.push(titleRecord);
-  }
+  // Both the head and the skipped-state scan recover the first prompt; a
+  // large injected preamble must not turn a follow-up into the title.
   const middleState = await readSkippedHistoryState(
     rolloutPath,
     head.nextOffset,
@@ -1577,7 +1587,7 @@ export async function parseRolloutFile(
 
   const buildResult = (): RolloutParseResult => ({
     session,
-    toolActivity,
+    toolActivity: { ...toolActivity, runningCalls: [...runningCalls.values()] },
     planProgress,
     tokenUsage,
     rateLimits,

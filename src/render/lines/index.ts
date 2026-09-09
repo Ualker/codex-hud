@@ -22,4 +22,5 @@ export {
   renderAgentSummaryLine,
   renderBindingHintLine,
   renderToolDetailsNotice,
+  toolDetailsMode,
 } from './activity-line.js';

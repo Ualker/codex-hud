@@ -233,10 +233,10 @@ function parseRolloutFilename(filename: string): { timestamp: Date; sessionId: s
 /**
  * Find all rollout files in a date directory
  */
-function findRolloutsInDir(dirPath: string): SessionFile[] {
+function findRolloutsInDir(dirPath: string, strict: boolean = false): SessionFile[] {
   const results: SessionFile[] = [];
 
-  if (!fs.existsSync(dirPath)) {
+  if (!strict && !fs.existsSync(dirPath)) {
     return results;
   }
 
@@ -256,6 +256,7 @@ function findRolloutsInDir(dirPath: string): SessionFile[] {
       const fullPath = path.join(dirPath, file);
       try {
         const stats = fs.statSync(fullPath);
+        if (!stats.isFile()) continue;
         results.push({
           path: fullPath,
           sessionId: parsed.sessionId,
@@ -263,11 +264,13 @@ function findRolloutsInDir(dirPath: string): SessionFile[] {
           size: stats.size,
           modifiedAt: stats.mtime,
         });
-      } catch {
+      } catch (error) {
+        if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         // Skip files we cannot stat
       }
     }
-  } catch {
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     // Directory read error
   }
 
@@ -354,7 +357,8 @@ export function findMostRecentRollout(
 export function findActiveRollouts(
   withinSeconds: number = 60,
   targetCwd?: string,
-  maxDaysBack: number = DEFAULT_LOOKBACK_DAYS
+  maxDaysBack: number = DEFAULT_LOOKBACK_DAYS,
+  options: { strict?: boolean } = {}
 ): SessionFile[] {
   const normalizedTarget = normalizePath(targetCwd);
   const sessionsDir = getSessionsDir();
@@ -376,7 +380,7 @@ export function findActiveRollouts(
     const day = date.getDate().toString().padStart(2, '0');
 
     const dayDir = path.join(sessionsDir, year, month, day);
-    rollouts = rollouts.concat(findRolloutsInDir(dayDir));
+    rollouts = rollouts.concat(findRolloutsInDir(dayDir, options.strict));
   }
 
   // Filter to recently modified and CWD
