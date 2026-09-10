@@ -37,9 +37,10 @@ import { compareOverviewSessions } from './collectors/overview-order.js';
 import { QuotaTrendTracker } from './collectors/quota-trend.js';
 import { ApprovalDetector } from './collectors/approval-detector.js';
 import { StallDetector } from './collectors/stall-detector.js';
-import { CodexLivenessProbe } from './collectors/codex-liveness.js';
+import { CodexLivenessProbe, isLivenessProbeCandidate } from './collectors/codex-liveness.js';
 import { extractCodexCliPolicy } from './collectors/runtime-hooks.js';
 import { FreshPromptDetector } from './collectors/fresh-prompt-detector.js';
+import { withDetectorPhases } from './utils/detector-phases.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import { HeightFitPolicy } from './utils/height-fit.js';
@@ -73,6 +74,7 @@ import {
   cycleToolDetailsMode,
   rateLimitAlertKind,
 } from './render/lines/activity-line.js';
+import { toggleHudDetails } from './render/detail-level.js';
 import { HudNotifier, isCompletedTurnNotifiable } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
 import { resolveHudStateFile } from './utils/state-dir.js';
@@ -323,46 +325,6 @@ const freshPromptDetector = new FreshPromptDetector({
 // Edge-triggered outbound notifications (CODEX_HUD_NOTIFY_CMD); inert unless
 // the user configured a command.
 const notifier = new HudNotifier();
-
-/**
- * Overlay the pane detectors' findings on the parsed phase. Approval wins:
- * it is the state the user can act on. The interrupted overlay applies only
- * to the phases the stall detector probes, so a stale flag can never repaint
- * a genuinely progressing turn.
- */
-function withDetectorPhases(
-  activity: TurnActivity | null | undefined,
-  approvalNeeded: boolean,
-  likelyInterrupted: boolean = false,
-  codexExited: boolean = false
-): TurnActivity | undefined {
-  if (!activity) {
-    return undefined;
-  }
-  if (approvalNeeded && activity.phase === 'running-tool') {
-    return { ...activity, phase: 'awaiting-approval' };
-  }
-  if (
-    likelyInterrupted &&
-    (activity.phase === 'thinking' || activity.phase === 'responding')
-  ) {
-    return { ...activity, phase: 'interrupted' };
-  }
-  // Only terminal phases: a probe answer is at most a minute old, and a
-  // working phase means the rollout is being written right now — the fresher
-  // evidence wins. An interrupted turn whose process then left is "exited";
-  // that is the more current fact.
-  if (
-    codexExited &&
-    (activity.phase === 'idle' ||
-      activity.phase === 'aborted' ||
-      activity.phase === 'failed' ||
-      activity.phase === 'interrupted')
-  ) {
-    return { ...activity, phase: 'exited' };
-  }
-  return activity;
-}
 
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   if (isShuttingDown) return;
@@ -679,7 +641,8 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       result.turnActivity,
       binding?.approvalNeeded === true,
       binding?.likelyInterrupted === true,
-      binding?.codexExited === true
+      binding?.codexExited === true,
+      result.lastEventTime ?? undefined
     );
     sessions.push({
       id,
@@ -973,11 +936,15 @@ function collectData(): HudData {
   quotaTrend.observe(accountLimits?.limits, accountLimits?.observedAt);
   const quotaProjections = quotaTrend.projectAll(rateLimits) ?? undefined;
   const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
+  const codexExited = codexLiveness.isCodexGone() && isLivenessProbeCandidate({
+    turnActivity: rolloutData?.turnActivity, lastEventAt: rolloutData?.lastEventTime,
+  });
   const turnActivity = withDetectorPhases(
     rolloutData?.turnActivity,
     approvalDetector.isApprovalNeeded(),
     stallDetector.isLikelyInterrupted(),
-    codexLiveness.isCodexGone()
+    codexExited,
+    rolloutData?.lastEventTime ?? undefined
   );
 
   if (displayMode === 'overview') {
@@ -997,7 +964,7 @@ function collectData(): HudData {
       contextUsage,
       rateLimits,
       quotaProjections,
-      ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),
+      ...(codexExited ? { codexExited: true } : {}),
     };
   }
 
@@ -1028,7 +995,7 @@ function collectData(): HudData {
     quotaProjections,
     turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
-    ...(codexLiveness.isCodexGone() ? { codexExited: true } : {}),
+    ...(codexExited ? { codexExited: true } : {}),
     ...(freshPromptDetector.isPaneOnFreshSession()
       ? { paneFreshSession: true }
       : {}),
@@ -1063,17 +1030,20 @@ function computeCadence(nowMs: number = Date.now()): CadencePlan {
   const rolloutData = rolloutParser.getCached();
   const session = sessionFinder.getCurrentSession();
   const approvalNeeded = approvalDetector.isApprovalNeeded();
+  const phase = withDetectorPhases(
+    rolloutData?.turnActivity,
+    approvalNeeded,
+    stallDetector.isLikelyInterrupted(),
+    codexLiveness.isCodexGone(),
+    rolloutData?.lastEventTime ?? undefined,
+    nowMs
+  )?.phase;
   const hasRunningTool =
-    !approvalNeeded && ((rolloutData?.toolActivity?.runningCalls ?? rolloutData?.toolActivity?.recentCalls)?.some(
+    phase !== 'exited' && !approvalNeeded &&
+    ((rolloutData?.toolActivity?.runningCalls ?? rolloutData?.toolActivity?.recentCalls)?.some(
       (call) => call.status === 'running'
     ) ?? false);
-  const hasActiveTurn = isWorkingPhase(
-    withDetectorPhases(
-      rolloutData?.turnActivity,
-      approvalNeeded,
-      stallDetector.isLikelyInterrupted()
-    )?.phase
-  );
+  const hasActiveTurn = isWorkingPhase(phase);
   const hasActiveAgent = (cachedAgentActivity?.visibleAgentCount ?? 0) > 0;
   let lastActivityMs = Math.max(
     lastWakeSignalMs,
@@ -1173,8 +1143,8 @@ async function mainLoop(): Promise<void> {
     const lastTurnMs = data.turnActivity?.lastTurnDurationMs;
     notifier.observe(
       {
-        'approval-needed': approvalDetector.isApprovalNeeded(),
-        'turn-interrupted': stallDetector.isLikelyInterrupted(),
+        'approval-needed': data.turnActivity?.phase === 'awaiting-approval',
+        'turn-interrupted': data.turnActivity?.phase === 'interrupted',
         'limit-reached': rateLimitAlertKind(data.rateLimits, Date.now()) !== null,
         'turn-completed': isCompletedTurnNotifiable(
           data.turnActivity?.phase,
@@ -1380,9 +1350,9 @@ function setupKeyListener(): void {
     if (mouse.handled) {
       if (mouse.click) {
         toggleDisplayMode();
-      } else if (mouse.wheel !== 0) {
-        cycleToolDetailsMode(Date.now(), mouse.wheel);
       }
+      // Wheel reports are consumed to keep tmux out of copy-mode. Scrolling
+      // across this pane must not silently change its density or tool mode.
       renderNow();
       return;
     }
@@ -1396,6 +1366,8 @@ function setupKeyListener(): void {
     // substring test fired on any paste or escape sequence containing a "t".
     if (input === 't' || input === 'T') {
       cycleToolDetailsMode();
+    } else if (input === 'd' || input === 'D') {
+      toggleHudDetails();
     }
     renderNow();
   });

@@ -456,8 +456,8 @@ export type TurnPhase =
    * Render-time overlay: the Codex process left the main pane (quit, crash,
    * or the trust prompt declined) and the wrapper resumed the user's shell.
    * Without it a dead pane reads as "Idle · waiting for you" — waiting for
-   * input nothing will ever consume. Set by the liveness probe; only ever
-   * overlays terminal phases, never a working one.
+   * input nothing will ever consume. Set by the liveness probe after
+   * event silence, including working phases left behind by a crash.
    */
   | 'exited';
 

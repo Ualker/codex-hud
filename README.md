@@ -32,9 +32,8 @@ Yes. Click the visible `[view]` button, or run `codex-hud --toggle-mode` from th
 `Prefix+H` toggles it from the Codex pane too — the wrapper installs that
 binding whenever the key is unbound (`CODEX_HUD_BIND_TOGGLE=0` skips it, `1`
 forces it), and the hint line names what this session actually has. The HUD
-reports mouse events itself, so wheel-scrolling over it cycles the tool-detail
-level instead of dropping the pane into tmux copy-mode (which used to freeze
-the view on its last frame). Overview lists sessions worked
+reports mouse events itself, so scrolling over it leaves the display mode unchanged
+and does not enter tmux copy-mode or freeze the view. Overview lists sessions worked
 in the last 30 minutes — not only those mid-turn at that instant — sorted by
 live phase, then by how recently each was touched, with context remaining as the
 tiebreak. It marks the session this HUD is bound to with `▸`, and keeps that row
@@ -56,10 +55,7 @@ row. The account's quota window is
 listed below the sessions, because it is the one number that applies to every
 row at once; it takes a row from the list only once usage is high enough to be
 a warning. The scan runs when the mode is entered, so the session this HUD is
-bound to is listed immediately and the others join it a moment later. The wheel
-over the HUD (or `t` while the pane is focused, or `codex-hud --cycle-details`
-from the main pane) cycles the tool-detail level (`targets` → `full` → `off`,
-wheel-up goes back) and briefly confirms the new level.
+bound to is listed immediately and the others join it a moment later. Press `t` with the HUD focused, or run `codex-hud --cycle-details` from the main pane, to cycle tool details (`targets` → `full` → `off`). Press `d` to switch HUD density independently.
 
 ![Codex HUD — Multi-Session Overview](./doc/fig/overview.svg)
 
@@ -67,7 +63,7 @@ wheel-up goes back) and briefly confirms the new level.
 
 No. Codex HUD auto-activates tmux for you. Just type `codex` and the HUD appears. If tmux isn't installed, the installer handles that too.
 
-The default view keeps compact counts beside context remaining, and reserves space for approval, failure, interruption and abort states before diagnostics. `Last call` means `last_token_usage` (one model request); `Total` is the session's accumulated usage. Input/cache/output breakdowns and the longer environment inventory appear in `full` details mode. Concurrent calls keep an accurate running count even when older calls leave the recent-history list.
+The default view keeps context remaining, compact counts, quota, current activity and actionable approval/failure/interruption states. Press `d` to show token details, session IDs, environment inventory and tool history; `CODEX_HUD_DETAILS=full` sets that initial mode. `Last call` means one model request and `Total` is accumulated session usage. `t` changes only tool command detail. Concurrent calls keep an accurate running count even when older calls leave the recent-history list.
 
 Control commands prefer the current tmux pane's session. Outside tmux, they auto-select only a unique candidate in the current directory; multiple candidates produce a list and require `--target <exact-session-name>` or `--target %<pane-id>`. `--all` is available only for `--kill` and `--reload`, scoped to the current directory. Clicks on content no longer switch views; use the visible `[view]` button or the existing keyboard controls.
 
@@ -75,32 +71,20 @@ Overview retains the address, phase and numeric context before decorative column
 
 ## Quick Start
 
-### macOS/Linux (`main`)
+### macOS/Linux (this fork)
 
 ```bash
-git clone https://github.com/fwyc0573/codex-hud.git
+git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
 cd codex-hud
-git switch main
 ./bin/codex-hud-install
 
 # Refresh your shell, then just type:
 codex
 ```
 
-### Windows (WSL) (`feature/windows-support-dual-entry`)
+This fork is maintained on `integrate/upstream-main-20260714` for macOS/Linux. Use `74server` when container polling compatibility is needed; that branch retains `CHOKIDAR_USEPOLLING=1`. Windows/WSL belongs to an upstream branch and is not a verified install path for this fork.
 
-```powershell
-git clone https://github.com/fwyc0573/codex-hud.git
-cd codex-hud
-git switch feature/windows-support-dual-entry
-.\bin\codex-hud-install.ps1
-
-# Open a new PowerShell or cmd window, then check:
-codex --self-check
-
-# Run with the WSL HUD:
-codex
-```
+For an existing checkout, `codex-hud-upgrade` updates its current tracking branch; `codex-hud-sync` only builds the current source and refreshes aliases. Install/sync preserves RC symlinks, file modes and user overrides after the managed block; repeated runs do not accumulate blank lines. After building, use `codex-hud --reload --target EXACT_SESSION_NAME` for one HUD, or `--reload --all` for every HUD in the current directory. Reload checks that the HUD Node process starts and stays alive; any failure, including partial failure, returns nonzero. Main Codex panes are preserved.
 
 ### Management Commands
 
@@ -122,16 +106,16 @@ After the first install, these are available in your shell:
 
 ## What's on the HUD?
 
-The default view uses the terminal foreground with a cyan accent, bold project names, and quieter labels and completed tools. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. The wheel or `t` switches to `full` for the complete environment inventory, Git file counts and token breakdown. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
+The default view uses the terminal foreground with a cyan accent, bold project names, and quieter labels, with completed tool history collapsed by default. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. Press `d` for environment inventory, Git file counts, token breakdown and session identity; `t` changes only tool detail. Useful title text takes priority over uptime and long branches, and omits a repeated current-directory prefix. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
 
 Previews: [light terminal](./doc/fig/single-light.svg) · [60-column pane](./doc/fig/single-narrow.svg). These are generated by the actual renderer with `npm run docs:previews`.
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
 [FULL ACCESS] · Fast: on
-Ctx: ███████▁▁▁▁▁ 55% left (70.4K) · ↻3 · Total: 1.2M · Last call: 50.2K
+Ctx: ███████▁▁▁▁▁ 55% left (70.4K) · ↻3
 ● Thinking 42s · event 8s ago
-● exec: npm test 1.4s · ✗ exec: rg pattern @other-repo exit 1 · ✓ read_file ×3
+● exec: npm test 1.4s · ✗ exec: rg pattern @other-repo exit 1
 ```
 
 The context gauge is a fuel bar: filled cells show what remains, matching the
@@ -268,8 +252,9 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 |----------|---------|-------------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD pane position (`top` / `bottom`) |
 | `CODEX_HUD_HEIGHT` | adaptive `5–12` | One sixth of terminal height, or an explicit fixed row count |
-| `CODEX_HUD_MOUSE` | `1` | Enable tmux mouse mode for the session; the HUD pane then takes clicks (toggle view) and the wheel (cycle details) itself |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | Tool detail level: `off`, `targets`, or `full` |
+| `CODEX_HUD_MOUSE` | `1` | Enable tmux mouse mode for the session; click `[view]` to switch views; the HUD consumes wheel events without changing modes |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Tool detail: `off`, `targets`, or `full`; press `t` with the HUD focused |
+| `CODEX_HUD_DETAILS` | `compact` | HUD density: `compact` or `full`; press `d` with the HUD focused |
 
 <details>
 <summary>All environment variables</summary>
@@ -285,7 +270,7 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 | `CODEX_HUD_BIND_TOGGLE` | `auto` | Server-wide `Prefix+H` HUD toggle: unset installs it while the key is unbound, `1` always, `0` never |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | Clear scrollback on first render |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | Scrollback lines for the HUD pane only; the main pane keeps its inherited value |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` retains running counts and failures, hiding targets (the wheel over the HUD, the `t` key, or `codex-hud --cycle-details` cycles this at runtime). Shell builtins never count as the command: `ffmpeg … ; echo ; exit` reads `ffmpeg` |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | Show command heads (`npm test`) for execution tools by default; `full` shows sanitized summaries and `off` retains running counts and failures, hiding targets (the `t` key or `codex-hud --cycle-details` cycles this at runtime). Shell builtins never count as the command: `ffmpeg … ; echo ; exit` reads `ffmpeg` |
 | `CODEX_HUD_MODE` | `single` | Initial display mode: `single` or `overview` |
 | `CODEX_HUD_LOG_FILE` | per-user default | Append HUD diagnostics (watcher/render/tracking errors) to this file. Defaults to `~/Library/Logs/codex-hud/hud.log` on macOS, `$XDG_STATE_HOME/codex-hud/hud.log` elsewhere; set `off` to discard them |
 | `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
@@ -348,6 +333,7 @@ npm run test:render            # Run the render examples
 
 | Date | Change |
 |------|--------|
+| 2026-09-10 | Cold binding prefers established sessions; stale working phases probe process liveness; list shares one process snapshot; reload/startup failures return nonzero; RC symlinks, modes and repeat installs preserved; compact HUD with independent `d` details, no wheel mode changes, title before uptime; CI includes 74server |
 | 2026-09-05 | Rollout changes paint at once (fs.watch + wake re-arms the render tick); row budget rebuilt as fill-back with the environment row merging onto row 1; content-fitted pane height; mouse reporting (click toggles, wheel cycles details, no more copy-mode freeze); session title from the first prompt on row 1 and in the overview; verified-safe glyph set and a per-frame spinner; `Turn:` label; unknown-record note names the type; slow-probe note; builtins dropped from command heads; process-tree and Codex-pid caches replace most `ps` spawns; git refresh on tool completion; shared account-quota/git snapshots across HUDs; slow collectors in-process (no worker isolate); `Prefix+H` installed while unbound; `--cycle-details`; `--list` marks the newest session; `--doctor` reports the notify hook |
 | 2026-09-03 | codex 0.153 `token_usage_record` whitelisted |
 | 2026-09-02 | Failed-turn phase and `turn-failed` notification; exhaustion snapshots keep their windows; quota row states what remains; 24h-baseline forecast gate |

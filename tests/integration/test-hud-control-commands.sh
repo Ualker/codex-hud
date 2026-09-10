@@ -85,6 +85,10 @@ hud_pane="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
 env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
   tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane"
 
+main_pane="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux split-window -d -t "$session_name" -P -F '#{pane_id}' 'sleep 120')"
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux set-option -t "$session_name" @codex_hud_main_pane "$main_pane"
+main_pid="$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux display-message -p -t "$main_pane" '#{pane_pid}')"
+
 wait_for_count 1
 
 # A newer sibling must not steal controls from the current pane. Every
@@ -151,5 +155,20 @@ if ! env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
   exit 1
 fi
 
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux has-session -t "$other_session"
+# An accepted respawn whose command immediately exits must fail readiness.
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux set-window-option -t "$session_name" remain-on-exit on
+env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux respawn-pane -k -t "$hud_pane" 'exit 17'
+if (cd "$ROOT_DIR" && env -u TMUX TMUX_TMPDIR="$TMUX_DIR" \
+  "$ROOT_DIR/bin/codex-hud" --reload --target "$session_name" >"$TEST_ROOT/failed-start.log" 2>&1); then
+  echo "A HUD that exits on startup must not report reload success" >&2
+  exit 1
+fi
+if grep -q 'Reloaded HUD pane' "$TEST_ROOT/failed-start.log"; then
+  cat "$TEST_ROOT/failed-start.log" >&2
+  exit 1
+fi
+[[ "$(env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux display-message -p -t "$main_pane" '#{pane_pid}')" == "$main_pid" ]]
+kill -0 "$main_pid"
 env -u TMUX TMUX_TMPDIR="$TMUX_DIR" tmux has-session -t "$other_session"
 echo "test-hud-control-commands: PASS"

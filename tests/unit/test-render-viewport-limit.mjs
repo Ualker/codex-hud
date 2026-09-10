@@ -94,6 +94,8 @@ const hudData = {
   displayMode: 'single',
 };
 
+// Full details deliberately adds history and identity, exercising clipping.
+process.env.CODEX_HUD_DETAILS = 'full';
 const expanded = renderHud(hudData, {
   width: 90,
   showDetails: true,

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 delete process.env.NO_COLOR;
 process.env.TERM = 'xterm-256color';
 process.env.CODEX_HUD_TOOL_DETAILS = 'targets';
+process.env.CODEX_HUD_DETAILS = 'compact';
 process.env.CODEX_HUD_TOGGLE_KEY = 'Prefix+H';
 const now = Date.parse('2026-09-09T09:00:00Z');
 Date.now = () => now;

@@ -24,7 +24,7 @@ const SHOW_CURSOR = '\x1b[?25h';
 // WheelUpPane binding sees `mouse_any_flag` and hands wheel and click events
 // to the pane (`send-keys -M`) instead of entering copy-mode — which froze
 // the view on its last frame, indistinguishable from a dead HUD. The events
-// double as controls: click [view] toggles the view; the wheel cycles details.
+// let [view] toggle the view; wheel reports are consumed without changing modes.
 const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
 const MOUSE_OFF = '\x1b[?1006l\x1b[?1000l';
 
@@ -35,8 +35,8 @@ let hasEverRendered = false;
 // path (focus the pane first) even when the wrapper had installed a global
 // toggle that works from the Codex pane.
 const STATUS_HINT = process.env.CODEX_HUD_TOGGLE_KEY
-  ? `[view] · ${process.env.CODEX_HUD_TOGGLE_KEY} view · wheel: details`
-  : '[view] · Ctrl+T view · wheel: details';
+  ? `[view] · ${process.env.CODEX_HUD_TOGGLE_KEY} view · t tools · d details`
+  : '[view] · Ctrl+T view · t tools · d details';
 let viewHotspot: { start: number; end: number } | undefined;
 
 export function isViewToggleClick(column: number, row: number): boolean {

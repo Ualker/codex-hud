@@ -23,6 +23,8 @@ git -C "$SEED" init --quiet -b "$TRACKING_BRANCH"
 git -C "$SEED" config user.email codex-hud-transaction-test@example.com
 git -C "$SEED" config user.name 'Codex HUD Transaction Test'
 cp "$ROOT_DIR/install.sh" "$SEED/install.sh"
+mkdir -p "$SEED/scripts"
+cp "$ROOT_DIR/scripts/shell-rc.sh" "$SEED/scripts/shell-rc.sh"
 for name in codex-hud codex-hud-install codex-hud-sync codex-hud-upgrade codex-hud-uninstall; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SEED/bin/$name"
 done
@@ -32,7 +34,7 @@ printf 'node_modules/\ndist/\n' > "$SEED/.gitignore"
 mkdir -p "$SEED/node_modules"
 printf 'tracked-dependency\n' > "$SEED/node_modules/tracked.txt"
 printf 'base\n' > "$SEED/version.txt"
-git -C "$SEED" add install.sh bin package.json version.txt .gitignore
+git -C "$SEED" add install.sh scripts bin package.json version.txt .gitignore
 git -C "$SEED" add -f node_modules/tracked.txt
 git -C "$SEED" commit --quiet -m base
 git -C "$SEED" remote add origin "$REMOTE"

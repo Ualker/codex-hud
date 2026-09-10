@@ -663,16 +663,16 @@ set_fixed_hud_height() {
     local focus_main_setting
     focus_main_setting="1"
 
-    tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane_id"
-    tmux set-option -t "$session_name" -q @codex_hud_auto "$auto_setting"
-    tmux set-option -t "$session_name" -q @codex_hud_height_adaptive "$adaptive_setting"
-    tmux set-option -t "$session_name" -q @codex_hud_height_min "$min_setting"
-    tmux set-option -t "$session_name" -q @codex_hud_height_max "$max_setting"
-    tmux set-option -t "$session_name" -q @codex_hud_base_height "$height"
-    tmux set-option -t "$session_name" -q @codex_hud_height "$height"
-    tmux set-option -t "$session_name" -q @codex_hud_focus_main "$focus_main_setting"
+    tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane_id" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_auto "$auto_setting" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_height_adaptive "$adaptive_setting" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_height_min "$min_setting" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_height_max "$max_setting" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_base_height "$height" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_height "$height" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_focus_main "$focus_main_setting" || return 1
     if [[ -n "$main_pane_id" ]]; then
-        tmux set-option -t "$session_name" -q @codex_hud_main_pane "$main_pane_id"
+        tmux set-option -t "$session_name" -q @codex_hud_main_pane "$main_pane_id" || return 1
     fi
 
     if [[ -x "$resize_helper" ]]; then
@@ -790,6 +790,7 @@ HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HUD_MODE
     CODEX_HUD_HEIGHT_FIT
     CODEX_HUD_TOOL_DETAILS
+    CODEX_HUD_DETAILS
     CODEX_HUD_ASCII
     CODEX_HUD_LOG_FILE
     CODEX_HUD_NOTIFY_CMD
@@ -1142,7 +1143,7 @@ Options:
 
 HUD Pane Mouse and Keys:
   Click [view]        Toggle single/overview; clicks on content only focus the pane
-  Wheel over the HUD  Cycle tool details (down: targets -> full -> off, up: back)
+  d (HUD focused)     Toggle compact/full HUD details (independent of tool details)
   Prefix+H            Toggle the view from the Codex pane (installed while the
                       key is unbound; CODEX_HUD_BIND_TOGGLE=0 skips, 1 forces)
   Ctrl+T / t          The same two actions from the keyboard once the pane is focused
@@ -1174,6 +1175,7 @@ Environment Variables:
   CODEX_HUD_CLEAR_SCROLLBACK Clear terminal scrollback on first render (default: 0)
   CODEX_HUD_HISTORY_LIMIT HUD pane scrollback lines (default: 10000)
   CODEX_HUD_TOOL_DETAILS Tool details: off, targets (default), or full
+  CODEX_HUD_DETAILS    HUD density: compact (default) or full; d toggles at runtime
   CODEX_HUD_LOG_FILE  Append HUD diagnostics to this file (default: ~/Library/Logs/codex-hud/hud.log
                       on macOS, \$XDG_STATE_HOME/codex-hud/hud.log elsewhere; 'off' discards them)
   CODEX_HUD_NOTIFY_CMD Shell command run when a session starts needing a human
@@ -1374,9 +1376,8 @@ kill_session() {
 # locale-independent where `lstart` is not (this machine prints Chinese
 # weekday names), and macOS ps has no `etimes`. Forms: mm:ss, hh:mm:ss,
 # dd-hh:mm:ss.
-process_elapsed_seconds() {
-    local raw days=0 h m s
-    raw=$(ps -p "$1" -o etime= 2>/dev/null | tr -d ' ') || return 1
+elapsed_seconds() {
+    local raw="$1" days=0 h m s
     [[ -n "$raw" ]] || return 1
     if [[ "$raw" == *-* ]]; then
         days="${raw%%-*}"
@@ -1391,7 +1392,7 @@ process_elapsed_seconds() {
 }
 
 file_mtime_epoch() {
-    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }
 
 # A pane keeps running whatever build it was spawned with, so after a rebuild
@@ -1399,14 +1400,14 @@ file_mtime_epoch() {
 # probe failure stays silent: an unmarked row means "not known stale", never
 # "verified fresh".
 hud_outdated_marker() {
-    local session_name="$1" hud_pane="$2"
-    local hud_pid elapsed dist_mtime start_epoch
-    hud_pid=$(resolve_hud_node_pid "$session_name" "$hud_pane") || return 0
-    [[ "$hud_pid" =~ ^[0-9]+$ ]] || return 0
-    elapsed=$(process_elapsed_seconds "$hud_pid") || return 0
-    dist_mtime=$(file_mtime_epoch "$HUD_DIR/dist/index.js") || return 0
+    local pane_pid="$1" process_table="$2" dist_mtime="$3" now="$4"
+    local process_row hud_pid raw_elapsed elapsed start_epoch
     [[ "$dist_mtime" =~ ^[0-9]+$ ]] || return 0
-    start_epoch=$(( $(date +%s) - elapsed ))
+    process_row=$(printf '%s\n' "$process_table" | hud_process_from_table "$pane_pid") || return 0
+    read -r hud_pid raw_elapsed <<< "$process_row"
+    [[ "$hud_pid" =~ ^[0-9]+$ ]] || return 0
+    elapsed=$(elapsed_seconds "$raw_elapsed") || return 0
+    start_epoch=$(( now - elapsed ))
     # Two seconds of slack: a build and the spawn it precedes can share one.
     if (( dist_mtime > start_epoch + 2 )); then
         printf '  HUD: outdated (codex-hud --reload)'
@@ -1414,7 +1415,8 @@ hud_outdated_marker() {
 }
 
 list_sessions() {
-    local rows panes name main_pane hud_pane attached cwd hud_state
+    local rows panes name main_pane hud_pane attached cwd hud_state pane_pid
+    local process_table dist_mtime now
 
     echo "Active codex-hud sessions:"
     rows=$(tmux list-sessions \
@@ -1425,18 +1427,21 @@ list_sessions() {
         return 0
     fi
 
-    panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_current_path}" 2>/dev/null) || panes=""
+    panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_pid}|#{pane_current_path}" 2>/dev/null) || panes=""
     # Launch/attach still prefers the newest session; controls resolve their
     # current pane or require an explicit target when the directory is shared.
     local newest_here
-    newest_here=$(find_existing_session)
+    newest_here=$(printf '%s\n' "$rows" | cut -d'|' -f1 | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" | sort | tail -n1)
+    process_table=$(ps -axo pid=,ppid=,etime=,comm=,command= 2>/dev/null) || process_table=""
+    dist_mtime=$(file_mtime_epoch "$HUD_DIR/dist/index.js") || dist_mtime=""
+    now=$(date +%s)
 
     while IFS='|' read -r name main_pane hud_pane attached; do
         [[ -n "$name" ]] || continue
         # The path is the last field and may itself contain the separator, so
-        # take everything after the first two fields rather than field three.
+        # take everything after the first three fields rather than field four.
         cwd=$(printf '%s\n' "$panes" | awk -F'|' -v p="$main_pane" \
-            '$1 == p { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }')
+            '$1 == p { sub(/^[^|]*\|[^|]*\|[^|]*\|/, ""); print; exit }')
         if [[ -z "$cwd" ]]; then
             cwd="?"
         elif [[ "$cwd" == "$HOME"* ]]; then
@@ -1444,7 +1449,10 @@ list_sessions() {
         fi
         hud_state=$(printf '%s\n' "$panes" | awk -F'|' -v p="$hud_pane" '$1 == p { print $2; exit }')
         case "$hud_state" in
-            live) hud_state="$(hud_outdated_marker "$name" "$hud_pane")" ;;
+            live)
+                pane_pid=$(printf '%s\n' "$panes" | awk -F'|' -v p="$hud_pane" '$1 == p { print $3; exit }')
+                hud_state="$(hud_outdated_marker "$pane_pid" "$process_table" "$dist_mtime" "$now")"
+                ;;
             dead) hud_state="  HUD: dead (codex-hud --reload)" ;;
             *)    hud_state="  HUD: missing" ;;
         esac
@@ -1469,13 +1477,13 @@ reload_hud_pane_for_session() {
     local session_name="$1"
     local hud_pane
     local main_pane
-    hud_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_pane)
+    hud_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_pane) || return 1
     if ! pane_exists_in_session "$session_name" "$hud_pane"; then
         return 1
     fi
-    main_pane=$(get_main_pane_id_for_session "$session_name")
-    resolve_hud_height_for_tmux_target "$hud_pane"
-    set_fixed_hud_height "$session_name" "$hud_pane" "$HUD_HEIGHT" "$main_pane"
+    main_pane=$(get_main_pane_id_for_session "$session_name") || return 1
+    resolve_hud_height_for_tmux_target "$hud_pane" || return 1
+    set_fixed_hud_height "$session_name" "$hud_pane" "$HUD_HEIGHT" "$main_pane" || return 1
     # Rebuild the pane command so the relaunch bakes the caller's *current*
     # environment (CODEX_HUD_NOTIFY_CMD and friends) instead of reviving the
     # values frozen at session creation. Sessions created by older wrappers
@@ -1492,10 +1500,15 @@ reload_hud_pane_for_session() {
         if ! [[ "$pane_width" =~ ^[0-9]+$ ]]; then
             pane_width=$(tput cols 2>/dev/null || echo 80)
         fi
-        tmux respawn-pane -k -t "$hud_pane" \
-            "$(build_hud_pane_command "$stored_cwd" "$main_pane" "$session_name" "$stored_start" "$stored_toggle" "$HUD_HEIGHT" "$pane_width")"
+        local pane_command
+        pane_command=$(build_hud_pane_command "$stored_cwd" "$main_pane" "$session_name" "$stored_start" "$stored_toggle" "$HUD_HEIGHT" "$pane_width") || return 1
+        tmux respawn-pane -k -t "$hud_pane" "$pane_command" || return 1
     else
-        tmux respawn-pane -k -t "$hud_pane"
+        tmux respawn-pane -k -t "$hud_pane" || return 1
+    fi
+    if ! wait_for_hud_process "$session_name" "$hud_pane"; then
+        warn "HUD did not stay running after respawn: $session_name ($hud_pane). Check codex-hud --self-check."
+        return 1
     fi
     info "Reloaded HUD pane in session: $session_name"
 }
@@ -1508,7 +1521,7 @@ reload_hud() {
     fi
     build_hud
     if ! reload_hud_pane_for_session "$session_name"; then
-        error "HUD pane is unavailable in session: $session_name"
+        error "HUD reload failed in session: $session_name"
     fi
 }
 
@@ -1516,7 +1529,7 @@ reload_hud() {
 reload_hud_all() {
     local session_name
     local sessions
-    local reloaded=0
+    local reloaded=0 failed=0
     sessions=$(find_all_hud_sessions || true)
     if [[ -z "$sessions" ]]; then
         error "No codex-hud session found for the current directory."
@@ -1527,12 +1540,12 @@ reload_hud_all() {
         if reload_hud_pane_for_session "$session_name"; then
             reloaded=$((reloaded + 1))
         else
-            warn "HUD pane is unavailable in session: $session_name"
+            failed=$((failed + 1))
+            warn "HUD reload failed in session: $session_name"
         fi
     done <<< "$sessions"
-    if [[ "$reloaded" -eq 0 ]]; then
-        error "No HUD pane could be reloaded."
-    fi
+    info "HUD reload results: $reloaded succeeded, $failed failed."
+    [[ "$failed" -eq 0 && "$reloaded" -gt 0 ]]
 }
 
 resolve_hud_node_pid() {
@@ -1545,43 +1558,68 @@ resolve_hud_node_pid() {
         return 1
     fi
 
-    # New sessions exec Node directly; older sessions may retain a shell parent.
-    # Walk only this pane's descendant tree and require the HUD entrypoint.
-    ps -axo pid=,ppid=,comm=,command= 2>/dev/null | awk \
-        -v root="$pane_pid" \
-        -v needle="/dist/index.js" '
+    local process_row
+    process_row=$(ps -axo pid=,ppid=,etime=,comm=,command= 2>/dev/null | hud_process_from_table "$pane_pid") || return 1
+    [[ -n "$process_row" ]] || return 1
+    printf '%s\n' "${process_row%% *}"
+}
+
+# Read one process snapshot (pid, ppid, etime, comm, command). Index children
+# once, then visit only the pane's descendants. A fixed NR-by-NR scan made
+# controls take seconds on a busy host even when the pane itself was Node.
+hud_process_from_table() {
+    [[ "$1" =~ ^[0-9]+$ ]] || return 1
+    awk -v root="$1" '
         {
-            row_pid[NR] = $1
-            row_parent[NR] = $2
-            row_comm[NR] = $3
+            pid = $1
+            parent = $2
+            elapsed[pid] = $3
+            executable = $4
+            sub(/^.*\//, "", executable)
+            command_executable = $5
+            sub(/^.*\//, "", command_executable)
             command = ""
-            for (field = 4; field <= NF; field++) {
-                command = command (field == 4 ? "" : " ") $field
+            for (field = 5; field <= NF; field++) {
+                command = command (field == 5 ? "" : " ") $field
             }
-            row_command[NR] = command
+            is_hud[pid] = (executable == "node" || executable == "nodejs" || command_executable == "node" || command_executable == "nodejs") && command ~ /\/dist\/index[.]js([[:space:]]|$)/
+            sibling[pid] = child[parent]
+            child[parent] = pid
         }
         END {
-            descendant[root] = 1
-            for (pass = 1; pass <= NR; pass++) {
-                for (row = 1; row <= NR; row++) {
-                    if (descendant[row_parent[row]]) {
-                        descendant[row_pid[row]] = 1
-                    }
-                }
-            }
-            for (row = 1; row <= NR; row++) {
-                executable = row_comm[row]
-                sub(/^.*\//, "", executable)
-                split(row_command[row], command_parts, /[[:space:]]+/)
-                command_executable = command_parts[1]
-                sub(/^.*\//, "", command_executable)
-                if (descendant[row_pid[row]] && (executable == "node" || executable == "nodejs" || command_executable == "node" || command_executable == "nodejs") && index(row_command[row], needle) > 0) {
-                    print row_pid[row]
+            queue[1] = root
+            tail = 1
+            for (head = 1; head <= tail && head <= 256; head++) {
+                pid = queue[head]
+                if (seen[pid]++) continue
+                if (is_hud[pid]) {
+                    print pid, elapsed[pid]
                     exit
+                }
+                for (next_pid = child[pid]; next_pid != "" && tail < 256; next_pid = sibling[next_pid]) {
+                    if (!seen[next_pid]) queue[++tail] = next_pid
                 }
             }
         }
     '
+}
+
+# Respawn acceptance is not startup: an invalid entrypoint can exit at once.
+# Require a live HUD Node process on two observations; never touch main panes.
+wait_for_hud_process() {
+    local session_name="$1" hud_pane="$2" previous_pid="" hud_pid dead
+    local deadline=$((SECONDS + 8))
+    while (( SECONDS < deadline )); do
+        dead=$(tmux display-message -p -t "$hud_pane" '#{pane_dead}' 2>/dev/null) || return 1
+        [[ "$dead" == 0 ]] || return 1
+        hud_pid=$(resolve_hud_node_pid "$session_name" "$hud_pane") || hud_pid=""
+        if [[ -n "$hud_pid" && "$hud_pid" == "$previous_pid" ]]; then
+            return 0
+        fi
+        previous_pid="$hud_pid"
+        sleep 0.1
+    done
+    return 1
 }
 
 # Deliver one signal to the resolved session's HUD process: USR1 toggles the

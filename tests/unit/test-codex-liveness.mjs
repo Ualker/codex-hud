@@ -10,6 +10,7 @@ import {
   renderTurnActivityLine,
   renderBindingHintLine,
 } from '../../dist/render/lines/index.js';
+import { withDetectorPhases } from '../../dist/utils/detector-phases.js';
 import { stripAnsi } from '../../dist/render/colors.js';
 
 const now = Date.parse('2026-08-20T12:00:00.000Z');
@@ -62,9 +63,28 @@ for (const phase of [
       },
       now
     ),
-    false,
-    `${phase} means the rollout is live; never spawn for it`
+    true,
+    `${phase} without fresh events can be a crashed process`
   );
+}
+
+// A working phase with fresh activity still avoids the process walk, even
+// when the caller has not supplied lastEventAt.
+assert.equal(isLivenessProbeCandidate({ turnActivity: {
+  phase: 'running-tool', since: ago(3600_000), lastActivityAt: ago(1000),
+}}, now), false);
+
+for (const phase of ['thinking', 'responding', 'running-tool', 'awaiting-approval', 'idle']) {
+  const stale = { phase, since: ago(3600_000), lastActivityAt: ago(3600_000) };
+  assert.equal(withDetectorPhases(stale, true, true, true, ago(3600_000), now).phase, 'exited');
+  assert.notEqual(withDetectorPhases(stale, false, false, true, ago(1000), now).phase, 'exited',
+    'a new rollout write outranks a cached exit flag');
+  for (const alive of [true, false, null]) {
+    const { instance, probes } = probe([alive]);
+    await instance.refresh({ turnActivity: stale, lastEventAt: stale.lastActivityAt }, now);
+    assert.equal(probes.length, 1, `${phase}: stale state is probed`);
+    assert.equal(instance.isCodexGone(), alive === false, 'silence alone never proves death');
+  }
 }
 
 // ---- the process-tree walk ------------------------------------------------
@@ -221,6 +241,17 @@ function probe(answers, options = {}) {
   assert.equal(await instance.refresh(quietIdle, now), false);
   assert.equal(instance.isCodexGone(), false);
   assert.equal(probes.length, 0);
+}
+
+{
+  let release;
+  const instance = new CodexLivenessProbe({ mainPane: '%15', probePane: () =>
+    new Promise((resolve) => { release = resolve; }) });
+  const pending = instance.refresh(quietIdle, now);
+  await instance.refresh({ ...quietIdle, lastEventAt: ago(1000) }, now);
+  release({ alive: false });
+  assert.equal(await pending, false);
+  assert.equal(instance.isCodexGone(), false, 'late probe cannot overwrite a fresh event');
 }
 
 // ---- the command capture --------------------------------------------------

@@ -238,7 +238,8 @@ assert.ok(
   'the two states do not share a message'
 );
 
-// Without a row budget nothing is compressed away.
+// Explicit full details with no row budget show all diagnostic cells.
+process.env.CODEX_HUD_DETAILS = 'full';
 const uncompressed = render(makeData({ agentCount: 4 }), Number.POSITIVE_INFINITY);
 assert.ok(
   uncompressed.some((line) => line.includes('agent-3')),

@@ -9,10 +9,6 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex) 的实时状态栏 HUD。轻量、零配置、在 tmux 中运行。
 
-## Windows WSL 支持
-
-Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu WSL 提供。macOS/Linux 用户使用 `main`；Windows (WSL) 用户使用该 feature branch。
-
 > 灵感来源于 Claude Code 的 [claude-hud](https://github.com/jarrodwatts/claude-hud)。
 
 ![Codex HUD — 单 Session 模式](./doc/fig/single.svg)
@@ -32,11 +28,10 @@ Windows 支持已在 `feature/windows-support-dual-entry` branch 通过 Ubuntu W
 
 **Q: 我同时跑多个 Codex session，能一起监控吗？**
 
-可以。点一下 HUD pane，或在主 pane 执行 `codex-hud --toggle-mode`；`Prefix+H`
+可以。点击 HUD 中的 `[view]` 按钮，或在主 pane 执行 `codex-hud --toggle-mode`；`Prefix+H`
 也能在 Codex pane 里直接切换——只要这个键没被占用，wrapper 就会安装它
 （`CODEX_HUD_BIND_TOGGLE=0` 跳过，`1` 强制），提示行会显示当前会话实际拥有的那一种。
-HUD 自己上报鼠标事件，所以在它上面滚滚轮是循环切换工具详情级别，而不再把 pane 带进
-tmux copy-mode（那会把画面冻在最后一帧）。概览列出最近
+HUD 自己接收鼠标事件；滚轮不改变详情级别，也不会进入 tmux copy-mode 让画面冻结。概览列出最近
 30 分钟内有活动的 session——不只是恰好正在执行回合的那些——先按当前阶段排序，再按
 最近活动时间排序，Context 剩余量作为并列时的次序。概览用 `▸` 标出当前 HUD 绑定的
 session，并保证该行在 session 数超过可显示行数时仍然可见。各 HUD 在自己主 pane 上
@@ -51,9 +46,7 @@ session 名——即 `tmux ls` 和 session 选择器里显示的那个名字，�
 两行此前只差一段不透明 tmux 名的尾巴；单视图第 1 行也显示同一个标题。账号配额窗口列在 session 之后
 ——它是唯一对所有行同时成立的数字；只有用量高到构成告警时，它才会占用一行 session
 列表。扫描在进入该模式时才发起，因此当前 HUD 绑定的 session 会立即列出，其余稍后
-补齐。在 HUD 上滚滚轮（或 pane 处于焦点时按 `t`，或在主 pane 执行
-`codex-hud --cycle-details`）可循环切换工具详情级别（`targets` → `full` → `off`，
-向上滚回退），并短暂显示切换后的级别。
+补齐。聚焦 HUD 后按 `t`，或在主 pane 执行 `codex-hud --cycle-details`，可循环切换工具详情（`targets` → `full` → `off`）。按 `d` 独立切换 HUD 简洁/完整详情。
 
 ![Codex HUD — 多 Session 概览](./doc/fig/overview.svg)
 
@@ -61,7 +54,7 @@ session 名——即 `tmux ls` 和 session 选择器里显示的那个名字，�
 
 不需要。Codex HUD 自动激活 tmux。只需输入 `codex`，HUD 就会出现。如果没装 tmux，安装程序也会搞定。
 
-默认布局优先保留需要人工处理的状态（审批、失败、中断、终止）与 compact 次数。compact 紧邻 Context，配额合并到同一行时也会保留；`Last call` 对应 `last_token_usage`，`Total` 表示会话累计用量。输入/cache/输出拆分以及完整环境清单在 `full` 详情模式显示。多个工具并发时显示完整运行数量，历史列表裁剪不会丢掉仍在运行的调用。
+默认布局保留上下文余量、compact 次数、额度、当前活动，以及需要人工处理的审批/失败/中断状态。完整 token 明细、会话 ID、环境清单和历史工具记录由 `d` 展开，也可用 `CODEX_HUD_DETAILS=full` 设置初始模式。`Last call` 对应单次模型请求，`Total` 表示会话累计用量；`t` 只改变工具命令详情，不影响其他信息。多个工具并发时显示完整运行数量，历史列表裁剪不会丢掉仍在运行的调用。
 
 控制命令优先选择当前 tmux pane 所属会话；在 tmux 外仅自动选择当前目录的唯一候选，多个候选时列出列表并要求 `--target 完整会话名` 或 `--target %pane编号`。`--all` 只适用于 `--kill` / `--reload`，作用于当前目录。点击正文仅聚焦，不再切换视图；切换使用可见的 `[view]` 按钮或已有快捷键。
 
@@ -69,32 +62,20 @@ session 名——即 `tmux ls` 和 session 选择器里显示的那个名字，�
 
 ## 快速开始
 
-### macOS/Linux（`main`）
+### macOS/Linux（本仓库）
 
 ```bash
-git clone https://github.com/fwyc0573/codex-hud.git
+git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
 cd codex-hud
-git switch main
 ./bin/codex-hud-install
 
 # 刷新 shell，然后直接输入：
 codex
 ```
 
-### Windows (WSL)（`feature/windows-support-dual-entry`）
+本仓库的 macOS/Linux 功能以 `integrate/upstream-main-20260714` 为维护分支；需要容器轮询兼容时使用 `74server`，该分支保留 `CHOKIDAR_USEPOLLING=1` 监听策略。Windows/WSL 属于上游的独立分支，不作为本 fork 的已验证安装入口。
 
-```powershell
-git clone https://github.com/fwyc0573/codex-hud.git
-cd codex-hud
-git switch feature/windows-support-dual-entry
-.\bin\codex-hud-install.ps1
-
-# 打开新的 PowerShell 或 cmd 窗口，然后检查：
-codex --self-check
-
-# 使用 WSL HUD 启动：
-codex
-```
+已有 checkout：`codex-hud-upgrade` 更新当前跟踪分支；`codex-hud-sync` 只构建当前源码并刷新别名。安装/同步会保留 shell 配置的符号链接、文件权限与托管段后面的用户覆盖，重复执行不会累积空行。构建完成后，用 `codex-hud --reload --target 完整会话名` 重启指定 HUD；同目录全部 HUD 使用 `--reload --all`。重启会检查 HUD Node 进程是否启动并保持存活，任何失败（含部分失败）均返回非零；主 Codex pane 保留。
 
 ### 管理命令
 
@@ -116,16 +97,16 @@ codex
 
 ## HUD 显示了什么？
 
-默认使用终端前景色与青色强调，项目名加粗，标签和已完成工具历史弱化；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。滚轮或 `t` 切到 `full` 可查看完整环境清单、Git 文件统计和 token 拆分。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
+默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。任务标题优先于运行时长和长分支，并省略提示词开头重复的当前目录。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
 
 预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
 [FULL ACCESS] · Fast: on
-Ctx: ███████▁▁▁▁▁ 55% left (70.4K) · ↻3 · Total: 1.2M · Last call: 50.2K
+Ctx: ███████▁▁▁▁▁ 55% left (70.4K) · ↻3
 ● Thinking 42s · event 8s ago
-● exec: npm test 1.4s · ✗ exec: rg pattern @other-repo exit 1 · ✓ read_file ×3
+● exec: npm test 1.4s · ✗ exec: rg pattern @other-repo exit 1
 ```
 
 上下文进度条是"油量表"语义：实心格表示剩余量，与旁边的 `% left` 文字一致；颜色反映压力（青 → 黄 → 红）。`Last call` 是最近一次模型请求的 token 用量，一个用户回合可能包含多次模型请求，`Total` 是本 session 的累计消耗。标题取自会话的首条提示词。全部字形都来自一套在缺少半填充圆和浅色阴影的终端字体上验证过的安全集（◐ ░ ⏸ 在那里会变宽或高度不齐）：活动标记是每绘一帧跳一次的圆点，进度条底纹是低块，暂停的调用标 `▲`。
@@ -136,7 +117,7 @@ Ctx: ███████▁▁▁▁▁ 55% left (70.4K) · ↻3 · Total: 1.2
 |----|------|
 | **标题** | 项目名、git 分支、模型 + effort，以及绑定的 Codex 会话已运行多久。首轮采集完成前模型显示为 `…`、不显示时长，因为此时两者都还不知道 |
 | **安全与环境** | `[FULL ACCESS]`、审批/Sandbox/Fast 优先（徽章已蕴含的单元不再重复显示，默认态 `Fast: off` 直接省略——上方两行的 Codex 底栏已经写着它）；MCP、Codex skill、hook、AGENTS.md 和配置来源仅在 `full` 详情模式显示。pane 行数不够而这些单元又都放得进第 1 行旁边时，整行上移到第 1 行，不再占一行。审批与沙箱的取值序：先读会话自身的记录，再读主 pane 活体 Codex 进程的启动 flag（`--yolo`、`--ask-for-approval …`——flag 覆盖配置文件，而 0.149 会话在首条消息前没有任何记录可承载它们），最后才回退配置文件；绑定的会话既无记录、flag 又读不到时显示 `?`/`[ACCESS ?]`，而不是把被覆盖的配置当作事实展示。有一个例外可提前恢复配置资格：捕获到的 argv 被完整走查到末尾、既无策略 flag 也无 profile，即证明配置未被覆盖——素启动不再要等到首条消息才摘掉 `?` |
-| **容量** | Context 剩余百分比/剩余 token、输入/cache/输出拆分、累计消耗、compact 次数；只要版面还有空行就显示限额窗口及其 reset 时刻——以剩余量表述（`5h 6% left`），与上方的 Context 仪表、下方 Codex 自己的底栏方向一致——使用率达到 70% 后转为高亮告警；reset 时刻已过的限额快照直接不显示，不再重放。限额是账号级状态，取本机任一 Codex 会话写下的、**确实报出了读数的**最新快照，而不是绑定会话碰巧最后看到的那一份——窗口耗尽后 Codex 会写出不含任何窗口的快照，直接取最新的那份会让配额行在 100% 时反而消失。若快照没有任何窗口但信用额度为空，则显示 `credits: 0`；处于这种耗尽期时，扫描会继续向更旧的文件走，直到找到仍然写明 reset 时刻的读数，而不是数满固定文件数就停。找到的那份读数的窗口会被保留到耗尽快照本身上，因此配额行仍然给出「什么时候能继续干活」这一个数字：`5h 0% left · resets in 3h47m · credits: 0`——2026-08-31 实测，5h 窗口的 reset 时刻（Codex pane 自己写着 "try again at 9:18 PM"）此前会在整整 3h47m 里从 HUD 上消失。reset 距今不足一天时改为倒计时（`resets in 2h13m`）；窗口用掉一半之后——或者基线已有整整一天的读数，两者先到为准——两份带时间戳的读数即可算出该窗口的燃速，若按此速率会在其 reset 之前耗尽，则在行上标出并注明窗口（`→ 7d empty ~08/22`、`→ 5h empty in 40m`）。Codex 0.150 把单一 weekly 窗口换成了 5h primary、weekly 降为 secondary；追踪器按窗口长度各存一条基线，weekly 预测因此在换位后仍然成立——单序列追踪器会把每份 5h 快照误判为 weekly 的陈旧重放，从此静默停止学习。燃速基线通过一个小的每用户状态文件共享，因此每块 HUD 对同一账号给出同一预测——此前两块面板曾相差约一天——`--reload` 也不再把基线清零重来 |
+| **容量** | 默认显示 Context 剩余百分比/剩余 token 与 compact 次数；输入/cache/输出拆分和累计消耗在完整详情中显示；只要版面还有空行就显示限额窗口及其 reset 时刻——以剩余量表述（`5h 6% left`），与上方的 Context 仪表、下方 Codex 自己的底栏方向一致——使用率达到 70% 后转为高亮告警；reset 时刻已过的限额快照直接不显示，不再重放。限额是账号级状态，取本机任一 Codex 会话写下的、**确实报出了读数的**最新快照，而不是绑定会话碰巧最后看到的那一份——窗口耗尽后 Codex 会写出不含任何窗口的快照，直接取最新的那份会让配额行在 100% 时反而消失。若快照没有任何窗口但信用额度为空，则显示 `credits: 0`；处于这种耗尽期时，扫描会继续向更旧的文件走，直到找到仍然写明 reset 时刻的读数，而不是数满固定文件数就停。找到的那份读数的窗口会被保留到耗尽快照本身上，因此配额行仍然给出「什么时候能继续干活」这一个数字：`5h 0% left · resets in 3h47m · credits: 0`——2026-08-31 实测，5h 窗口的 reset 时刻（Codex pane 自己写着 "try again at 9:18 PM"）此前会在整整 3h47m 里从 HUD 上消失。reset 距今不足一天时改为倒计时（`resets in 2h13m`）；窗口用掉一半之后——或者基线已有整整一天的读数，两者先到为准——两份带时间戳的读数即可算出该窗口的燃速，若按此速率会在其 reset 之前耗尽，则在行上标出并注明窗口（`→ 7d empty ~08/22`、`→ 5h empty in 40m`）。Codex 0.150 把单一 weekly 窗口换成了 5h primary、weekly 降为 secondary；追踪器按窗口长度各存一条基线，weekly 预测因此在换位后仍然成立——单序列追踪器会把每份 5h 快照误判为 weekly 的陈旧重放，从此静默停止学习。燃速基线通过一个小的每用户状态文件共享，因此每块 HUD 对同一账号给出同一预测——此前两块面板曾相差约一天——`--reload` 也不再把基线清零重来 |
 | **健康** | Git、会话日志、agent、项目扫描、配置、概览采集以及 HUD 自身显示的状态（自然语言描述），以及本版本无法识别的 Codex 响应/事件记录条数与类型名（`2 unrecognized Codex records: item_started`）。未知的**顶层**记录类型（Codex 几乎每次发版都会新增一种，0.153 是 `token_usage_record`）单独放在一条暗色备注里、写明类型名，是最先让位的行，不算告警；同一条备注在 tmux/ps/git 探测超过两秒时写 `probes slow · tmux 5.4s`，让"机器太忙导致面板陈旧"与"面板死了"区分开。尚未完成首轮的采集器保持沉默，只有跑过又停了才算告警。HUD 运行期间 `dist/` 被重新构建时，这里会出现一条暗色的 `HUD updated on disk · codex-hud --reload`——pane 里跑的永远是它启动那一刻的构建 |
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent；空闲会话还会显示上一轮耗时。被 Codex 自己以错误结束的回合（`task_complete.error`：撞上用量限额、模型满载、流中途断开）显示为 `✗ Turn failed · usage limit · after 16m17s`——给出提供方的裁决和被浪费掉的时长，绝不当作完成：2026-08-31 实测，两个活跃会话 12 个回合里有 4 个以这种方式结束（其中一个跑了 35 分钟），此前每一个都显示为 `✓ Idle · waiting for you` 并按「跑完了」发了通知。所有被包装的 shell 命令统一显示为 `exec`——同一类活动只有一个名字，无论 Codex 发来的是单条命令还是一段跑多条的脚本（包装的非 shell 工具如 `web_search`、`update_plan` 仍显示各自的名字）。`@目录` 标记只出现在跑在会话目录之外的命令上；Codex 每次调用都携带 workdir，给会话 cwd 本身打标记说不出任何信息。命令非零退出会标记为 `✗` 并显示退出码——包括 Codex 把它放在一段自身执行成功的脚本里运行的情况。stream error 只画在 Codex TUI 上、不写入会话日志，被它打断的回合会永远停在 `Thinking`；静默数分钟后 HUD 会去主 pane 查错误横幅，只有确认存在才显示 `✗ Turn likely interrupted`。Codex 自身退出（quit、崩溃或拒绝信任提示）时，wrapper 会把 pane 交还给你的 shell，而磁盘上没有任何记录说明这件事；对安静的会话，HUD 会探测主 pane 进程树里是否还有活着的 Codex（Codex 以孙进程形态运行，tmux 自己的 pane 命令始终显示为 shell），没有则显示 `○ Codex exited · run codex to restart`，不再假装在等待一个没人会输入的回合。`/new` 之后，Codex 0.149 在首条消息之前不落任何痕迹——没有 rollout、也没有会话库行——上一个会话的末状态会因此一直挂着；安静 pane 的输入区底栏若显示全新会话（`Context 100% left · Ready`），则改显 `○ New session at the prompt · binds on its first message`；该提示存在期间，上一个会话的 Context/Token 行、工具历史行连同 Session 行的 Session/CLI/Provider 三格一起转为 dim（目录与账号配额保持原色），HUD 上再没有亮色信息与 pane 自己的底栏对立 |
 | **Session** | 工作目录、Session ID、CLI 版本；排在计划和工具历史之后，小 pane 优先保留动态信息。Session ID 在行宽允许时完整显示——`codex resume`、`fork`、`archive`、`delete` 接受的正是它；pane 更窄时才回退为缩写形式 |
@@ -212,8 +193,9 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 |------|--------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD 面板位置（`top` / `bottom`） |
 | `CODEX_HUD_HEIGHT` | 自适应 `5–12` | 默认取终端高度的六分之一，也可显式指定固定行数 |
-| `CODEX_HUD_MOUSE` | `1` | 为会话启用 tmux 鼠标模式；HUD pane 自己接管点击（切换视图）和滚轮（切换详情） |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | 工具详情：`off` / `targets` / `full` |
+| `CODEX_HUD_MOUSE` | `1` | 为会话启用 tmux 鼠标模式；点击 `[view]` 切换视图；滚轮由 HUD 接收，不改变显示模式 |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 工具详情：`off` / `targets` / `full`，聚焦后按 `t` 切换 |
+| `CODEX_HUD_DETAILS` | `compact` | HUD 信息量：`compact` / `full`，聚焦后按 `d` 切换 |
 
 <details>
 <summary>全部环境变量</summary>
@@ -229,7 +211,7 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 | `CODEX_HUD_BIND_TOGGLE` | `auto` | 作用于整个 tmux server 的 `Prefix+H` HUD 切换键：未设置时只要该键未被占用就安装，`1` 总是安装，`0` 从不安装 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 首次渲染时清理 scrollback |
 | `CODEX_HUD_HISTORY_LIMIT` | `10000` | 仅 HUD pane 使用的 scrollback 行数；主 pane 保留继承值 |
-| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏目标细节，仍保留运行数量与失败结果（运行时可用 HUD 上的滚轮、`t` 键或 `codex-hud --cycle-details` 循环切换）。shell 内建命令不算命令：`ffmpeg … ; echo ; exit` 显示为 `ffmpeg` |
+| `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏目标细节，仍保留运行数量与失败结果（运行时可用 `t` 键或 `codex-hud --cycle-details` 循环切换）。shell 内建命令不算命令：`ffmpeg … ; echo ; exit` 显示为 `ffmpeg` |
 | `CODEX_HUD_MODE` | `single` | 初始显示模式：`single` 或 `overview` |
 | `CODEX_HUD_LOG_FILE` | 每用户默认路径 | 将 HUD 诊断信息（watcher/渲染/追踪错误）追加写入该文件。macOS 默认 `~/Library/Logs/codex-hud/hud.log`，其他平台为 `$XDG_STATE_HOME/codex-hud/hud.log`；设为 `off` 则丢弃 |
 | `CODEX_HUD_NO_ATTACH` | `0` | 已废弃：强制新建会话而不复用 |
@@ -289,6 +271,7 @@ npm run test:render            # 运行渲染示例
 
 | 日期 | 变更 |
 |------|------|
+| 2026-09-10 | 冷启动优先绑定真实会话；静默工作状态检查进程存活；列表共用进程快照；重启失败/启动即退出如实报错；RC 符号链接、权限和重复安装保护；默认收起静态详情，`d` 独立展开，滚轮不切换模式，标题优先于运行时长；74server 纳入 CI |
 | 2026-09-05 | rollout 变化即时上屏（fs.watch + 唤醒重排渲染 tick）；版面改为回填式行预算、环境行并入第 1 行；pane 高度跟随内容；鼠标上报（点击切视图、滚轮切详情，不再进 copy-mode 冻结）；首条提示词作会话标题上第 1 行与概览；验证安全字形集与逐帧 spinner；`Turn:` 标签；未识别记录备注写明类型；探测慢备注；命令头过滤 shell 内建；进程树与 Codex pid 缓存替代大部分 `ps`；工具完成触发 git 刷新；多 HUD 共享账号配额/git 快照；慢采集器进程内异步执行（不再有 worker isolate）；`Prefix+H` 未占用即安装；`--cycle-details`；`--list` 标注最新会话；`--doctor` 报告通知钩子 |
 | 2026-09-03 | 白名单收录 codex 0.153 的 `token_usage_record` |
 | 2026-09-02 | 回合失败相位与 `turn-failed` 通知；耗尽快照保留窗口；配额行改剩余语义；24h 基线预报放行 |

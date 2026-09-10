@@ -282,6 +282,7 @@ const render = (data) =>
       secondary: null,
     },
   };
+  process.env.CODEX_HUD_DETAILS = 'full';
   const dimmedFrame = renderHud(
     hudData({
       paneFreshSession: true,

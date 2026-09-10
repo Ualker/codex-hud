@@ -16,6 +16,7 @@ NC=$'\033[0m'
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/shell-rc.sh"
 WRAPPER_PATH="$SCRIPT_DIR/bin/codex-hud"
 INSTALL_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-install"
 SYNC_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-sync"
@@ -271,9 +272,9 @@ backup_existing_aliases() {
         info "Backed up to $BACKUP_FILE"
         
         local temp_file
-        temp_file=$(mktemp)
-        grep -Ev "^alias (codex-hud|codex|cx|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)[= ]" "$rc_file" > "$temp_file" || true
-        mv "$temp_file" "$rc_file"
+        temp_file=$(prepare_rc_temp "$rc_file") || return 1
+        awk '!/^alias (codex-hud|codex|cx|codex-resume|codex-hud-install|codex-hud-sync|codex-hud-upgrade|codex-hud-uninstall)[= ]/' "$rc_file" > "$temp_file" || { rm -f "$temp_file"; return 1; }
+        replace_rc_file "$rc_file" "$temp_file" || return 1
     fi
 }
 
@@ -304,10 +305,11 @@ write_aliases() {
 }
 
 strip_managed_aliases() {
-    local rc_file="$1"
+    local rc_file
+    rc_file=$(resolve_rc_path "$1") || return 1
     local replacement_file="${2:-}"
     local temp_file
-    temp_file=$(mktemp)
+    temp_file=$(prepare_rc_temp "$rc_file") || return 1
 
     awk \
         -v replacement="$replacement_file" \
@@ -374,13 +376,14 @@ strip_managed_aliases() {
                 emit_replacement()
             }
         }
-    ' "$rc_file" > "$temp_file"
-    mv "$temp_file" "$rc_file"
+    ' "$rc_file" > "$temp_file" || { rm -f "$temp_file"; return 1; }
+    replace_rc_file "$rc_file" "$temp_file"
 }
 
 # Add our alias to the RC file
 add_alias() {
-    local rc_file="$1"
+    local rc_file
+    rc_file=$(resolve_rc_path "$1") || return 1
     local shell_name="$2"
     
     mkdir -p "$(dirname "$rc_file")"
@@ -395,19 +398,13 @@ add_alias() {
         backup_existing_aliases "$rc_file"
     fi
 
-    if [[ "$shell_name" == "fish" ]]; then
-        # fish aliases are functions: appending them after user wrappers
-        # would override those wrappers. Refresh our aliases in place.
-        local replacement_file
-        replacement_file=$(mktemp)
-        write_aliases "$replacement_file" "$shell_name"
-        strip_managed_aliases "$rc_file" "$replacement_file"
-        rm -f "$replacement_file"
-    else
-        strip_managed_aliases "$rc_file"
-        echo "" >> "$rc_file"
-        write_aliases "$rc_file" "$shell_name"
-    fi
+    # Preserve user overrides after the managed block in every shell, and
+    # keep repeated install/sync byte-for-byte stable.
+    local replacement_file
+    replacement_file=$(mktemp) || return 1
+    write_aliases "$replacement_file" "$shell_name" || { rm -f "$replacement_file"; return 1; }
+    strip_managed_aliases "$rc_file" "$replacement_file" || { rm -f "$replacement_file"; return 1; }
+    rm -f "$replacement_file"
 
     info "Configured aliases in $rc_file"
 }

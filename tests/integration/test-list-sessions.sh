@@ -18,6 +18,7 @@ trap cleanup EXIT
 
 cat > "$FAKE_BIN_DIR/tmux" <<FAKE
 #!/usr/bin/env bash
+if [[ -n "\${STUB_QUERY_LOG:-}" ]]; then printf 'tmux %s\n' "\${1:-}" >> "\$STUB_QUERY_LOG"; fi
 cmd="\${1:-}"
 shift || true
 case "\$cmd" in
@@ -54,6 +55,7 @@ chmod +x "$FAKE_BIN_DIR/tmux"
 # sides are stubbed through ps (the full-table walk and the etime query).
 cat > "$FAKE_BIN_DIR/ps" <<FAKE
 #!/usr/bin/env bash
+if [[ -n "\${STUB_QUERY_LOG:-}" ]]; then printf 'ps %s\n' "\${1:-}" >> "\$STUB_QUERY_LOG"; fi
 case "\${1:-}" in
   -axo)
     if [[ -n "\${STUB_PS_TABLE:-}" ]]; then
@@ -107,10 +109,10 @@ assert_contains "$out" "(none)" "an empty server says so"
 sessions="codex-hud-prj-2a51592d-20260812135511-57225|%1|%2|attached
 codex-hud-api-9f3c1a20-20260812151832-33905|%3|%4|detached
 work|%9|%9|attached"
-panes="%1|live|$TEST_HOME/Desktop/prj
-%2|live|$TEST_HOME/Desktop/prj
-%3|live|/srv/api
-%4|live|/srv/api"
+panes="%1|live|4100|$TEST_HOME/Desktop/prj
+%2|live|4200|$TEST_HOME/Desktop/prj
+%3|live|4100|/srv/api
+%4|live|4100|/srv/api"
 
 out="$(run_list "$sessions" "$panes")"
 assert_contains "$out" "codex-hud-prj-2a51592d-20260812135511-57225  ~/Desktop/prj  [attached]" \
@@ -137,28 +139,28 @@ here_new="codex-hud-codex-hud-${here_hash}-20260905092810-22918"
 out="$(cd "$PWD" && run_list "$here_old|%1|%2|attached
 $here_new|%3|%4|attached
 codex-hud-api-9f3c1a20-20260812151832-33905|%5|%6|detached" \
-  "%1|live|/x
-%2|live|/x
-%3|live|/x
-%4|live|/x
-%5|live|/srv/api
-%6|live|/srv/api")"
+  "%1|live|4100|/x
+%2|live|4200|/x
+%3|live|4100|/x
+%4|live|4100|/x
+%5|live|4100|/srv/api
+%6|live|4100|/srv/api")"
 assert_contains "$out" "$here_new  /x  [attached]  (newest here" "the newest session of this directory is marked"
 assert_missing "$out" "$here_old  /x  [attached]  (newest" "the older one is not"
 assert_missing "$out" "33905  /srv/api  [detached]  (newest" "another directory's session is not"
 
 # A HUD pane that exited leaves a dead pane behind (remain-on-exit). That is
 # exactly the state where the pane looks frozen and the fix is one command.
-panes_dead="%1|live|$TEST_HOME/Desktop/prj
-%2|dead|$TEST_HOME/Desktop/prj"
+panes_dead="%1|live|4100|$TEST_HOME/Desktop/prj
+%2|dead|4200|$TEST_HOME/Desktop/prj"
 out="$(run_list "codex-hud-prj-2a51592d-20260812135511-57225|%1|%2|attached" "$panes_dead")"
 assert_contains "$out" "HUD: dead (codex-hud --reload)" "a dead HUD pane is named, with the fix"
 
 # A working directory containing the field separator must survive intact: the
 # path is the last field, so it is taken as the remainder, not as field three.
 out="$(run_list "codex-hud-prj-2a51592d-20260812135511-57225|%1|%2|attached" \
-  "%1|live|/srv/a|b/project
-%2|live|/srv/a|b/project")"
+  "%1|live|4100|/srv/a|b/project
+%2|live|4200|/srv/a|b/project")"
 assert_contains "$out" "/srv/a|b/project  [attached]" "a pipe in the path is not a split point"
 
 # A session whose options were never set (an older build, or a hand-made
@@ -174,17 +176,17 @@ assert_contains "$out" "HUD: missing" "and an unknown HUD pane is reported as su
 # build's mtime; five days of elapsed time is unambiguously older than a
 # dist built by this test run.
 session_row="codex-hud-prj-2a51592d-20260812135511-57225|%1|%2|attached"
-panes_live="%1|live|$TEST_HOME/Desktop/prj
-%2|live|$TEST_HOME/Desktop/prj"
+panes_live="%1|live|4100|$TEST_HOME/Desktop/prj
+%2|live|4200|$TEST_HOME/Desktop/prj"
 pane_pids="%1 4100
 %2 4200"
-ps_table="4200 1 node node $ROOT_DIR/dist/index.js"
+ps_table="4200 1 05-00:00:00 node node $ROOT_DIR/dist/index.js"
 
 if [[ -f "$ROOT_DIR/dist/index.js" ]]; then
-  out="$(STUB_PANE_PIDS="$pane_pids" STUB_PS_TABLE="$ps_table" STUB_ETIME="05-00:00:00"     run_list "$session_row" "$panes_live")"
+  out="$(STUB_PANE_PIDS="$pane_pids" STUB_PS_TABLE="$ps_table"     run_list "$session_row" "$panes_live")"
   assert_contains "$out" "HUD: outdated (codex-hud --reload)"     "a HUD older than the build on disk is marked stale"
 
-  out="$(STUB_PANE_PIDS="$pane_pids" STUB_PS_TABLE="$ps_table" STUB_ETIME="0:01"     run_list "$session_row" "$panes_live")"
+  out="$(STUB_PANE_PIDS="$pane_pids" STUB_PS_TABLE="${ps_table/05-00:00:00/0:01}"     run_list "$session_row" "$panes_live")"
   assert_missing "$out" "HUD: outdated"     "a HUD younger than the build is not marked"
 else
   echo "SKIP: dist/index.js missing; staleness marker cases need a build" >&2
@@ -195,4 +197,17 @@ fi
 out="$(run_list "$session_row" "$panes_live")"
 assert_missing "$out" "HUD: outdated" "an unresolvable probe never marks"
 
+# Every row shares one tmux pane snapshot and one process snapshot.
+query_log="$TEST_HOME/queries"
+STUB_QUERY_LOG="$query_log" run_list "$sessions" "$panes" >/dev/null
+[[ "$(grep -c '^tmux list-panes$' "$query_log")" == 1 ]]
+[[ "$(grep -c '^tmux list-sessions$' "$query_log")" == 1 ]]
+[[ "$(grep -c '^ps ' "$query_log")" == 1 ]]
+
+# A shell parent is supported, and unrelated Node/lookalike script names are excluded.
+out="$(STUB_PS_TABLE="4200 1 05-00:00:00 zsh /bin/zsh
+4201 4200 05-00:00:00 node node $ROOT_DIR/dist/index.js.bak
+4202 4200 05-00:00:00 node node $ROOT_DIR/dist/index.js
+4300 1 00:01 node node $ROOT_DIR/dist/index.js" run_list "$session_row" "$panes_live")"
+assert_contains "$out" "HUD: outdated" "a descendant HUD under a shell remains detectable"
 echo "test-list-sessions: PASS"

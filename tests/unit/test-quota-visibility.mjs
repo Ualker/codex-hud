@@ -136,7 +136,7 @@ const render = (data, width, maxLines) =>
 // Live state outranks a slow-moving account number. At this width the token
 // row cannot absorb the quota, so keeping it would cost a whole row.
 {
-  const width = 100;
+  const width = 50;
   const busy = render(busySession(limits(47)), width, 7);
   assert.ok(busy.length <= 7);
   assert.equal(

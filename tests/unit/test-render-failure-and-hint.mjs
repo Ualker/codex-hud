@@ -126,7 +126,7 @@ const hintBody = `
     /\[view\]/,
     'without a global binding the hint teaches the click'
   );
-  assert.match(text, /wheel: details/, 'and the wheel');
+  assert.match(text, /t tools · d details/, 'and the separate details controls');
 }
 
 {
@@ -140,7 +140,7 @@ const hintBody = `
     false,
     'and the focus-first key path is no longer the headline'
   );
-  assert.match(text, /wheel: details/, 'the wheel still cycles details');
+  assert.match(text, /t tools · d details/, 'focused keys control tool and HUD details');
 }
 
 // A busy overview has room for the button but not the full hint. Its exact

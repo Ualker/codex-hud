@@ -182,10 +182,12 @@ const render = (data, maxLines) =>
     'the call in flight survives'
   );
 
-  // Static inventory lives in full details; the extra row keeps session identity.
   const taller = render(makeData({ agentCount: 2, planSteps: 7 }), 8);
-  assert.ok(!taller.some((line) => /MCP:|Skills:|Hooks:/.test(line)), 'default view omits static inventory');
-  assert.ok(taller.some((line) => line.startsWith('Dir: ')));
+  assert.ok(!taller.some((line) => /MCP:|Skills:|Hooks:|Dir:/.test(line)), 'default view omits static inventory and identity');
+  process.env.CODEX_HUD_DETAILS = 'full';
+  const detailed = render(makeData({ agentCount: 2, planSteps: 7 }), 12);
+  assert.ok(detailed.some((line) => line.startsWith('Dir: ')));
+  delete process.env.CODEX_HUD_DETAILS;
 
   // Agents outrank the turn row: with three of them the frame fills all
   // seven rows instead of collapsing to six with one blank.
