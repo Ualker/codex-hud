@@ -1,10 +1,9 @@
 /**
  * Header line renderer
- * Phase 3: Redesigned to match claude-hud layout
  * 
  * Layout:
- * Row 1: [Model] | project-name git:(branch *) | up 10m
- * Row 2: [FULL ACCESS] | Approval | Sandbox | Fast | inventory
+ * Row 1: project-name git:(branch *)  model effort  title  up 10m
+ * Row 2: permissions and Fast mode (inventory in full details)
  * Row 3: collector/protocol health warnings when needed
  * Row 4: context remaining, token counts and rate-limit pressure
  * Row 5+: live turn/tool/agent activity, session diagnostics, then plan/history
@@ -22,7 +21,9 @@ import {
   colors,
   theme,
   icons,
+  inlineSeparator,
   remainingBar,
+  getContextColor,
   padEnd,
   sanitizeTerminalText,
   stripAnsi,
@@ -178,7 +179,7 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
 const SESSION_TITLE_WIDTH = 32;
 
 /**
- * The session's first prompt, dim and quoted. Two sessions open in the same
+ * The session's first prompt, visually secondary. Two sessions open in the same
  * project rendered identical headers (measured live: both read `prj`) and the
  * only distinguishing cell was the session id on the last row, which is the
  * first row to go.
@@ -191,7 +192,7 @@ function renderSessionTitleCell(title: string | undefined): string | null {
   if (!clean) {
     return null;
   }
-  return colors.dim(`"${truncate(clean, SESSION_TITLE_WIDTH)}"`);
+  return colors.dim(truncate(clean, SESSION_TITLE_WIDTH));
 }
 
 /** Cells joining the environment content to row 1 when it rides there. */
@@ -204,38 +205,56 @@ function renderExpandedLayout(
   maxLines: number = Number.POSITIVE_INFINITY,
   reservedRow1Width: number = 0
 ): string[] {
-  const separator = layout.showSeparators ? theme.separator(' │ ') : ' ';
+  const separator = layout.showSeparators ? inlineSeparator() : '  ';
+  // The small view button stays reachable even with a long project/model.
+  // The longer teaching hint uses spare space without evicting the title.
+  const headingWidth = Math.max(1, width - Math.min(7, reservedRow1Width));
 
-  // Row 1: Identity | Project | Title | Duration | suffix. Cells yield from
+  // Row 1: Project, model, title, duration and permissions. Cells yield from
   // the right when the row does not fit: the title first, then the uptime,
   // and finally the project shrinks its branch.
-  const identityLine = renderIdentityLine(data, layout, { maxWidth: width, showContext: false });
+  const identityLine = renderIdentityLine(data, layout, {
+    maxWidth: headingWidth, showContext: false, framed: false,
+  });
   const titleCell = renderSessionTitleCell(data.session?.title);
   const buildRow1 = (suffix: string | null): string => {
-    const projectLine = renderProjectLine(data);
+    const projectLine = renderProjectLine(data, { includeFileStats: toolDetailsMode() === 'full' });
     const usageLine = renderUsageLine(data, layout);
     const attempts: (string | null)[][] = [
-      [identityLine, projectLine, titleCell, usageLine, suffix],
-      [identityLine, projectLine, usageLine, suffix],
-      [identityLine, projectLine, suffix],
+      [projectLine, identityLine, titleCell, usageLine, suffix],
+      [projectLine, identityLine, usageLine, suffix],
+      [projectLine, identityLine, suffix],
     ];
     for (const attempt of attempts) {
       const row = attempt
         .filter((part): part is string => Boolean(part))
         .join(separator);
-      if (visualLength(row) <= width) {
+      if (visualLength(row) <= headingWidth) {
         return row;
       }
     }
-    const reserved =
-      visualLength(identityLine) +
-      visualLength(separator) +
-      (suffix ? visualLength(suffix) + visualLength(separator) : 0);
+    const gap = visualLength(separator);
+    const contentWidth = Math.max(0,
+      headingWidth - (suffix ? visualLength(suffix) + gap : 0));
+    if (contentWidth === 0) return truncateAnsi(suffix ?? '', headingWidth);
+    const projectMinimum = Math.min(
+      visualLength(sanitizeTerminalText(data.project.projectName)),
+      12,
+      Math.max(0, contentWidth - gap - 8)
+    );
+    const shrunkIdentity = renderIdentityLine(data, layout, {
+      maxWidth: Math.max(1, contentWidth - (projectMinimum ? projectMinimum + gap : 0)),
+      showContext: false,
+      framed: false,
+    });
     const shrunkProject = renderProjectLine(data, {
       includeFileStats: false,
-      maxWidth: Math.max(0, width - reserved),
+      maxWidth: Math.max(0, contentWidth - visualLength(shrunkIdentity) - gap),
     });
-    return [identityLine, shrunkProject, ...(suffix ? [suffix] : [])].join(separator);
+    return truncateAnsi(
+      [shrunkProject, shrunkIdentity, suffix].filter(Boolean).join(separator),
+      headingWidth
+    );
   };
 
   const envOptions = { compact: toolDetailsMode() !== 'full' };
@@ -315,7 +334,7 @@ function renderExpandedLayout(
   const buildUsageRows = (rateLimitLine: string | null): string[] => {
     const rows: string[] = [];
     if (tokenLine) {
-      const usageSeparator = ` ${colors.dim(icons.pipe)} `;
+      const usageSeparator = inlineSeparator();
       let displayedTokenLine = tokenLine;
       let combined = rateLimitLine
         ? `${displayedTokenLine}${usageSeparator}${rateLimitLine}`
@@ -447,7 +466,7 @@ function renderExpandedLayout(
     // fits; otherwise only the sandbox badge moves up, so the permission mode
     // never disappears with the row.
     const movedAccessBadge = fullAccess
-      ? theme.error('[FULL ACCESS]')
+      ? theme.warning('[FULL ACCESS]')
       : accessUnknown
         ? colors.dim('[ACCESS ?]')
         : null;
@@ -746,7 +765,7 @@ function renderOverviewLayout(
       case 'exited':
         return colors.dim('Exited');
       case 'idle':
-        return theme.success('Idle');
+        return colors.dim('Idle');
       default:
         return colors.dim('Unknown');
     }
@@ -775,7 +794,9 @@ function renderOverviewLayout(
   const compactColumns = width < 72;
   const contextText = (session: SessionOverviewItem): string => {
     const ctx = session.freshPrompt || session.unavailable ? undefined : session.contextUsage;
-    return ctx ? `${100 - ctx.percent}%${compactColumns ? '' : ' left'}` : colors.dim('--');
+    return ctx
+      ? getContextColor(ctx.percent)(`${Math.max(0, 100 - ctx.percent)}%${compactColumns ? '' : ' left'}`)
+      : colors.dim('--');
   };
   let ctxDisplays = overview.sessions.map(contextText);
   let ctxColumnWidth = Math.max(...ctxDisplays.map(visualLength));
@@ -806,7 +827,7 @@ function renderOverviewLayout(
   // fixed cells leave over: shown only while the address keeps its minimum.
   const titleDisplays = overview.sessions.map((session) =>
     session.title
-      ? colors.dim(
+      ? theme.value(
           truncate(sanitizeTerminalText(session.title), OVERVIEW_TITLE_WIDTH)
         )
       : ''
@@ -815,7 +836,7 @@ function renderOverviewLayout(
     0,
     ...titleDisplays.map((display) => visualLength(display))
   );
-  const columnSeparator = compactColumns ? ' ' : ` ${colors.dim('│')} `;
+  const columnSeparator = compactColumns ? ' ' : '  ';
   const separatorWidth = visualLength(columnSeparator);
   const markerWidth = 2;
   // Identity, phase and remaining context get a budget before decoration.
@@ -855,7 +876,9 @@ function renderOverviewLayout(
 
   const rows = overview.sessions.map((session, index) => {
     const parts = [
-      padEnd(theme.projectName(truncate(projectNames[index], projectColumnWidth)), projectColumnWidth),
+      padEnd((session.id === data.overviewSelfSessionId ? theme.projectName : theme.value)(
+        truncate(projectNames[index], projectColumnWidth)
+      ), projectColumnWidth),
       ...(titleColumnWidth ? [padEnd(truncateAnsi(titleDisplays[index], titleColumnWidth), titleColumnWidth)] : []),
       ...(showModel ? [padEnd(modelDisplays[index], modelColumnWidth)] : []),
       padEnd(phaseLabels[index], phaseColumnWidth),
@@ -927,7 +950,7 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
     return renderOverviewLayout(
       data,
       layout,
-      options.width,
+      Math.max(1, options.width - Math.min(7, options.reservedRow1Width ?? 0)),
       options.maxLines ?? Number.POSITIVE_INFINITY
     );
   }

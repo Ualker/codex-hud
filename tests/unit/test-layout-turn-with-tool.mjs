@@ -182,9 +182,9 @@ const render = (data, maxLines) =>
     'the call in flight survives'
   );
 
-  // Compact inventory fits inline, leaving the extra row for session identity.
+  // Static inventory lives in full details; the extra row keeps session identity.
   const taller = render(makeData({ agentCount: 2, planSteps: 7 }), 8);
-  assert.ok(taller.some((line) => line.includes('MCP:')), 'compact inventory remains visible');
+  assert.ok(!taller.some((line) => /MCP:|Skills:|Hooks:/.test(line)), 'default view omits static inventory');
   assert.ok(taller.some((line) => line.startsWith('Dir: ')));
 
   // Agents outrank the turn row: with three of them the frame fills all

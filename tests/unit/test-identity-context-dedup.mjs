@@ -111,7 +111,7 @@ const expandedLines = renderHud(baseData, {
 
 assert.ok(expandedLines.length >= 2, 'expanded layout should produce multiple rows');
 const expandedRow1 = expandedLines[0];
-assert.match(expandedRow1, /\[gpt-5\.4 high\]/, 'expanded Row 1 still shows model and effort');
+assert.match(expandedRow1, /\bgpt-5\.4 high\b/, 'expanded Row 1 still shows model and effort');
 assert.doesNotMatch(expandedRow1, BAR_CHARS, 'expanded Row 1 must not render the redundant context bar');
 assert.doesNotMatch(expandedRow1, /\d+%/, 'expanded Row 1 must not render the redundant context percentage');
 

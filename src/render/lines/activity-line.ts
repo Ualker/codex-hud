@@ -8,6 +8,8 @@ import {
   theme,
   colors,
   remainingBar,
+  getContextColor,
+  inlineSeparator,
   icons,
   getSpinnerFrame,
   sanitizeTerminalText,
@@ -398,7 +400,7 @@ function turnPhasePresentation(
       return {
         label: 'Idle · waiting for you',
         icon: icons.check,
-        color: theme.success,
+        color: theme.value,
       };
   }
 }
@@ -712,7 +714,7 @@ export function renderRateLimitLine(
       );
     }
   }
-  return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
+  return truncateAnsi(parts.join(inlineSeparator()), width);
 }
 
 /**
@@ -966,13 +968,18 @@ function renderToolCallDetail(
       : status === 'yielded'
         ? icons.refresh
         : icons.check;
-  const colorFn = status === 'running' || status === 'yielded'
+  const statusColor = status === 'running' || status === 'yielded'
     ? theme.toolRunning
     : status === 'error'
       ? theme.error
-      : theme.success;
+      : theme.toolCompleted;
 
   const prefix = `${icon} ${call.name}`;
+  // The active marker/name is accented; the command itself uses the normal
+  // foreground. Completed history recedes and failed calls keep their alert.
+  const colorFn = (plain: string): string => status === 'running' && plain.startsWith(prefix)
+    ? (paused ? theme.warning : statusColor)(prefix) + plain.slice(prefix.length)
+    : statusColor(plain);
   const detailsMode = toolDetailsMode();
   const executionTool = isExecutionTool(call.name);
   // In `targets` mode execution tools show only a command head (`npm test`,
@@ -1095,7 +1102,7 @@ function renderToolGroup(group: ToolCallGroup): string {
     ? theme.error
     : group.status === 'yielded'
       ? theme.toolRunning
-      : theme.success;
+      : theme.toolCompleted;
   const count = group.count > 1 ? ` ${icons.multiply}${group.count}` : '';
   const detail = group.detail ? ` (${truncate(group.detail, 24)})` : '';
   return colorFn(`${icon} ${group.name}${count}`) + (detail ? colors.dim(detail) : '');
@@ -1110,7 +1117,7 @@ function joinToolParts(
     return null;
   }
 
-  const separator = ` ${colors.dim(icons.pipe)} `;
+  const separator = inlineSeparator();
   if (!Number.isFinite(width)) {
     return [...parts, ...(totalPart ? [totalPart] : [])].join(separator);
   }
@@ -1167,6 +1174,7 @@ export function renderToolsLine(
   const parts: string[] = [];
   
   // Currently running tool (if any)
+  const runningColor = paused ? theme.warning : theme.toolRunning;
   const running = toolActivity.runningCalls ?? toolActivity.recentCalls.filter(c => c.status === 'running');
   const current = running.length > 0 ? running[running.length - 1] : undefined;
   const finishedCalls = toolActivity.recentCalls.filter(
@@ -1184,7 +1192,7 @@ export function renderToolsLine(
   if (toolDetailsMode() === 'off') {
     const failure = reversedFinished.find((call) => call.status === 'error');
     const summary = running.length
-      ? theme.toolRunning(`${paused ? icons.pause : getSpinnerFrame()} ${running.length} ${running.length === 1 ? 'tool' : 'tools'} ${paused ? 'paused' : 'running'}`)
+      ? runningColor(`${paused ? icons.pause : getSpinnerFrame()} ${running.length} ${running.length === 1 ? 'tool' : 'tools'} ${paused ? 'paused' : 'running'}`)
       : null;
     return joinToolParts([
       ...(summary ? [summary] : []),
@@ -1192,7 +1200,7 @@ export function renderToolsLine(
     ], null, width);
   }
   if (running.length > 1) {
-    const summary = theme.toolRunning(`${paused ? icons.pause : getSpinnerFrame()} ${running.length} tools ${paused ? 'paused' : 'running'}`);
+    const summary = runningColor(`${paused ? icons.pause : getSpinnerFrame()} ${running.length} tools ${paused ? 'paused' : 'running'}`);
     const failure = reversedFinished.find((call) => call.status === 'error');
     const detailCount = !Number.isFinite(width) || width >= 100 ? 2 : 1;
     const budget = Number.isFinite(width)
@@ -1340,7 +1348,7 @@ export function renderTodosLine(
     return null;
   }
 
-  return truncateAnsi(parts.join(` ${colors.dim(icons.pipe)} `), width);
+  return truncateAnsi(parts.join(inlineSeparator()), width);
 }
 
 /**
@@ -1384,7 +1392,11 @@ export function renderTokenLine(
   let tokensPart: string | null = null;
   let breakdownPart: string | null = null;
   let totalPart: string | null = null;
-  let compactPart: string | null = null;
+  const ctx = data.contextUsage;
+  const compactPart = ctx?.compactCount && ctx.compactCount > 0
+    ? colors.bold(`${icons.refresh}${atLeast}${ctx.compactCount}`)
+    : null;
+  const tokenSeparator = inlineSeparator();
 
   // The gauge scales with the pane: a fixed twelve cells alone pushed this row
   // past a 45-column pane, where it is the row that matters most.
@@ -1392,35 +1404,29 @@ export function renderTokenLine(
     ? Math.max(4, Math.min(12, Math.floor(width / 8)))
     : 12;
 
-  // Context leads the row so the capacity signal survives narrow terminals.
-  const ctx = data.contextUsage;
+  // Protect the numeric capacity and compact count before spending cells on
+  // the bar or the equivalent token count. This also works on 24-40 columns.
+  const contextCell = (percent: number, remainingTokens: number): string => {
+    const percentDisplay = getContextColor(percent)(`${Math.max(0, 100 - percent)}% left`);
+    const label = colors.dim('Ctx: ');
+    const bar = remainingBar(percent, barWidth);
+    const candidates = [
+      `${label}${bar} ${percentDisplay} ${colors.dim(`(${formatTokenCount(remainingTokens)})`)}`,
+      `${label}${bar} ${percentDisplay}`,
+      `${label}${remainingBar(percent, 4)} ${percentDisplay}`,
+      `${label}${percentDisplay}`,
+    ];
+    const available = width - (compactPart ? visualLength(compactPart) + visualLength(tokenSeparator) : 0);
+    return candidates.find((candidate) => visualLength(candidate) <= available) ?? candidates[candidates.length - 1];
+  };
+
   if (ctx) {
-    const bar = remainingBar(ctx.percent, barWidth);
-    const remainingPercent = Math.max(0, 100 - ctx.percent);
-    const remainingTokens = Math.max(0, ctx.total - ctx.used);
-    const percentDisplay = ctx.percent >= 85
-      ? theme.error(`${remainingPercent}% left`)
-      : ctx.percent >= 70
-        ? theme.warning(`${remainingPercent}% left`)
-        : theme.success(`${remainingPercent}% left`);
-    parts.unshift(
-      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(remainingTokens)})`
-    );
+    parts.unshift(contextCell(ctx.percent, Math.max(0, ctx.total - ctx.used)));
   } else if (data.tokenUsage?.model_context_window && usage) {
     const total = data.tokenUsage.model_context_window;
     const totalTokens = usage.total_tokens ?? 0;
     const percent = total > 0 ? Math.round((totalTokens / total) * 100) : 0;
-    const remainingPercent = Math.max(0, 100 - percent);
-    const remainingTokens = Math.max(0, total - totalTokens);
-    const bar = remainingBar(percent, barWidth);
-    const percentDisplay = percent >= 85
-      ? theme.error(`${remainingPercent}% left`)
-      : percent >= 70
-        ? theme.warning(`${remainingPercent}% left`)
-        : theme.success(`${remainingPercent}% left`);
-    parts.unshift(
-      `Ctx: ${bar} ${percentDisplay} (${formatTokenCount(remainingTokens)})`
-    );
+    parts.unshift(contextCell(percent, Math.max(0, total - totalTokens)));
   }
 
   // Token counts section
@@ -1430,9 +1436,8 @@ export function renderTokenLine(
 
     // A user turn can contain many model requests. last_token_usage is only
     // the latest request, never the aggregate spend of that user turn.
-    tokensPart = theme.tokenCount(
-      `${data.tokenUsage?.last_token_usage ? 'Last call' : 'Total'}: ${formatTokenCount(usage.total_tokens ?? 0)}`
-    );
+    tokensPart = colors.dim(`${data.tokenUsage?.last_token_usage ? 'Last call' : 'Total'}: `) +
+      theme.tokenCount(formatTokenCount(usage.total_tokens ?? 0));
     parts.push(tokensPart);
 
     const breakdown: string[] = [];
@@ -1467,8 +1472,7 @@ export function renderTokenLine(
     parts.push(totalPart);
   }
 
-  if (ctx?.compactCount && ctx.compactCount > 0) {
-    compactPart = colors.dim(`${icons.refresh}${atLeast}${ctx.compactCount}`);
+  if (compactPart) {
     parts.push(compactPart);
   }
 
@@ -1476,8 +1480,6 @@ export function renderTokenLine(
     return null;
   }
 
-  // Dim pipes match every other row's separator style.
-  const tokenSeparator = ` ${colors.dim(icons.pipe)} `;
   const optional = [compactPart, totalPart, tokensPart, breakdownPart];
   const selected = parts.filter((part) => !optional.includes(part));
   // Fill by value, reconsidering every cell after a larger one fails to
@@ -1558,7 +1560,7 @@ function buildSessionDetailParts(
     const id = sanitizeTerminalText(session.id);
     sessionPart = staleCell(
       colors.dim('Session: ') +
-        theme.info(abbreviateSessionId ? formatSessionId(id) : id)
+        colors.dim(abbreviateSessionId ? formatSessionId(id) : id)
     );
     optionalParts.push(sessionPart);
   }
@@ -1584,7 +1586,7 @@ function buildSessionDetailParts(
     return null;
   }
 
-  const separator = ` ${colors.dim(icons.pipe)} `;
+  const separator = inlineSeparator();
   if (!Number.isFinite(width)) {
     return optionalParts.join(separator);
   }

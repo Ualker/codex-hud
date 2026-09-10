@@ -49,7 +49,7 @@ function renderContextBreakdown(context: ContextUsage): string {
 export function renderIdentityLine(
   data: HudData,
   layout: LayoutConfig,
-  options: { maxWidth?: number; showContext?: boolean } = {}
+  options: { maxWidth?: number; showContext?: boolean; framed?: boolean } = {}
 ): string {
   const parts: string[] = [];
 
@@ -134,17 +134,22 @@ export function renderIdentityLine(
   }
 
   const maxWidth = options.maxWidth;
-  let modelDisplay = theme.modelBracket('[') + theme.model(identityName) + theme.modelBracket(']');
+  const framed = options.framed !== false;
+  const modelOverhead = framed ? 2 : 0;
+  const formatModel = (name: string): string => framed
+    ? theme.modelBracket('[') + theme.model(name) + theme.modelBracket(']')
+    : theme.model(name);
+  let modelDisplay = formatModel(identityName);
   if (maxWidth && maxWidth > 0) {
     const contextLen = contextDisplay ? visualLength(contextDisplay) + 1 : 0;
     const availableForModel = Math.max(0, maxWidth - contextLen);
-    if (availableForModel <= 2 && contextDisplay) {
+    if (availableForModel <= modelOverhead && contextDisplay) {
       return truncateAnsi(contextDisplay, maxWidth);
     }
-    if (availableForModel > 2) {
-      const maxModelLen = Math.max(1, availableForModel - 2);
+    if (availableForModel > modelOverhead) {
+      const maxModelLen = Math.max(1, availableForModel - modelOverhead);
       const trimmedModel = truncate(identityName, maxModelLen, '…');
-      modelDisplay = theme.modelBracket('[') + theme.model(trimmedModel) + theme.modelBracket(']');
+      modelDisplay = formatModel(trimmedModel);
     }
   }
 
