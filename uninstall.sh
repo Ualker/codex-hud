@@ -16,6 +16,7 @@ NC='\033[0m'
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/shell-rc.sh"
 WRAPPER_PATH="$SCRIPT_DIR/bin/codex-hud"
 INSTALL_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-install"
 SYNC_CMD_PATH="$SCRIPT_DIR/bin/codex-hud-sync"
@@ -94,9 +95,10 @@ get_rc_file() {
 }
 
 strip_managed_aliases() {
-    local rc_file="$1"
+    local rc_file
+    rc_file=$(resolve_rc_path "$1") || return 1
     local temp_file
-    temp_file=$(mktemp)
+    temp_file=$(prepare_rc_temp "$rc_file") || return 1
 
     awk \
         -v marker="$MARKER" \
@@ -144,8 +146,8 @@ strip_managed_aliases() {
         {
             print
         }
-    ' "$rc_file" > "$temp_file"
-    mv "$temp_file" "$rc_file"
+    ' "$rc_file" > "$temp_file" || { rm -f "$temp_file"; return 1; }
+    replace_rc_file "$rc_file" "$temp_file"
 }
 
 # Remove our alias from RC file
@@ -243,19 +245,20 @@ cleanup_fish() {
 
 # Clean up bash_profile load block
 cleanup_bash_loader() {
-    local bash_profile="$HOME/.bash_profile"
+    local bash_profile
+    bash_profile=$(resolve_rc_path "$HOME/.bash_profile") || return 1
     if [[ -f "$bash_profile" ]]; then
         if grep -q "$SOURCE_MARKER" "$bash_profile" 2>/dev/null; then
             step "Cleaning up bash profile configuration..."
             local temp_file
-            temp_file=$(mktemp)
+            temp_file=$(prepare_rc_temp "$bash_profile") || return 1
             awk -v marker="$SOURCE_MARKER" '
                 BEGIN { skip_lines = 0 }
                 $0 ~ marker { skip_lines = 4 }
                 skip_lines > 0 { skip_lines--; next }
                 { print }
-            ' "$bash_profile" > "$temp_file"
-            mv "$temp_file" "$bash_profile"
+            ' "$bash_profile" > "$temp_file" || { rm -f "$temp_file"; return 1; }
+            replace_rc_file "$bash_profile" "$temp_file" || return 1
             info "Removed bashrc loader block from $bash_profile"
         fi
     fi

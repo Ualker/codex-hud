@@ -15,7 +15,7 @@
 
 ## Windows WSL 지원
 
-Windows 지원은 Ubuntu WSL을 통해 `feature/windows-support-dual-entry` branch에서 제공됩니다. macOS/Linux 사용자는 `main`을, Windows (WSL) 사용자는 해당 feature branch를 사용하세요.
+Windows 지원은 Ubuntu WSL을 통해 `feature/windows-support-dual-entry` branch에서 제공됩니다. macOS/Linux 사용자는 `integrate/upstream-main-20260714`을, Windows (WSL) 사용자는 해당 feature branch를 사용하세요.
 
 > Claude Code의 [claude-hud](https://github.com/jarrodwatts/claude-hud)에서 영감을 받았습니다.
 
@@ -45,19 +45,18 @@ Windows 지원은 Ubuntu WSL을 통해 `feature/windows-support-dual-entry` bran
 
 ## 빠른 시작
 
-### macOS/Linux (`main`)
+### macOS/Linux (this fork)
 
 ```bash
-git clone https://github.com/fwyc0573/codex-hud.git
+git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
 cd codex-hud
-git switch main
 ./bin/codex-hud-install
 
 # 셸을 새로고침한 후 입력:
 codex
 ```
 
-### Windows (WSL) (`feature/windows-support-dual-entry`)
+### Windows (WSL) — upstream / legacy (`feature/windows-support-dual-entry`)
 
 ```powershell
 git clone https://github.com/fwyc0573/codex-hud.git

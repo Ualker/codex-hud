@@ -1,33 +1,7 @@
 # [中] HUD 切换快捷键以全局方式绑定
 
-## 概要
-`tmux bind-key -T prefix H` 未指定目标 session，导致绑定为全局，可能覆盖用户已有的 `Prefix+H` 绑定，并在 codex-hud 退出后仍然生效。
+当前状态：已缓解。tmux 的 prefix key table 仍然属于 server；当前 wrapper 默认 `CODEX_HUD_BIND_TOGGLE=auto`，仅在 `Prefix+H` 没有被占用时安装切换命令，保留已有用户绑定。`0` 禁用安装，`1` 显式允许覆盖。提示行反映本会话实际安装成功的快捷键；也可点击 `[view]` 或执行 `codex-hud --toggle-mode`。
 
-## 影响
-- 影响用户全局 tmux 快捷键行为。
-- 难以定位来源，需手动解绑或重启 tmux server。
+2026-01-30 曾尝试 `bind-key -t "$SESSION_NAME"`，但 tmux 3.5a 的 `bind-key` 不支持该参数，因此没有采用 session 级绑定。2026-08-04 的默认值曾为 `0`；该历史值不代表当前行为。
 
-## 位置
-- `bin/codex-hud:468`
-
-## 复现步骤
-1. 在 tmux 中配置自定义 `Prefix+H`。
-2. 运行 `codex-hud`。
-3. 观察全局绑定被覆盖。
-
-## 预期结果
-绑定仅对当前 session 生效，退出后不影响其它会话。
-
-## 实际结果
-全局绑定被覆盖。
-
-## 修复建议
-- 使用 `tmux bind-key -T prefix -t "$SESSION_NAME"` 进行 session 级绑定。
-- 或在退出时恢复旧绑定。
-
-## 修复记录
-- 状态：待修复
-- 修复人：codex
-- 修复时间：2026-01-30
-- 变更说明：尝试改为 session 级绑定 `bind-key -t "$SESSION_NAME"`，但 tmux 3.5a 不支持 `-t`，已回退为全局绑定，问题仍存在。
-- 验证方式：已执行（tmux 3.5a 独立 server；先绑定 `Prefix+H` 为自定义，再执行全局 `bind-key -T prefix H`，观察绑定被覆盖，确认仍为全局副作用）。
+实现：`bin/codex-hud` 中的 `resolve_bind_toggle` / `prefix_h_is_free`。回归入口：`tests/integration/test-wrapper-toggle-binding.sh`，覆盖已有用户绑定、自动安装、显式强制/禁用及安装失败时的提示。

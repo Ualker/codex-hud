@@ -29,6 +29,7 @@ import type {
   RateLimitWindow,
   TurnActivity,
 } from '../../types.js';
+import { hudDetailsExpanded } from '../detail-level.js';
 import { isExecutionTool } from '../../utils/tool-names.js';
 import { extractCommandHead } from '../../utils/command-head.js';
 import {
@@ -70,7 +71,7 @@ let modeNoticeUntilMs = 0;
 
 /**
  * Cycle targets -> full -> off -> targets at runtime (backwards with
- * `step = -1`, which is what the wheel's other direction does). Returns the
+ * `step = -1`). Returns the
  * new mode.
  */
 export function cycleToolDetailsMode(
@@ -1429,8 +1430,9 @@ export function renderTokenLine(
     parts.unshift(contextCell(percent, Math.max(0, total - totalTokens)));
   }
 
-  // Token counts section
-  if (usage) {
+  // A compact HUD keeps capacity; full details expose per-call and total spend.
+  const showTokenDetails = hudDetailsExpanded() || parts.length === 0;
+  if (usage && showTokenDetails) {
     const cachedInput = usage.cached_input_tokens ?? 0;
     const nonCachedInput = Math.max(0, (usage.input_tokens ?? 0) - cachedInput);
 
@@ -1462,7 +1464,7 @@ export function renderTokenLine(
   // "7d limit 84%" with no way to see what had been burned to get there.
   const sessionTotal = data.tokenUsage?.total_token_usage?.total_tokens;
   if (
-    data.tokenUsage?.last_token_usage &&
+    showTokenDetails && data.tokenUsage?.last_token_usage &&
     sessionTotal !== undefined &&
     sessionTotal > (usage?.total_tokens ?? 0)
   ) {
@@ -1485,7 +1487,7 @@ export function renderTokenLine(
   // Fill by value, reconsidering every cell after a larger one fails to
   // fit. A compact count is short and must survive quota-row compression.
   for (const part of optional) {
-    if (!part || (part === breakdownPart && (toolDetailsMode() !== 'full' || !tokensPart || !selected.includes(tokensPart)))) continue;
+    if (!part || (part === breakdownPart && (!hudDetailsExpanded() || !tokensPart || !selected.includes(tokensPart)))) continue;
     const candidate = [...selected, part].join(tokenSeparator);
     if (!Number.isFinite(width) || visualLength(candidate) <= width) selected.push(part);
   }

@@ -15,7 +15,7 @@
 | 011 | Session Timer 使用 HUD 启动时间导致 resume 显示不准 | 低 | 已修复（2026-01-30 修复，索引 2026-08-04 对齐） | docs/issues/issue-011-session-timer-uses-hud-start.md |
 | 012 | macOS `md5` 输出解析错误导致 session hash 恒定 | 中 | 已修复 | docs/issues/issue-012-macos-md5-parse-wrong.md |
 | 013 | 工作目录包含单引号时启动命令失败 | 中 | 已修复 | docs/issues/issue-013-cwd-quote-breaks-command.md |
-| 014 | HUD 切换快捷键以全局方式绑定 | 中 | 已缓解（默认 CODEX_HUD_BIND_TOGGLE=0 不安装全局绑定，2026-08-04 标注） | docs/issues/issue-014-tmux-bind-key-global.md |
+| 014 | HUD 切换快捷键以全局方式绑定 | 中 | 已缓解（默认 auto 仅在键未占用时安装；0 禁用，1 显式覆盖） | docs/issues/issue-014-tmux-bind-key-global.md |
 | 015 | tmux 选项使用 -g 全局设置导致副作用 | 中 | 已修复 | docs/issues/issue-015-tmux-options-global-side-effects.md |
 | 016 | HUD 宽度自适应增高无效且扰乱固定高度预期 | 低 | 已修复 | docs/issues/issue-016-hud-auto-height-width-expansion.md |
 | 017 | parse-queue 一次 reject 后永久卡死 | 高 | 已修复 | docs/issues/issue-017-parse-queue-rejection-wedge.md |

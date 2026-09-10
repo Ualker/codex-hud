@@ -2,11 +2,11 @@
  * Header line renderer
  * 
  * Layout:
- * Row 1: project-name git:(branch *)  model effort  title  up 10m
+ * Row 1: project-name git:(branch *)  model effort  title  [view]
  * Row 2: permissions and Fast mode (inventory in full details)
  * Row 3: collector/protocol health warnings when needed
- * Row 4: context remaining, token counts and rate-limit pressure
- * Row 5+: live turn/tool/agent activity, session diagnostics, then plan/history
+ * Row 4: context remaining, compactions and rate-limit pressure
+ * Row 5+: live turn/tool/agent activity and plan; diagnostics/history in full details
  */
 
 import type {
@@ -49,8 +49,8 @@ import {
   renderAgentSummaryLine,
   renderBindingHintLine,
   renderToolDetailsNotice,
-  toolDetailsMode,
 } from './lines/index.js';
+import { hudDetailsExpanded } from './detail-level.js';
 import { formatCompactAge } from '../utils/format-age.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
@@ -184,15 +184,21 @@ const SESSION_TITLE_WIDTH = 32;
  * only distinguishing cell was the session id on the last row, which is the
  * first row to go.
  */
-function renderSessionTitleCell(title: string | undefined): string | null {
+function renderSessionTitleCell(title: string | undefined, maxWidth: number, cwd: string): string | null {
   if (!title) {
     return null;
   }
-  const clean = sanitizeTerminalText(title);
+  let clean = sanitizeTerminalText(title);
+  // Prompts often start with the current absolute path. The project is
+  // already named beside the title, so spend the title budget on the task.
+  const prefix = sanitizeTerminalText(cwd);
+  if (prefix && clean.startsWith(prefix) && /^(?:[\s,，:：]|$)/.test(clean.slice(prefix.length))) {
+    clean = clean.slice(prefix.length).replace(/^[\s,，:：]+/, '');
+  }
   if (!clean) {
     return null;
   }
-  return colors.dim(truncate(clean, SESSION_TITLE_WIDTH));
+  return colors.dim(truncate(clean, Math.min(SESSION_TITLE_WIDTH, maxWidth)));
 }
 
 /** Cells joining the environment content to row 1 when it rides there. */
@@ -210,29 +216,35 @@ function renderExpandedLayout(
   // The longer teaching hint uses spare space without evicting the title.
   const headingWidth = Math.max(1, width - Math.min(7, reservedRow1Width));
 
-  // Row 1: Project, model, title, duration and permissions. Cells yield from
-  // the right when the row does not fit: the title first, then the uptime,
-  // and finally the project shrinks its branch.
+  const fullDetails = hudDetailsExpanded();
+  // Retain useful title text before uptime or a long branch. Variable cells
+  // use the remaining budget instead of disappearing as one whole cell.
   const identityLine = renderIdentityLine(data, layout, {
     maxWidth: headingWidth, showContext: false, framed: false,
   });
-  const titleCell = renderSessionTitleCell(data.session?.title);
+  const title = (budget: number): string | null => renderSessionTitleCell(
+    data.session?.title, budget, data.session?.cwd ?? data.project.cwd
+  );
   const buildRow1 = (suffix: string | null): string => {
-    const projectLine = renderProjectLine(data, { includeFileStats: toolDetailsMode() === 'full' });
+    const join = (parts: (string | null)[]): string => parts.filter(Boolean).join(separator);
+    const projectLine = renderProjectLine(data, { includeFileStats: fullDetails });
     const usageLine = renderUsageLine(data, layout);
-    const attempts: (string | null)[][] = [
-      [projectLine, identityLine, titleCell, usageLine, suffix],
-      [projectLine, identityLine, usageLine, suffix],
-      [projectLine, identityLine, suffix],
-    ];
-    for (const attempt of attempts) {
-      const row = attempt
-        .filter((part): part is string => Boolean(part))
-        .join(separator);
-      if (visualLength(row) <= headingWidth) {
-        return row;
+    const all = join([projectLine, identityLine, title(SESSION_TITLE_WIDTH), usageLine, suffix]);
+    if (visualLength(all) <= headingWidth) return all;
+    if (title(SESSION_TITLE_WIDTH)) {
+      const gap = visualLength(separator);
+      const fixed = visualLength(join([identityLine, suffix])) + 2 * gap;
+      const titleMinimum = Math.min(12, visualLength(title(SESSION_TITLE_WIDTH) ?? ''));
+      const projectBudget = headingWidth - fixed - titleMinimum;
+      if (projectBudget >= Math.min(12, visualLength(sanitizeTerminalText(data.project.projectName)))) {
+        const project = renderProjectLine(data, { includeFileStats: false, maxWidth: projectBudget });
+        const task = title(headingWidth - fixed - visualLength(project));
+        const row = join([project, identityLine, task, suffix]);
+        if (visualLength(row) <= headingWidth) return row;
       }
     }
+    const withoutTitle = join([projectLine, identityLine, suffix]);
+    if (visualLength(withoutTitle) <= headingWidth) return withoutTitle;
     const gap = visualLength(separator);
     const contentWidth = Math.max(0,
       headingWidth - (suffix ? visualLength(suffix) + gap : 0));
@@ -257,7 +269,7 @@ function renderExpandedLayout(
     );
   };
 
-  const envOptions = { compact: toolDetailsMode() !== 'full' };
+  const envOptions = { compact: !fullDetails };
   const envLine = renderEnvironmentLine(data, width, envOptions);
   // Row 1 can host the environment cells when every one of them fits beside
   // it (minus the hotkey hint's reservation while that is on screen). The
@@ -376,21 +388,31 @@ function renderExpandedLayout(
     return rows;
   };
 
+  const exited = data.turnActivity?.phase === 'exited';
+  const runningCalls = exited ? [] : (data.toolActivity?.runningCalls ??
+    data.toolActivity?.recentCalls.filter((call) => call.status === 'running') ?? []);
+  const hasRunningTool = runningCalls.length > 0;
+  const nowMs = Date.now();
+  const finishedCalls = data.toolActivity?.recentCalls.filter((call) => call.status !== 'running') ?? [];
+  // Default: live calls and actionable recent failures. Old completed/error
+  // history is still available explicitly, without looking like current work.
+  const recentCalls = fullDetails ? [...finishedCalls, ...runningCalls] : [
+    ...finishedCalls.filter((call) => call.status === 'error' && !staleSessionRows &&
+      !exited && data.turnActivity?.phase !== 'idle' &&
+      (data.turnActivity?.phase === 'failed' || nowMs - call.timestamp.getTime() - (call.duration ?? 0) < 60_000)),
+    ...runningCalls,
+  ];
+  const visibleTools = data.toolActivity ? {
+    ...data.toolActivity, runningCalls, recentCalls,
+    totalCalls: fullDetails ? data.toolActivity.totalCalls : recentCalls.length,
+  } : undefined;
   const rawToolsLine = renderToolsLine(
-    data.toolActivity,
-    width,
-    Date.now(),
-    data.partialHistory,
+    visibleTools, width, nowMs, data.partialHistory,
     data.turnActivity?.phase === 'awaiting-approval',
     data.session?.cwd ?? data.project.cwd
   );
   const toolsLine =
     staleSessionRows && rawToolsLine ? dimStaleRow(rawToolsLine) : rawToolsLine;
-  const hasRunningTool = Boolean(
-    (data.toolActivity?.runningCalls ?? data.toolActivity?.recentCalls)?.some(
-      (call) => call.status === 'running'
-    )
-  );
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
   const turnLineShown = paneFreshLine ?? turnLine;
   const awaitingApproval =
@@ -533,7 +555,7 @@ function renderExpandedLayout(
     }
     // Static identity (Dir/Session/CLI) never changes mid-session; keep it
     // last so small panes hide it before live plan/tool state.
-    if (sessionLine && variant.showSession) {
+    if (fullDetails && sessionLine && variant.showSession) {
       lines.push(sessionLine);
     }
     if (noteLine && variant.showNote) {

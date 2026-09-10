@@ -81,7 +81,7 @@ const baseData = {
   displayMode: 'single',
 };
 
-process.env.CODEX_HUD_TOOL_DETAILS = 'full';
+process.env.CODEX_HUD_DETAILS = 'full';
 const tokenLine = stripAnsi(renderTokenLine(baseData));
 assert.match(tokenLine, /^Ctx: /, 'context segment must lead the token row');
 assert.ok(tokenLine.indexOf('Ctx: ') < tokenLine.indexOf('Last call: '), 'the last-call count must follow Ctx');

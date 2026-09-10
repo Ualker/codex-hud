@@ -340,6 +340,7 @@ const orderedData = {
   },
 };
 
+process.env.CODEX_HUD_DETAILS = 'full';
 const orderedLines = renderHud(orderedData, {
   width: 80,
   showDetails: true,
@@ -349,7 +350,8 @@ const toolsIndex = orderedLines.findIndex((line) => line.includes('✓ Read'));
 const agentIndex = orderedLines.findIndex((line) => line.includes('✗ codex_cli_explore tracking error'));
 const todosIndex = orderedLines.findIndex((line) => line.includes('≡ 1/1'));
 assert.ok(agentIndex >= 0 && agentIndex < todosIndex, 'agent rows must precede todos');
-assert.ok(todosIndex < toolsIndex, 'finished tools trail the plan when nothing is running');
+assert.ok(todosIndex < toolsIndex, 'finished tools trail the plan in full details');
+delete process.env.CODEX_HUD_DETAILS;
 assert.equal(orderedLines.some((line) => /^Agents:?$/i.test(line)), false, 'agent rows have no heading');
 
 const expandedWidth20 = renderHud(
@@ -548,6 +550,7 @@ const clippedData = {
   }),
 };
 
+process.env.CODEX_HUD_DETAILS = 'full';
 const unclippedLines = renderHud(
   clippedData,
   { width: 80, showDetails: true, layout: expandedLayout }

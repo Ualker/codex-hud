@@ -36,6 +36,7 @@ if [[ "${1:-}" == "-e" ]]; then
   exit 0
 fi
 printf 'NOTIFY<%s>\n' "${CODEX_HUD_NOTIFY_CMD:-}"
+printf 'DENSITY<%s>\n' "${CODEX_HUD_DETAILS:-}"
 printf 'DETAILS<%s>\n' "${CODEX_HUD_TOOL_DETAILS:-}"
 printf 'NOCOLOR<%s>\n' "${NO_COLOR:-}"
 printf 'LOGFILE<%s>\n' "${CODEX_HUD_LOG_FILE:-}"
@@ -103,6 +104,7 @@ echo "session creation bakes the caller's environment:"
 env \
   CODEX_HUD_NOTIFY_CMD="$TRICKY_CMD" \
   CODEX_HUD_TOOL_DETAILS="full" \
+  CODEX_HUD_DETAILS="full" \
   NO_COLOR="1" \
   "$ROOT_DIR/bin/codex-hud" >/dev/null 2>&1 || true
 
@@ -113,6 +115,7 @@ else
   out="$(run_pane_command "$split_line" || true)"
   [[ "$out" == *"NOTIFY<$TRICKY_CMD>"* ]] \
     || fail "NOTIFY_CMD did not round-trip: $out"
+  [[ "$out" == *'DENSITY<full>'* ]] || fail "HUD density not baked: $out"
   [[ "$out" == *'DETAILS<full>'* ]] || fail "TOOL_DETAILS not baked: $out"
   [[ "$out" == *'NOCOLOR<1>'* ]] || fail "NO_COLOR not baked: $out"
   # Unset in the launching shell means absent from the command: the pane must
@@ -152,6 +155,7 @@ else
     out="$(bash -c "$pane_cmd" || true)"
     [[ "$out" == *'NOTIFY<tmux display-message updated>'* ]] \
       || fail "--reload kept a stale NOTIFY_CMD: $out"
+    [[ "$out" == *'DENSITY<>'* ]] || fail "reload retained a stale HUD density: $out"
     [[ "$out" == *'DETAILS<>'* ]] \
       || fail "--reload carried a value the caller no longer sets: $out"
   fi

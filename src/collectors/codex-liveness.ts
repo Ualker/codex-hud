@@ -15,7 +15,7 @@
  * Codex-invocation matcher the runtime-hooks collector uses.
  *
  * Cost control mirrors the other pane detectors: a fresh rollout event is
- * free proof of life (no spawn), working phases never probe, and the ps walk
+ * free proof of life (no spawn), and the ps walk
  * runs at most once a minute — so it effectively runs only for quiet
  * sessions, which is exactly where the question exists.
  */
@@ -43,9 +43,8 @@ export interface LivenessProbeInput {
 }
 
 /**
- * Whether the question "did Codex exit?" is even open. A working phase means
- * the rollout is being written, and a recent event is the same proof for
- * free; only quiet terminal states (or no turn state at all) warrant a probe.
+ * A recent event proves life; a persisted working phase alone does not.
+ * A crash mid-turn leaves that phase behind indefinitely.
  */
 export function isLivenessProbeCandidate(
   input: LivenessProbeInput,
@@ -55,22 +54,11 @@ export function isLivenessProbeCandidate(
   if (!Number.isFinite(nowMs) || !Number.isFinite(graceMs) || graceMs < 0) {
     return false;
   }
-  const phase = input.turnActivity?.phase;
-  if (
-    phase === 'thinking' ||
-    phase === 'responding' ||
-    phase === 'running-tool' ||
-    phase === 'awaiting-approval'
-  ) {
-    return false;
-  }
-  const lastEventMs = input.lastEventAt?.getTime();
-  if (
-    lastEventMs !== undefined &&
-    Number.isFinite(lastEventMs) &&
-    nowMs - lastEventMs < graceMs
-  ) {
-    return false;
+  for (const date of [input.lastEventAt, input.turnActivity?.lastActivityAt]) {
+    const eventMs = date?.getTime();
+    if (eventMs !== undefined && Number.isFinite(eventMs) && nowMs - eventMs < graceMs) {
+      return false;
+    }
   }
   return true;
 }
@@ -265,7 +253,10 @@ export class CodexLivenessProbe {
       return false;
     }
     if (!isLivenessProbeCandidate(input, nowMs, this.eventGraceMs)) {
-      // Working phases and fresh events are proof of life; clear for free.
+      // Fresh events also invalidate a slow probe started before the write.
+      if (this.inFlight) {
+        this.generation++;
+      }
       if (this.gone) {
         this.gone = false;
         return true;

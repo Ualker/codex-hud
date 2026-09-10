@@ -68,9 +68,6 @@ const FULL_RESOLVE_INTERVAL_DEEP_IDLE_MAX_MS = 60_000;
 const FULL_RESOLVE_BACKOFF_FACTOR = 1.5;
 // How far back to look for log rows tying a process to a thread.
 const THREAD_CANDIDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
-// Candidates older than this relative to the newest one are ignored (guards
-// against pid reuse picking up threads of a long-dead process).
-const THREAD_ACTIVE_WINDOW_MS = 60 * 1000;
 // A confirmed thread must out-log the bound thread by this margin before the
 // HUD rebinds (a /new or /resume switch, not interleaved concurrent logging).
 const THREAD_SWITCH_MARGIN_MS = 10 * 1000;
@@ -1695,17 +1692,16 @@ export class SessionFinder {
       return null;
     }
 
-    const newestTs = Math.max(...usable.map((thread) => thread.lastTs));
-    const active = usable.filter(
-      (thread) => newestTs - thread.lastTs <= THREAD_ACTIVE_WINDOW_MS
-    );
     // Established sessions (rollout file or state row) by recent activity.
     // Activity decides between established sessions — a /new session holds
     // only a rollout file at first and must still be able to take over.
-    const establishedByActivity = active
+    // Do not age these out relative to log-only helpers: a quiet user session
+    // remains authoritative on cold start too. Candidate discovery already
+    // bounds log history by the pane's launch time and the process tree.
+    const establishedByActivity = usable
       .filter((thread) => thread.rank >= THREAD_RANK_ROLLOUT)
       .sort((left, right) => right.lastTs - left.lastTs || right.rank - left.rank);
-    const newestActive = [...active].sort(
+    const newestActive = [...usable].sort(
       (left, right) => right.lastTs - left.lastTs
     )[0];
 

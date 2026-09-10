@@ -1088,7 +1088,7 @@ try {
       const userRollout = writeRollout(home, {
         sessionId: userThread,
         cwd,
-        modifiedAt: new Date(now.getTime() - 20 * 1000),
+        modifiedAt: new Date(now.getTime() - 120 * 1000),
       });
       writeStateDb(home, {
         threads: [{ id: userThread, rolloutPath: userRollout }],
@@ -1097,12 +1097,12 @@ try {
         {
           threadId: userThread,
           processUuid: 'pid:11111:proc',
-          ts: nowTs - 20,
+          ts: nowTs - 120,
           body: `turn{model=gpt-5.5}:run_sampling_request{cwd=${cwd}}`,
         },
       ]);
 
-      const finder = new SessionFinder(cwd, undefined, now);
+      const finder = new SessionFinder(cwd, undefined, new Date(now.getTime() - 600_000));
       const bound = await finder.check();
       assert.ok(bound, 'expected the user session to bind first');
       assert.equal(bound.sessionId, userThread);
@@ -1111,7 +1111,7 @@ try {
         threadId: internalThread,
         processUuid: 'pid:11111:proc',
         ts: nowTs,
-        body: 'memories{}:flush',
+        body: `turn{model=gpt-6-astra}:run_sampling_request{cwd=${cwd}} Shutdown; Agent loop exited`,
       }, 1);
 
       const resolved = await finder.check(true);
@@ -1121,6 +1121,11 @@ try {
         userThread,
         'an internal log-only thread must not steal the pane binding'
       );
+      const coldFinder = new SessionFinder(cwd, undefined, new Date(now.getTime() - 600_000));
+      const cold = await coldFinder.check();
+      assert.equal(cold?.sessionId, userThread,
+        'cold binding must prefer a real session even when helper logs lead it by over a minute');
+      assert.equal(cold?.path, fs.realpathSync(userRollout), 'cold binding retains rollout-backed data');
     } finally {
       cleanupTmux();
     }

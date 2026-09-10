@@ -31,10 +31,13 @@ for (const width of [60, 80, 100, 116, 140, 146, 180]) {
   assert.ok(lines.slice(0, 5).some((line) => line.includes('↻3')), `${width}: compact survives full HUD and quota compression`);
   assert.ok(lines.every((line) => visualLength(line) <= width));
 }
+assert.doesNotMatch(stripAnsi(renderTokenLine(data)), /Last call:|Total:|cache:/);
+process.env.CODEX_HUD_DETAILS = 'full';
 const tokenText = stripAnsi(renderTokenLine(data));
 assert.match(tokenText, /Last call: 71\.1K/);
 assert.match(tokenText, /Total: 325\.8K/);
-assert.doesNotMatch(tokenText, /Turn:|cache:/, 'default details avoid breakdown noise');
+assert.doesNotMatch(tokenText, /Turn:/, 'last call never claims to be an entire user turn');
+assert.match(tokenText, /cache:/);
 assert.ok(tokenText.indexOf('↻3') < tokenText.indexOf('Last call:'));
 const totalOnly = stripAnsi(renderTokenLine({ tokenUsage: { total_token_usage: { total_tokens: 5000 } } }));
 assert.equal(totalOnly, 'Total: 5.0K', 'old logs with only a total do not invent a last call');

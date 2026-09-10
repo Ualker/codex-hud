@@ -19,7 +19,15 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$ZDOTDIR_DIR" "$FISH_CONFIG_DIR"
-touch "$TEST_HOME/.bashrc" "$TEST_HOME/.bash_profile" "$ZDOTDIR_DIR/.zshrc"
+touch "$TEST_HOME/.bashrc"
+mkdir -p "$TEST_HOME/dotfiles"
+printf '# user footer\n' > "$TEST_HOME/dotfiles/zshrc"
+chmod 640 "$TEST_HOME/dotfiles/zshrc"
+ln -s ../dotfiles/zshrc "$ZDOTDIR_DIR/.zshrc"
+touch "$TEST_HOME/dotfiles/profile"
+chmod 640 "$TEST_HOME/dotfiles/profile"
+ln -s profile "$TEST_HOME/dotfiles/profile-link"
+ln -s dotfiles/profile-link "$TEST_HOME/.bash_profile"
 
 cat > "$FISH_CONFIG" <<EOF
 alias codex '$ROOT_DIR/bin/codex-hud'
@@ -215,9 +223,20 @@ for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFI
 done
 
 cp "$FISH_CONFIG" "$TEST_HOME/installed.fish"
+for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc"; do
+  echo '# user footer after HUD' >> "$file"
+  cp "$file" "$LOG_DIR/$(basename "$file").installed"
+done
 "$ROOT_DIR/bin/codex-hud-install" >"$LOG_DIR/reinstall.log" 2>&1
 assert_fish_proxy_overrides
 cmp "$TEST_HOME/installed.fish" "$FISH_CONFIG"
+for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc"; do
+  cmp "$file" "$LOG_DIR/$(basename "$file").installed"
+done
+[[ -L "$ZDOTDIR/.zshrc" ]]
+[[ "$(readlink "$ZDOTDIR/.zshrc")" == ../dotfiles/zshrc ]]
+mode=$(stat -c %a "$ZDOTDIR/../dotfiles/zshrc" 2>/dev/null || stat -f %Lp "$ZDOTDIR/../dotfiles/zshrc")
+[[ "$mode" == 640 ]]
 
 cat > "$HOME/.bashrc" <<EOF
 alias codex='$ROOT_DIR/bin/codex-hud'  $MARKER
@@ -262,4 +281,12 @@ for file in "$HOME/.bashrc" "$HOME/.bash_profile" "$ZDOTDIR/.zshrc" "$FISH_CONFI
   assert_alias_absent "$file" "codex-hud-uninstall"
 done
 
+[[ -L "$ZDOTDIR/.zshrc" ]]
+mode=$(stat -c %a "$TEST_HOME/dotfiles/zshrc" 2>/dev/null || stat -f %Lp "$TEST_HOME/dotfiles/zshrc")
+[[ "$mode" == 640 ]]
+grep -q '# user footer after HUD' "$ZDOTDIR/.zshrc"
+[[ -L "$HOME/.bash_profile" ]]
+[[ -L "$HOME/dotfiles/profile-link" ]]
+mode=$(stat -c %a "$HOME/dotfiles/profile" 2>/dev/null || stat -f %Lp "$HOME/dotfiles/profile")
+[[ "$mode" == 640 ]]
 echo "test-management-commands: PASS"

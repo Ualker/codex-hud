@@ -62,7 +62,7 @@ const data = {
   },
 };
 
-process.env.CODEX_HUD_TOOL_DETAILS = 'full';
+process.env.CODEX_HUD_DETAILS = 'full';
 const full = stripAnsi(renderTokenLine(data) ?? '');
 assert.match(full, /cache:/, 'unconstrained width keeps the breakdown');
 
