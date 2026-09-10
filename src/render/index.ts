@@ -35,8 +35,8 @@ let hasEverRendered = false;
 // path (focus the pane first) even when the wrapper had installed a global
 // toggle that works from the Codex pane.
 const STATUS_HINT = process.env.CODEX_HUD_TOGGLE_KEY
-  ? `[view] • ${process.env.CODEX_HUD_TOGGLE_KEY} view • wheel: details`
-  : '[view] • Ctrl+T view • wheel: details';
+  ? `[view] · ${process.env.CODEX_HUD_TOGGLE_KEY} view · wheel: details`
+  : '[view] · Ctrl+T view · wheel: details';
 let viewHotspot: { start: number; end: number } | undefined;
 
 export function isViewToggleClick(column: number, row: number): boolean {

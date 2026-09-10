@@ -54,7 +54,7 @@ const capped = stripAnsi(
     ...Array.from({ length: 9 }, (_, index) => call(`capped-wait-${index}`, 'wait', 'completed')),
   ], 21)) ?? ''
 );
-assert.equal(capped, '✓ exec_command | (21 total)');
+assert.equal(capped, '✓ exec_command · (21 total)');
 
 const failedWait = stripAnsi(
   renderToolsLine(activity([call('wait-error', 'wait', 'error')])) ?? ''

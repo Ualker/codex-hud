@@ -349,7 +349,8 @@ const render = (data) =>
     stripAnsi(line).includes('Ctx: ')
   );
   assert.ok(normalCtxRow);
-  assert.doesNotMatch(normalCtxRow, /^\x1b\[2mCtx: /);
+  assert.match(normalCtxRow, /\x1b\[36m[^\x1b]*76% left/,
+    'the live capacity value keeps its accent even though its label is dim');
   const normalSessionRow = normalFrame.find((line) =>
     stripAnsi(line).includes('Session: ')
   );

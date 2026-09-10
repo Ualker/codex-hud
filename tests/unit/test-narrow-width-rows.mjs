@@ -141,7 +141,7 @@ const plain = (value) => (value === null ? null : stripAnsi(value));
 {
   const cells = (width) => {
     const line = plain(renderEnvironmentLine(data, width));
-    return new Set(line === null ? [] : line.split(' | '));
+    return new Set(line === null ? [] : line.split(' · '));
   };
 
   let previous = cells(20);

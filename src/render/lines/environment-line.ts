@@ -8,7 +8,7 @@ import type { HudData } from '../../types.js';
 import {
   theme,
   colors,
-  icons,
+  inlineSeparator,
   sanitizeTerminalText,
   truncateAnsi,
   visualLength,
@@ -73,7 +73,7 @@ export function renderEnvironmentLine(
     runtimeApprovalPolicy ??
     (configBlind ? undefined : data.config.approval_policy);
   const fullAccess = sandbox === 'danger-full-access';
-  const badgePart = fullAccess ? theme.error('[FULL ACCESS]') : null;
+  const badgePart = fullAccess ? theme.warning('[FULL ACCESS]') : null;
 
   // Approval and sandbox are security state, so they must survive before
   // inventory counts on narrow panes. The badge already states the whole
@@ -101,8 +101,8 @@ export function renderEnvironmentLine(
       (sandbox === undefined
         ? colors.dim('?')
         : sandbox === 'workspace-write'
-          ? theme.warning('workspace-write')
-          : theme.info(sanitizeTerminalText(sandbox)))
+          ? theme.value('workspace-write')
+          : theme.value(sanitizeTerminalText(sandbox)))
     : null;
 
   // The default state carries no signal, and since 0.149 the Codex footer two
@@ -173,7 +173,7 @@ export function renderEnvironmentLine(
     );
   }
 
-  const separator = ` ${colors.dim(icons.pipe)} `;
+  const separator = inlineSeparator();
   const fits = (parts: string[]): boolean =>
     !Number.isFinite(width) || visualLength(parts.join(separator)) <= width;
 
@@ -197,7 +197,9 @@ export function renderEnvironmentLine(
     approvalPart,
     sandboxPart,
     fastPart,
-    ...details,
+    // Installed inventory is stable metadata. Keep it in full details, while
+    // the everyday view states only the effective permissions and Fast mode.
+    ...(options.compact ? [] : details),
   ].filter((part): part is string => Boolean(part));
 
   const selected: string[] = [];

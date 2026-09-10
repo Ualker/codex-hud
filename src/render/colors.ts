@@ -1,6 +1,6 @@
 /**
  * ANSI color and style utilities for terminal rendering
- * Phase 3: Enhanced to match claude-hud style exactly
+ * Use the terminal foreground for content and one accent for live activity.
  */
 
 // ANSI escape codes
@@ -47,22 +47,23 @@ export const colors = {
   underline: (text: string) => ansi('4', text),
 };
 
-// Semantic aliases for HUD components (claude-hud style)
+// Keep ordinary content neutral. Color signals activity or a state requiring
+// attention, rather than giving each kind of metadata its own bright hue.
 export const theme = {
   // Model and primary info
-  model: colors.brightCyan,
-  modelBracket: colors.cyan,
+  model: colors.cyan,
+  modelBracket: colors.dim,
   
   // Git status (oh-my-zsh style)
-  gitBranch: colors.magenta,
-  gitClean: colors.green,
+  gitBranch: colors.dim,
+  gitClean: colors.dim,
   gitDirty: colors.yellow,
-  gitAhead: colors.green,
+  gitAhead: colors.dim,
   gitBehind: colors.red,
-  gitPrefix: colors.magenta,  // "git:(" prefix
+  gitPrefix: colors.dim,
   
   // Project info
-  projectName: colors.yellow,  // Changed to yellow like claude-hud
+  projectName: colors.bold,
   projectPath: colors.dim,
   
   // Status indicators
@@ -80,33 +81,38 @@ export const theme = {
   dim: colors.dim,
   
   // Context bar colors (based on percentage)
-  contextSafe: colors.green,      // < 70%
+  contextSafe: colors.cyan,       // < 70%
   contextWarning: colors.yellow,  // 70-84%
   contextDanger: colors.red,      // >= 85%
   
   // Tool activity
-  toolRunning: colors.brightYellow,
-  toolCompleted: colors.green,
+  toolRunning: colors.cyan,
+  toolCompleted: colors.dim,
   toolError: colors.red,
   toolName: colors.cyan,
   toolTarget: colors.dim,
   
   // Agent activity
-  agentType: colors.brightMagenta,
-  agentRunning: colors.brightYellow,
-  agentCompleted: colors.green,
+  agentType: colors.cyan,
+  agentRunning: colors.cyan,
+  agentCompleted: colors.dim,
   
   // Plan/Todo progress
-  planProgress: colors.brightMagenta,
-  planStepCompleted: colors.green,
+  planProgress: colors.cyan,
+  planStepCompleted: colors.dim,
   planStepPending: colors.dim,
-  planStepInProgress: colors.yellow,
+  planStepInProgress: (text: string) => text,
   
   // Token usage
-  tokenCount: colors.brightBlue,
+  tokenCount: (text: string) => text,
   tokenWarning: colors.yellow,
   tokenDanger: colors.red,
 };
+
+/** A quiet inline divider; column alignment uses whitespace instead. */
+export function inlineSeparator(): string {
+  return colors.dim(ASCII_MODE ? ' | ' : ' · ');
+}
 
 // Progress bar characters. Every glyph here stays inside the block-element
 // family: the light shade `░` was drawn at a different height from `█` on the

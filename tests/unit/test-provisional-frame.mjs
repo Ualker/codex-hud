@@ -50,7 +50,7 @@ const row1 = (data) =>
     false,
     '"default" is a model name, not a way of saying we have not looked yet'
   );
-  assert.match(provisional, /^\[…\] prj/, 'the unknown model reads as unknown');
+  assert.match(provisional, /^prj  …/, 'the unknown model reads as unknown');
   assert.equal(
     provisional.includes('up '),
     false,
@@ -69,7 +69,7 @@ const row1 = (data) =>
     collectorHealth: {},
     displayMode: 'single',
   });
-  assert.match(loaded, /^\[default\] prj/);
+  assert.match(loaded, /^prj  default/);
 
   // A collector that goes on failing keeps serving its last good snapshot, so
   // what it already read stays true.
@@ -88,7 +88,7 @@ const row1 = (data) =>
     },
     displayMode: 'single',
   });
-  assert.match(degraded, /^\[default\] prj/);
+  assert.match(degraded, /^prj  default/);
 }
 
 // Failing before the first success is the same "we have not looked yet" as
@@ -108,7 +108,7 @@ const row1 = (data) =>
     },
     displayMode: 'single',
   });
-  assert.match(neverLoaded, /^\[…\] prj/);
+  assert.match(neverLoaded, /^prj  …/);
 }
 
 // Nothing changes for a bound session: its own model wins over both.
@@ -128,7 +128,7 @@ const row1 = (data) =>
       startTime: new Date(now - 3 * 3600_000),
     },
   });
-  assert.match(bound, /^\[gpt-5\.6-sol max\] prj/);
+  assert.match(bound, /^prj  gpt-5\.6-sol max/);
   assert.match(bound, /up 3h/, 'a bound session does report its uptime');
 }
 

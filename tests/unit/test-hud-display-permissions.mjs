@@ -85,10 +85,10 @@ process.env.CODEX_HUD_TOOL_DETAILS = 'full';
 const tokenLine = stripAnsi(renderTokenLine(baseData));
 assert.match(tokenLine, /^Ctx: /, 'context segment must lead the token row');
 assert.ok(tokenLine.indexOf('Ctx: ') < tokenLine.indexOf('Last call: '), 'the last-call count must follow Ctx');
-assert.match(tokenLine, /Ctx: .*21% left \(71\.0K\) \| ↻8 \| Last call: 282\.4K/);
+assert.match(tokenLine, /Ctx: .*21% left \(71\.0K\) · ↻8 · Last call: 282\.4K/);
 assert.match(
   tokenLine,
-  /Last call: 282\.4K \| \(in: 842, cache: 281\.3K, out: 199\)$/
+  /Last call: 282\.4K · \(in: 842, cache: 281\.3K, out: 199\)$/
 );
 
 const expandedLines = renderHud(baseData, {
@@ -161,7 +161,7 @@ const unknownPartialLines = renderHud({
 }).map(stripAnsi);
 assert.match(
   unknownPartialLines[0],
-  /^\[\?\]/,
+  /  \?(?:  |$)/,
   'a partial rollout must not present the current config model as session fact'
 );
 const unknownEnvironmentLine = unknownPartialLines.find((line) =>
@@ -364,7 +364,7 @@ const unknownEffortLines = renderHud({
 }).map(stripAnsi);
 assert.match(
   unknownEffortLines[0],
-  /^\[gpt-5\.6-session \?\]/,
+  /  gpt-5\.6-session \?(?:  |$)/,
   'a recovered model does not borrow a missing reasoning effort from config'
 );
 
