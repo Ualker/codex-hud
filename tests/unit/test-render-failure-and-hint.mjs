@@ -166,4 +166,43 @@ const hintBody = `
   `;
   renderInChild(body);
 }
+
+// At three rows compact/full can look identical. Confirmation borrows header
+// cells, expires, and keeps both context and the actual [view] click target.
+for (const width of [40, 60, 80]) {
+  const out = renderInChild(`
+    const { toggleHudDetails } = await import(${JSON.stringify(path.join(distDir, 'detail-level.js'))});
+    let now = 1000;
+    Date.now = () => now;
+    const data = { config: {}, git: { isGitRepo: false },
+      project: { cwd: '/work/prj', projectName: 'prj' },
+      contextUsage: { used: 20, total: 100, percent: 20, compactCount: 3 },
+      turnActivity: { phase: 'thinking', since: new Date(now), lastActivityAt: new Date(now) } };
+    const originalWrite = process.stdout.write;
+    let painted = '';
+    process.stdout.write = chunk => { painted += chunk; return true; };
+    const frames = [];
+    for (const action of ['full', 'compact', 'expire']) {
+      if (action !== 'expire') toggleHudDetails(now); else now += 4000;
+      painted = '';
+      render.invalidateRenderedFrame();
+      render.renderToStdout(data);
+      const text = stripAnsi(painted);
+      const start = text.split('\\n')[0].indexOf('[view]') + 1;
+      frames.push({ text, clickable: render.isViewToggleClick(start, 1) && render.isViewToggleClick(start + 5, 1) });
+    }
+    process.stdout.write = originalWrite;
+    console.log(JSON.stringify(frames));
+  `, { COLUMNS: String(width), LINES: '3' });
+  const [full, compact, expired] = JSON.parse(out);
+  assert.match(full.text, /Details: full/);
+  assert.match(compact.text, /Details: compact/);
+  assert.doesNotMatch(expired.text, /Details: /);
+  for (const frame of [full, compact, expired]) {
+    assert.equal(frame.clickable, true, `${width}: [view] remains clickable`);
+    assert.match(frame.text, /80% left.*↻3/);
+    assert.equal(frame.text.split('\n').length, 3);
+  }
+}
+
 console.log('test-render-failure-and-hint: PASS');

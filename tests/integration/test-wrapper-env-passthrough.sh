@@ -96,7 +96,7 @@ run_pane_command() {
     echo "could not extract pane command from: $line" >&2
     return 1
   fi
-  bash -c "$pane_cmd"
+  env CODEX_HUD_LOG_FILE=stale-server-log bash -c "$pane_cmd"
 }
 
 echo "session creation bakes the caller's environment:"
@@ -152,10 +152,11 @@ else
   if [[ "$pane_cmd" == "$respawn_line" || -z "$pane_cmd" ]]; then
     fail "--reload did not rebuild the pane command: $respawn_line"
   else
-    out="$(bash -c "$pane_cmd" || true)"
+    out="$(env CODEX_HUD_DETAILS=full CODEX_HUD_TOOL_DETAILS=full NO_COLOR=1 bash -c "$pane_cmd" || true)"
     [[ "$out" == *'NOTIFY<tmux display-message updated>'* ]] \
       || fail "--reload kept a stale NOTIFY_CMD: $out"
     [[ "$out" == *'DENSITY<>'* ]] || fail "reload retained a stale HUD density: $out"
+    [[ "$out" == *'NOCOLOR<>'* ]] || fail "reload retained a stale NO_COLOR: $out"
     [[ "$out" == *'DETAILS<>'* ]] \
       || fail "--reload carried a value the caller no longer sets: $out"
   fi

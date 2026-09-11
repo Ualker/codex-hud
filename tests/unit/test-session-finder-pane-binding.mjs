@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import { SessionFinder } from '../../dist/collectors/session-finder.js';
+import { executeSql } from '../helpers/sqlite.mjs';
 
 function makeTempCodexHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-session-finder-'));
@@ -108,22 +108,22 @@ function writeLogsDb(home, rows) {
     ),
   ];
 
-  execFileSync('sqlite3', [dbPath, statements.join('\n')]);
+  executeSql(dbPath, statements.join('\n'));
   return dbPath;
 }
 
 function appendLogRow(home, row, tsNanos = 0) {
   const dbPath = path.join(home, 'logs_2.sqlite');
-  execFileSync('sqlite3', [
+  executeSql(
     dbPath,
     `INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid)
      VALUES (${row.ts}, ${tsNanos}, 'INFO', 'codex_otel.log_only', '${sql(row.body ?? '')}', '${sql(row.threadId)}', ${row.processUuid ? `'${sql(row.processUuid)}'` : 'NULL'});`,
-  ]);
+  );
 }
 
 function clearLogRows(home) {
   const dbPath = path.join(home, 'logs_2.sqlite');
-  execFileSync('sqlite3', [dbPath, 'DELETE FROM logs;']);
+  executeSql(dbPath, 'DELETE FROM logs;');
 }
 
 function writeStateDb(home, { threads = [], edges = [] } = {}) {
@@ -152,7 +152,7 @@ function writeStateDb(home, { threads = [], edges = [] } = {}) {
     ),
   ];
 
-  execFileSync('sqlite3', [dbPath, statements.join('\n')]);
+  executeSql(dbPath, statements.join('\n'));
   return dbPath;
 }
 

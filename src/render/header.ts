@@ -51,6 +51,7 @@ import {
   renderToolDetailsNotice,
 } from './lines/index.js';
 import { hudDetailsExpanded } from './detail-level.js';
+import { compactSessionTitle } from './session-title.js';
 import { formatCompactAge } from '../utils/format-age.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
@@ -176,7 +177,7 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
  * Row 4+: Current activity and agents, then Dir/Session, plan, and tool history
  */
 /** Longest a session title gets on row 1; the overview column is narrower. */
-const SESSION_TITLE_WIDTH = 32;
+const SESSION_TITLE_WIDTH = 64;
 
 /**
  * The session's first prompt, visually secondary. Two sessions open in the same
@@ -185,16 +186,7 @@ const SESSION_TITLE_WIDTH = 32;
  * first row to go.
  */
 function renderSessionTitleCell(title: string | undefined, maxWidth: number, cwd: string): string | null {
-  if (!title) {
-    return null;
-  }
-  let clean = sanitizeTerminalText(title);
-  // Prompts often start with the current absolute path. The project is
-  // already named beside the title, so spend the title budget on the task.
-  const prefix = sanitizeTerminalText(cwd);
-  if (prefix && clean.startsWith(prefix) && /^(?:[\s,，:：]|$)/.test(clean.slice(prefix.length))) {
-    clean = clean.slice(prefix.length).replace(/^[\s,，:：]+/, '');
-  }
+  const clean = compactSessionTitle(title, cwd);
   if (!clean) {
     return null;
   }
@@ -665,7 +657,7 @@ const OVERVIEW_ADDRESS_WIDTH = 22;
  */
 const OVERVIEW_ADDRESS_MIN_WIDTH = 12;
 /** The session's first prompt; narrower than on row 1, it shares a table. */
-const OVERVIEW_TITLE_WIDTH = 24;
+const OVERVIEW_TITLE_WIDTH = 48;
 
 /**
  * The one field on an overview row the user can act on.
@@ -850,7 +842,7 @@ function renderOverviewLayout(
   const titleDisplays = overview.sessions.map((session) =>
     session.title
       ? theme.value(
-          truncate(sanitizeTerminalText(session.title), OVERVIEW_TITLE_WIDTH)
+          truncate(compactSessionTitle(session.title, session.cwd), OVERVIEW_TITLE_WIDTH)
         )
       : ''
   );

@@ -1106,6 +1106,8 @@ async function setupHeightFit(): Promise<void> {
   heightFit = new HeightFitPolicy({
     minRows: settings.minRows,
     maxRows: settings.maxRows,
+    initialRows: settings.initialRows,
+    manualRows: settings.manualRows,
   });
 }
 

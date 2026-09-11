@@ -452,35 +452,59 @@ build_project() {
     esac
 }
 
+restore_upgrade_artifact() {
+    local name="$1"
+    local new_flag="$2"
+    local had_flag="$3"
+    local destination="$SCRIPT_DIR/$name"
+    local backup="$UPGRADE_BACKUP_ROOT/$name"
+
+    if [[ "${!new_flag}" == "1" ]]; then
+        rm -rf "$destination" || return 1
+        printf -v "$new_flag" '%s' "0"
+    fi
+    if [[ "${!had_flag}" == "1" ]]; then
+        # Never move a backup into an existing directory. A failed restore
+        # must remain retryable, including when cleanup runs again on EXIT.
+        [[ -e "$backup" || -L "$backup" ]] || return 1
+        [[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+        mv "$backup" "$destination" || return 1
+        printf -v "$had_flag" '%s' "0"
+    fi
+}
+
 rollback_upgrade_artifacts() {
     if [[ "$UPGRADE_ARTIFACTS_ACTIVATED" == "1" ]]; then
         return 0
     fi
-    if [[ "$UPGRADE_NEW_NODE_MODULES" == "1" && -e "$SCRIPT_DIR/node_modules" ]]; then
-        rm -rf "$SCRIPT_DIR/node_modules"
-    fi
-    if [[ "$UPGRADE_HAD_NODE_MODULES" == "1" && -e "$UPGRADE_BACKUP_ROOT/node_modules" ]]; then
-        mv "$UPGRADE_BACKUP_ROOT/node_modules" "$SCRIPT_DIR/node_modules"
-    fi
-    if [[ "$UPGRADE_NEW_DIST" == "1" && -e "$SCRIPT_DIR/dist" ]]; then
-        rm -rf "$SCRIPT_DIR/dist"
-    fi
-    if [[ "$UPGRADE_HAD_DIST" == "1" && -e "$UPGRADE_BACKUP_ROOT/dist" ]]; then
-        mv "$UPGRADE_BACKUP_ROOT/dist" "$SCRIPT_DIR/dist"
-    fi
-    UPGRADE_NEW_NODE_MODULES="0"
-    UPGRADE_NEW_DIST="0"
+    local status=0
+    restore_upgrade_artifact node_modules UPGRADE_NEW_NODE_MODULES UPGRADE_HAD_NODE_MODULES || status=1
+    restore_upgrade_artifact dist UPGRADE_NEW_DIST UPGRADE_HAD_DIST || status=1
+    return "$status"
 }
 
 cleanup_upgrade_transaction() {
     if [[ -z "$UPGRADE_TRANSACTION_ROOT" ]]; then
         return 0
     fi
-    rollback_upgrade_artifacts || true
+    if ! rollback_upgrade_artifacts; then
+        warn "Runtime recovery is incomplete. Upgrade files retained at: $UPGRADE_TRANSACTION_ROOT"
+        warn "Resolve the filesystem error, then restore missing directories before running codex-hud-sync:"
+        local name destination backup
+        for name in node_modules dist; do
+            destination="$SCRIPT_DIR/$name"
+            backup="$UPGRADE_BACKUP_ROOT/$name"
+            if [[ -e "$backup" || -L "$backup" ]]; then
+                printf '  if [ ! -e %q ] && [ ! -L %q ]; then mv %q %q; fi\n' \
+                    "$destination" "$destination" "$backup" "$destination" >&2
+            fi
+        done
+        return 1
+    fi
     if [[ -n "$UPGRADE_WORKTREE" ]]; then
         git -C "$SCRIPT_DIR" worktree remove --force "$UPGRADE_WORKTREE" >/dev/null 2>&1 || true
     fi
-    rm -rf "$UPGRADE_TRANSACTION_ROOT"
+    rm -rf "$UPGRADE_TRANSACTION_ROOT" || return 1
     UPGRADE_TRANSACTION_ROOT=""
     UPGRADE_WORKTREE=""
     UPGRADE_BACKUP_ROOT=""
@@ -491,7 +515,7 @@ stage_upgrade_artifacts() {
         return 1
     fi
 
-    mkdir -p "$UPGRADE_BACKUP_ROOT"
+    mkdir -p "$UPGRADE_BACKUP_ROOT" || return 1
     if [[ -e "$SCRIPT_DIR/node_modules" ]]; then
         mv "$SCRIPT_DIR/node_modules" "$UPGRADE_BACKUP_ROOT/node_modules" || return 1
         UPGRADE_HAD_NODE_MODULES="1"
@@ -593,7 +617,10 @@ upgrade_checkout_transactionally() {
 
     step "Activating the verified build..."
     if ! stage_upgrade_artifacts; then
-        error "Repository was updated, but verified runtime artifacts could not be activated and were restored. Run codex-hud-sync after resolving the filesystem error."
+        if rollback_upgrade_artifacts; then
+            error "Repository was updated, but runtime activation failed. Previous runtime artifacts were restored. Run codex-hud-sync after resolving the filesystem error."
+        fi
+        error "Repository was updated, but runtime activation and recovery failed. Backups are retained at $UPGRADE_BACKUP_ROOT; see the recovery instructions below."
     fi
     UPGRADE_ARTIFACTS_ACTIVATED="1"
     info "Repository updated"

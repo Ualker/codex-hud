@@ -175,8 +175,8 @@ function sanitizeDisplayText(value: string, maxLength: number): string | undefin
   return `${sanitized.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
-/** Longest stored session title; renderers truncate further. */
-const MAX_SESSION_TITLE_LENGTH = 60;
+/** Keep room for the task after a long path; renderers compact and clip it. */
+const MAX_SESSION_TITLE_LENGTH = 240;
 /**
  * User-role messages Codex injects around the real prompt: the AGENTS.md
  * wrapper (`# AGENTS.md instructions` / `<INSTRUCTIONS>`), `<environment_context>`,

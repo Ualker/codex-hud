@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_ROOT="$(mktemp -d /tmp/codex-hud-transactional-upgrade-XXXXXX)"
+# Git reports canonical worktree paths, including /private/tmp on macOS.
+TEST_ROOT="$(cd "$TEST_ROOT" && pwd -P)"
 REMOTE="$TEST_ROOT/remote.git"
 SEED="$TEST_ROOT/seed"
 PUBLISHER="$TEST_ROOT/publisher"
@@ -41,7 +43,7 @@ git -C "$SEED" remote add origin "$REMOTE"
 git -C "$SEED" push --quiet --set-upstream origin "$TRACKING_BRANCH"
 git --git-dir="$REMOTE" symbolic-ref HEAD "refs/heads/$TRACKING_BRANCH"
 
-for case_name in install-fail build-fail tracked-dirty success tracked-target untracked-collision; do
+for case_name in install-fail build-fail tracked-dirty activation-fail recovery-fail success tracked-target untracked-collision; do
   git clone --quiet "$REMOTE" "$TEST_ROOT/$case_name"
 done
 git clone --quiet "$REMOTE" "$PUBLISHER"
@@ -111,6 +113,20 @@ EOF_TMUX
 
 chmod +x "$FAKE_BIN/node" "$FAKE_BIN/npm" "$FAKE_BIN/tmux"
 
+cat > "$FAKE_BIN/mv" <<'EOF_MV'
+#!/usr/bin/env bash
+if [[ -n "${FAKE_MV_FAIL:-}" && "$1" == */candidate/dist ]]; then
+  echo 'simulated activation failure' >&2
+  exit 43
+fi
+if [[ "${FAKE_MV_FAIL:-}" == recovery && "$1" == */backup/node_modules ]]; then
+  echo 'simulated recovery failure' >&2
+  exit 44
+fi
+exec /bin/mv "$@"
+EOF_MV
+chmod +x "$FAKE_BIN/mv"
+
 prepare_checkout() {
   local checkout="$1"
   mkdir -p "$HOME_DIR/$(basename "$checkout")"
@@ -177,6 +193,41 @@ run_failure_case() {
 run_failure_case install-fail install
 run_failure_case build-fail build
 run_failure_case tracked-dirty tracked
+
+# Exercise the real EXIT trap after artifact activation, including a restore
+# that repeatedly fails. Recoverable files must survive retries and cleanup.
+for failure in activation recovery; do
+  case_name="$failure-fail"
+  checkout="$TEST_ROOT/$case_name"
+  prepare_checkout "$checkout"
+  set +e
+  (
+    cd "$checkout"
+    HOME="$HOME_DIR/$case_name" ZDOTDIR="$HOME_DIR/$case_name" SHELL=/bin/bash \
+      PATH="$FAKE_BIN:$PATH" NPM_LOG="$NPM_LOG" FAKE_MV_FAIL="$failure" ./install.sh --upgrade
+  ) > "$TEST_ROOT/$case_name.log" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || { echo "$case_name unexpectedly succeeded" >&2; exit 1; }
+  [[ "$(git -C "$checkout" rev-parse HEAD)" == "$TARGET_HEAD" ]]
+  [[ "$(cat "$checkout/dist/commit")" == old-build ]]
+  [[ "$(cat "$checkout/local-note.txt")" == keep-untracked ]]
+  retained="$(git -C "$checkout" worktree list --porcelain | sed -n 's#^worktree \(.*\)/candidate$#\1#p')"
+  if [[ "$failure" == activation ]]; then
+    [[ "$(cat "$checkout/node_modules/commit")" == old-dependencies ]]
+    [[ -z "$retained" ]] || { echo 'successful rollback retained staging' >&2; exit 1; }
+    grep -q 'Previous runtime artifacts were restored' "$TEST_ROOT/$case_name.log"
+  else
+    [[ -d "$retained" && ! -e "$checkout/node_modules" ]]
+    [[ "$(cat "$retained/backup/node_modules/commit")" == old-dependencies ]]
+    [[ "$(cat "$retained/backup/node_modules/tracked.txt")" == tracked-dependency ]]
+    grep -Fq "$retained/backup" "$TEST_ROOT/$case_name.log"
+    grep -Fq 'then mv ' "$TEST_ROOT/$case_name.log"
+    if grep -q 'were restored' "$TEST_ROOT/$case_name.log"; then
+      echo 'failed recovery falsely claimed success' >&2; exit 1
+    fi
+  fi
+done
 
 SUCCESS_CHECKOUT="$TEST_ROOT/success"
 prepare_checkout "$SUCCESS_CHECKOUT"
@@ -331,10 +382,10 @@ fi
 
 install_runs="$(grep -c ' install$' "$NPM_LOG" || true)"
 build_runs="$(grep -c ' run build$' "$NPM_LOG" || true)"
-if [[ "$install_runs" -ne 6 || "$build_runs" -ne 5 ]]; then
+if [[ "$install_runs" -ne 8 || "$build_runs" -ne 7 ]]; then
   echo "unexpected staged npm counts: install=$install_runs build=$build_runs" >&2
   cat "$NPM_LOG" >&2
   exit 1
 fi
 
-echo "test-transactional-upgrade: PASS tracking_branch=$TRACKING_BRANCH install_fail_head_unchanged=1 build_fail_head_unchanged=1 tracked_dirty_head_unchanged=1 success_target=1 tracked_target=1 untracked_collision_head_unchanged=1 install_runs=$install_runs build_runs=$build_runs"
+echo "test-transactional-upgrade: PASS tracking_branch=$TRACKING_BRANCH activation_rollback=1 failed_recovery_retains_backup=1 success_target=1 tracked_target=1 untracked_collision_head_unchanged=1 install_runs=$install_runs build_runs=$build_runs"
