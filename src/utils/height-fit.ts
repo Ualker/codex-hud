@@ -15,6 +15,10 @@
 export interface HeightFitOptions {
   minRows: number;
   maxRows: number;
+  /** Last program height, for detecting a drag before the first observation. */
+  initialRows?: number;
+  /** A manual override left by the wrapper, including across HUD reloads. */
+  manualRows?: number;
   /** Minimum gap between two resizes the fitter itself requests. */
   growThrottleMs?: number;
   /** How long the content must stay smaller before the pane shrinks. */
@@ -41,6 +45,12 @@ export class HeightFitPolicy {
     this.maxRows = Math.max(this.minRows, Math.floor(options.maxRows));
     this.growThrottleMs = options.growThrottleMs ?? DEFAULT_GROW_THROTTLE_MS;
     this.shrinkAfterMs = options.shrinkAfterMs ?? DEFAULT_SHRINK_AFTER_MS;
+    if (options.initialRows !== undefined && Number.isInteger(options.initialRows) && options.initialRows > 0) {
+      this.lastRequestedRows = options.initialRows;
+    }
+    if (options.manualRows !== undefined && Number.isInteger(options.manualRows) && options.manualRows > 0) {
+      this.manualRows = options.manualRows;
+    }
   }
 
   /**
@@ -61,13 +71,19 @@ export class HeightFitPolicy {
       this.maxRows,
       Math.max(this.minRows, Math.ceil(wantedRows))
     );
+    // Establish a baseline even if the initial content already fits. A drag
+    // before the first automatic resize must get the same protection.
+    this.lastRequestedRows ??= currentRows;
+    if (this.manualRows !== null && this.manualWanted === null) {
+      this.manualWanted = target;
+    }
 
     // A pane whose height is not the one last requested was sized by someone
     // else (a drag, the wrapper's hook, a rejected resize). Respect it until
     // the content wants a different number of rows than it did then.
     if (
       this.lastRequestedRows !== null &&
-      currentRows !== this.lastRequestedRows
+      (currentRows !== this.lastRequestedRows || this.manualRows === currentRows)
     ) {
       if (this.manualRows !== currentRows) {
         this.manualRows = currentRows;

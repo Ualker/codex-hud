@@ -2,11 +2,9 @@
  * tmux side of the content-fitted pane height.
  *
  * The wrapper stores the sizing policy on the tmux session (`@codex_hud_*`
- * options) and re-imposes it from the resize hook (bin/codex-hud-resize); the
- * HUD publishes the rows it wants as `@codex_hud_fit_height` so the hook and
- * the pane agree. Both reads and writes are one tmux round trip and every
- * failure disables fitting for this process: a pane whose size the HUD
- * cannot control is exactly the pane the wrapper already sized.
+ * options). Resize hooks preserve a manual height; the HUD publishes its
+ * target before requesting a resize so its own changes are not mistaken for
+ * a drag. Reading settings and applying a height each take one round trip.
  */
 
 import { execFile } from 'child_process';
@@ -21,6 +19,8 @@ export interface PaneHeightSettings {
   adaptive: boolean;
   minRows: number;
   maxRows: number;
+  initialRows?: number;
+  manualRows?: number;
 }
 
 function tmux(args: readonly string[]): Promise<string | null> {
@@ -63,7 +63,13 @@ export function parsePaneHeightSettings(
   ) {
     return null;
   }
-  return { adaptive: adaptive === '1', minRows, maxRows };
+  const initialRows = Number(values.get('@codex_hud_height'));
+  const manualRows = Number(values.get('@codex_hud_manual_height'));
+  return {
+    adaptive: adaptive === '1', minRows, maxRows,
+    ...(Number.isInteger(initialRows) && initialRows > 0 ? { initialRows } : {}),
+    ...(Number.isInteger(manualRows) && manualRows > 0 ? { manualRows } : {}),
+  };
 }
 
 export async function readPaneHeightSettings(
@@ -74,25 +80,24 @@ export async function readPaneHeightSettings(
 }
 
 /**
- * Publish the wanted rows and resize the pane. The option goes first so the
- * hook the resize fires reads the new target rather than snapping back.
+ * Changed content resumes fitting. Publish its target and clear the manual
+ * override before resizing, so the hook recognizes this as a program resize.
  */
 export async function applyPaneHeight(
   tmuxSession: string,
   paneId: string,
   rows: number
 ): Promise<boolean> {
-  const set = await tmux([
+  const resized = await tmux([
     'set-option',
     '-t',
     tmuxSession,
     '-q',
     FIT_HEIGHT_OPTION,
     String(rows),
+    ';', 'set-option', '-t', tmuxSession, '-q', '@codex_hud_height', String(rows),
+    ';', 'set-option', '-t', tmuxSession, '-qu', '@codex_hud_manual_height',
+    ';', 'resize-pane', '-t', paneId, '-y', String(rows),
   ]);
-  if (set === null) {
-    return false;
-  }
-  const resized = await tmux(['resize-pane', '-t', paneId, '-y', String(rows)]);
   return resized !== null;
 }

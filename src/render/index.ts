@@ -5,6 +5,7 @@
 
 import type { HudData, RenderOptions, LayoutConfig, LayoutMode } from '../types.js';
 import { renderHud } from './header.js';
+import { hudDetailsNotice } from './detail-level.js';
 import {
   advanceSpinnerFrame,
   colors,
@@ -106,22 +107,27 @@ export function renderFallbackFrame(summary: string): void {
   }
 }
 
-function applyStatusHint(lines: string[], width: number, hint: string): string[] {
+function applyStatusHint(lines: string[], width: number, hint: string, notice: string | null = null): string[] {
   viewHotspot = undefined;
   if (lines.length === 0 || width <= 0) {
     return lines;
   }
 
-  const firstLine = lines[0] ?? '';
-  const firstLen = visualLength(firstLine);
-  const shownHint = firstLen + 1 + visualLength(hint) <= width ? hint : '[view]';
+  let firstLine = lines[0] ?? '';
+  const noticeHint = notice ? `[view] ${notice}` : '';
+  const showNotice = noticeHint.length > 0 && visualLength(noticeHint) + 1 <= width;
+  const shownHint = showNotice ? noticeHint
+    : visualLength(firstLine) + 1 + visualLength(hint) <= width ? hint : '[view]';
   const status = colors.dim(shownHint);
   const statusLen = visualLength(status);
   if (statusLen + 1 > width) {
     return lines;
   }
 
-  if (firstLen + 1 + statusLen > width) {
+  if (showNotice) {
+    firstLine = truncateAnsi(firstLine, width - statusLen - 1);
+  }
+  if (visualLength(firstLine) + 1 + statusLen > width) {
     return lines;
   }
 
@@ -274,7 +280,7 @@ export function renderToStdout(data: HudData): RenderedFrame {
   advanceSpinnerFrame();
   const fitted = fitLinesToViewport(renderHud(data, options), maxLines, width);
   const lines = truncateLines(
-    applyStatusHint(fitted, width, hint),
+    applyStatusHint(fitted, width, hint, hudDetailsNotice()),
     width
   );
   // What the pane would need to show everything; the height fitter asks tmux

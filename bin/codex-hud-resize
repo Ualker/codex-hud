@@ -2,6 +2,7 @@
 set -e
 
 session_name="$1"
+reason="${2:-initial}"
 
 if [[ -z "$session_name" ]]; then
     session_name=$(tmux display -p "#{session_name}" 2>/dev/null || true)
@@ -60,6 +61,18 @@ if [[ -z "$pane" ]]; then
     exit 0
 fi
 
+current=$(tmux display -p -t "$pane" "#{pane_height}" 2>/dev/null || true)
+if [[ "$reason" == "pane-resized" ]]; then
+    # Both this helper and the HUD publish @codex_hud_height before resizing.
+    # A different height therefore comes from a user resize, not content fit.
+    # Record it without undoing the drag or changing the selected pane.
+    if is_positive_int "$current" && is_positive_int "$height" && [[ "$current" != "$height" ]]; then
+        tmux set-option -t "$session_name" -q @codex_hud_manual_height "$current" \
+            \; set-option -t "$session_name" -q @codex_hud_height "$current"
+    fi
+    exit 0
+fi
+
 if [[ -z "$base_height" ]]; then
     base_height="$height"
 fi
@@ -72,7 +85,6 @@ auto=$(tmux show-option -t "$session_name" -qv @codex_hud_auto)
 adaptive=$(tmux show-option -t "$session_name" -qv @codex_hud_height_adaptive)
 max_height=$(tmux show-option -t "$session_name" -qv @codex_hud_height_max)
 min_height=$(tmux show-option -t "$session_name" -qv @codex_hud_height_min)
-focus_main=$(tmux show-option -t "$session_name" -qv @codex_hud_focus_main)
 stored_main_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_main_pane)
 
 if [[ -z "$auto" ]]; then
@@ -80,7 +92,6 @@ if [[ -z "$auto" ]]; then
 fi
 auto=$(parse_boolean_setting "CODEX_HUD_HEIGHT_AUTO" "$auto" "0") || exit 1
 adaptive=$(parse_boolean_setting "@codex_hud_height_adaptive" "$adaptive" "0") || exit 1
-focus_main=$(parse_boolean_setting "@codex_hud_focus_main" "$focus_main" "1") || exit 1
 if [[ -z "$max_height" ]]; then
     max_height="${CODEX_HUD_HEIGHT_MAX:-12}"
 fi
@@ -143,6 +154,13 @@ if [[ "$adaptive" == "1" ]] && is_positive_int "$fit_height"; then
     fi
 fi
 
+# Keep a manual size across terminal resizes. The HUD clears this only when
+# changed content resumes automatic fitting; physical window bounds still win.
+manual_height=$(tmux show-option -t "$session_name" -qv @codex_hud_manual_height)
+if is_positive_int "$manual_height"; then
+    target="$manual_height"
+fi
+
 if is_positive_int "$window_height" && [[ "$target" -ge "$window_height" ]]; then
     target=$((window_height - 1))
 fi
@@ -170,11 +188,6 @@ if [[ "$adaptive" == "1" ]]; then
 fi
 tmux set-option -t "$session_name" -q @codex_hud_height "$target"
 
-current=$(tmux display -p -t "$pane" "#{pane_height}" 2>/dev/null || true)
 if [[ -n "$current" && "$current" != "$target" ]]; then
     tmux resize-pane -t "$pane" -y "$target" 2>/dev/null || true
-fi
-
-if [[ "$focus_main" == "1" && -n "$main_pane" ]]; then
-    tmux select-pane -t "$main_pane" 2>/dev/null || true
 fi

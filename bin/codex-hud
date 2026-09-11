@@ -35,6 +35,7 @@ HUD_POSITION="${CODEX_HUD_POSITION:-bottom}"
 ALIAS_MARKER="# codex-hud alias"
 CODEX_CLI_PATH=""
 CMUX_TMUX_ENV_ARGS=()
+CODEX_DATA_ENV_VARS=(CODEX_HOME CODEX_SESSIONS_PATH)
 FORCE_ATTACH="0"
 FORCE_NEW_SESSION="0"
 CONTROL_TARGET=""
@@ -306,8 +307,8 @@ Install Codex CLI from: https://github.com/openai/codex"
     CODEX_CLI_PATH="$path"
 }
 
-# Bind cmux's per-surface context to this tmux session. tmux servers otherwise
-# reuse their own (possibly stale) global environment for each new session.
+# Bind cmux's per-surface context and Codex data roots to this tmux session.
+# Existing servers otherwise reuse their own stale global environment.
 build_cmux_tmux_environment_args() {
     local name
     CMUX_TMUX_ENV_ARGS=()
@@ -321,6 +322,11 @@ build_cmux_tmux_environment_args() {
         esac
         CMUX_TMUX_ENV_ARGS+=("-e" "${name}=${!name}")
     done < <(env | sed -n 's/^\(CMUX_[A-Za-z0-9_]*\)=.*/\1/p' | LC_ALL=C sort -u)
+    for name in "${CODEX_DATA_ENV_VARS[@]}"; do
+        if [[ -n "${!name:-}" ]]; then
+            CMUX_TMUX_ENV_ARGS+=("-e" "${name}=${!name}")
+        fi
+    done
 }
 
 tmux_supports_new_session_environment() {
@@ -694,9 +700,6 @@ set_fixed_hud_height() {
         max_setting="12"
     fi
 
-    local focus_main_setting
-    focus_main_setting="1"
-
     tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane_id" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_auto "$auto_setting" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_height_adaptive "$adaptive_setting" || return 1
@@ -704,7 +707,6 @@ set_fixed_hud_height() {
     tmux set-option -t "$session_name" -q @codex_hud_height_max "$max_setting" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_base_height "$height" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_height "$height" || return 1
-    tmux set-option -t "$session_name" -q @codex_hud_focus_main "$focus_main_setting" || return 1
     if [[ -n "$main_pane_id" ]]; then
         tmux set-option -t "$session_name" -q @codex_hud_main_pane "$main_pane_id" || return 1
     fi
@@ -717,8 +719,9 @@ set_fixed_hud_height() {
 
     local hook_cmd
     if [[ -x "$resize_helper" ]]; then
-        hook_cmd="run-shell \"$resize_helper #{session_name}\""
+        hook_cmd="run-shell \"$resize_helper #{session_name} client-resized\""
         tmux set-hook -t "$session_name" client-resized "$hook_cmd" || true
+        hook_cmd="run-shell \"$resize_helper #{session_name} pane-resized\""
         tmux set-hook -t "$session_name" after-resize-pane "$hook_cmd" || true
     fi
 }
@@ -818,9 +821,11 @@ resolve_hud_height_for_tmux_target() {
 # must be baked into the pane command — verified live: with the tmux server
 # running since the previous day, an exported CODEX_HUD_NOTIFY_CMD never
 # reached the HUD process, and a server that happened to start with the
-# variable pinned that value forever. Baked only when set and non-empty
-# (empty means unset to every consumer, including NO_COLOR per its spec).
+# variable pinned that value forever. Empty/unset overrides explicitly remove
+# inherited values (including NO_COLOR), instead of reviving server defaults.
 HUD_PASSTHROUGH_ENV_VARS=(
+    CODEX_HOME
+    CODEX_SESSIONS_PATH
     CODEX_HUD_MODE
     CODEX_HUD_HEIGHT_FIT
     CODEX_HUD_TOOL_DETAILS
@@ -850,13 +855,29 @@ build_hud_pane_command() {
     local cwd_escaped
     cwd_escaped=$(printf "%q" "$cwd")
     local env_parts=""
-    local var
+    local env_unsets=""
+    local var value session_value
     for var in "${HUD_PASSTHROUGH_ENV_VARS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            env_parts+=" ${var}=$(printf "%q" "${!var}")"
+        value="${!var:-}"
+        case "$var" in
+            CODEX_HOME|CODEX_SESSIONS_PATH)
+                # Reloading display settings must keep the data roots of the
+                # still-running main Codex. New sessions always record either
+                # a value or a removal marker; legacy sessions use the caller.
+                session_value=$(tmux show-environment -t "$session_name" "$var" 2>/dev/null || true)
+                case "$session_value" in
+                    "$var="*) value="${session_value#*=}" ;;
+                    "-$var") value="" ;;
+                esac
+                ;;
+        esac
+        if [[ -n "$value" ]]; then
+            env_parts+=" ${var}=$(printf "%q" "$value")"
+        else
+            env_unsets+=" -u ${var}"
         fi
     done
-    printf '%s' "cd ${cwd_escaped} && exec env LINES='$height' COLUMNS='$width' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$session_name' CODEX_HUD_TOGGLE_KEY='$toggle_key'${env_parts} node '$HUD_DIR/dist/index.js'"
+    printf '%s' "cd ${cwd_escaped} && exec env${env_unsets} LINES='$height' COLUMNS='$width' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$session_name' CODEX_HUD_TOGGLE_KEY='$toggle_key'${env_parts} node '$HUD_DIR/dist/index.js'"
 }
 
 # Create new tmux session with HUD
@@ -911,6 +932,14 @@ create_session() {
         fi
     fi
     SESSION_CREATED="true"
+    local data_var
+    for data_var in "${CODEX_DATA_ENV_VARS[@]}"; do
+        if [[ -z "${!data_var:-}" ]]; then
+            # -r marks the variable removed for child processes. -u would
+            # merely expose the stale server-global value again.
+            tmux set-environment -r -t "$SESSION_NAME" "$data_var"
+        fi
+    done
     # Keep wheel scrolling available in Codex pane by default.
     local mouse_setting
     mouse_setting=$(parse_boolean_setting "CODEX_HUD_MOUSE" "${CODEX_HUD_MOUSE:-}" "1") || exit 1
@@ -922,7 +951,7 @@ create_session() {
         tmux set-option -t "$SESSION_NAME" mouse off
     fi
 
-    tmux set-option -t "$SESSION_NAME" escape-time 0
+    # escape-time is server-wide; inherit the user's setting.
     tmux set-option -t "$SESSION_NAME" assume-paste-time 0
     tmux set-option -t "$SESSION_NAME" repeat-time 0
     local inherited_history_limit
@@ -1201,6 +1230,9 @@ Environment Variables:
   re-captured by 'codex-hud --reload' — a running HUD never sees a later
   'export' on its own, because tmux panes inherit the tmux server's
   environment, not your shell's.
+  Unset/empty display variables clear old server values on reload. CODEX_HOME
+  and CODEX_SESSIONS_PATH are captured for both panes when the session starts;
+  reload keeps those data roots aligned with its still-running main Codex.
 
   CODEX_HUD_POSITION  HUD pane position: bottom (default), top
   CODEX_HUD_HEIGHT    HUD pane height in lines (default: terminal height / 6, min 5, max 12)

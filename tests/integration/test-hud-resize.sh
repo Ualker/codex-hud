@@ -85,18 +85,10 @@ run_case() {
     exit 1
   fi
 
-  if [[ "$focus_main" == "1" ]]; then
-    if ! grep -q "select-pane -t %1" "$log_file"; then
-      echo "Expected focus to return to main pane, log:" >&2
-      cat "$log_file" >&2
-      exit 1
-    fi
-  else
-    if grep -q "select-pane -t %1" "$log_file"; then
-      echo "Did not expect focus change when focus_main=0, log:" >&2
-      cat "$log_file" >&2
-      exit 1
-    fi
+  if grep -q "select-pane " "$log_file"; then
+    echo "Resize must preserve focus, including legacy focus_main=1 sessions" >&2
+    cat "$log_file" >&2
+    exit 1
   fi
 }
 
@@ -119,10 +111,10 @@ run_case 70 60 5 5 7 "1" "0" "" "0" "1" "%1"
 # Copy-mode guard: no resize and no focus hop while main pane is in copy-mode.
 run_case 50 60 5 10 12 "1" "1" "" "1" "1" "%1"
 
-# Focus guard can be disabled explicitly.
+# Legacy focus settings no longer steal focus.
 run_case 70 60 5 5 5 "0" "0" "" "0" "0" "%1"
 
-# If stored main pane is stale, fallback still finds and focuses the real main pane.
+# A stale main pane still falls back for the copy-mode guard, preserving focus.
 run_case 70 60 5 5 5 "0" "0" "" "0" "1" "%9"
 
 # The HUD publishes the rows its content needs; in adaptive mode that is the

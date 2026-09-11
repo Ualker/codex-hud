@@ -77,6 +77,8 @@ codex
 
 已有 checkout：`codex-hud-upgrade` 更新当前跟踪分支；`codex-hud-sync` 只构建当前源码并刷新别名。安装/同步会保留 shell 配置的符号链接、文件权限与托管段后面的用户覆盖，重复执行不会累积空行。构建完成后，用 `codex-hud --reload --target 完整会话名` 重启指定 HUD；同目录全部 HUD 使用 `--reload --all`。重启会检查 HUD Node 进程是否启动并保持存活，任何失败（含部分失败）均返回非零；主 Codex pane 保留。
 
+如果源码快进后的运行产物切换失败，升级会尝试恢复旧依赖和构建；恢复也失败时会保留暂存目录与备份，报告路径并打印带目标检查的恢复命令。先解决文件系统错误、恢复缺失目录，再运行 `codex-hud-sync`。
+
 ### 管理命令
 
 首次安装后，以下命令自动加入 shell：
@@ -97,7 +99,7 @@ codex
 
 ## HUD 显示了什么？
 
-默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。任务标题优先于运行时长和长分支，并省略提示词开头重复的当前目录。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
+默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。切换 `d` 后，标题行会短暂显示三秒 `Details: compact/full`，即使两种模式当前显示的行相同也有反馈。单会话和概览标题统一将绝对路径缩成项目名或文件名，宽窗口适度增加标题空间，任务文字优先于运行时长和长分支。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
 
 预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
 
@@ -122,7 +124,7 @@ Ctx: ███████▁▁▁▁▁ 55% left (70.4K) · ↻3
 | **活动** | Thinking/Running tool/Responding/Idle、工具耗时/结果、计划进度和活跃 subagent；空闲会话还会显示上一轮耗时。被 Codex 自己以错误结束的回合（`task_complete.error`：撞上用量限额、模型满载、流中途断开）显示为 `✗ Turn failed · usage limit · after 16m17s`——给出提供方的裁决和被浪费掉的时长，绝不当作完成：2026-08-31 实测，两个活跃会话 12 个回合里有 4 个以这种方式结束（其中一个跑了 35 分钟），此前每一个都显示为 `✓ Idle · waiting for you` 并按「跑完了」发了通知。所有被包装的 shell 命令统一显示为 `exec`——同一类活动只有一个名字，无论 Codex 发来的是单条命令还是一段跑多条的脚本（包装的非 shell 工具如 `web_search`、`update_plan` 仍显示各自的名字）。`@目录` 标记只出现在跑在会话目录之外的命令上；Codex 每次调用都携带 workdir，给会话 cwd 本身打标记说不出任何信息。命令非零退出会标记为 `✗` 并显示退出码——包括 Codex 把它放在一段自身执行成功的脚本里运行的情况。stream error 只画在 Codex TUI 上、不写入会话日志，被它打断的回合会永远停在 `Thinking`；静默数分钟后 HUD 会去主 pane 查错误横幅，只有确认存在才显示 `✗ Turn likely interrupted`。Codex 自身退出（quit、崩溃或拒绝信任提示）时，wrapper 会把 pane 交还给你的 shell，而磁盘上没有任何记录说明这件事；对安静的会话，HUD 会探测主 pane 进程树里是否还有活着的 Codex（Codex 以孙进程形态运行，tmux 自己的 pane 命令始终显示为 shell），没有则显示 `○ Codex exited · run codex to restart`，不再假装在等待一个没人会输入的回合。`/new` 之后，Codex 0.149 在首条消息之前不落任何痕迹——没有 rollout、也没有会话库行——上一个会话的末状态会因此一直挂着；安静 pane 的输入区底栏若显示全新会话（`Context 100% left · Ready`），则改显 `○ New session at the prompt · binds on its first message`；该提示存在期间，上一个会话的 Context/Token 行、工具历史行连同 Session 行的 Session/CLI/Provider 三格一起转为 dim（目录与账号配额保持原色），HUD 上再没有亮色信息与 pane 自己的底栏对立 |
 | **Session** | 工作目录、Session ID、CLI 版本；排在计划和工具历史之后，小 pane 优先保留动态信息。Session ID 在行宽允许时完整显示——`codex resume`、`fork`、`archive`、`delete` 接受的正是它；pane 更窄时才回退为缩写形式 |
 
-版面是双向自适应的。有余量时会同时保留回合行与运行中工具行，因为两者计的不是同一个数：回合行是 Codex 连续执行工具的时长，工具行是当前这一条调用的时长。pane 放不下时，先从最压缩的形态起步——多条 agent 折叠成一行 `● N agents` 计数、工具行旁不带回合行、不显示平静配额、环境单元并入第 1 行（放不下就只留 `[FULL ACCESS]` 徽章）、不显示 Session 行——再按价值逐项回填，放得下就保留：先展开 agent，再回合行，再平静配额，再环境独立行，再 Session 行，最后才是暗色的未识别记录备注。有状态可显示时不会留空行，pane 越高只会显示越多。自适应高度模式下 pane 本身也跟随内容：增长到未裁剪版面需要的行数（上限 `CODEX_HUD_HEIGHT_MAX`，至多每十秒一次），内容持续变少两分钟后再收缩；你手动拖出的高度会一直保留到内容变化为止（`CODEX_HUD_HEIGHT_FIT=0` 关闭）。
+版面是双向自适应的。有余量时会同时保留回合行与运行中工具行，因为两者计的不是同一个数：回合行是 Codex 连续执行工具的时长，工具行是当前这一条调用的时长。pane 放不下时，先从最压缩的形态起步——多条 agent 折叠成一行 `● N agents` 计数、工具行旁不带回合行、不显示平静配额、环境单元并入第 1 行（放不下就只留 `[FULL ACCESS]` 徽章）、不显示 Session 行——再按价值逐项回填，放得下就保留：先展开 agent，再回合行，再平静配额，再环境独立行，再 Session 行，最后才是暗色的未识别记录备注。有状态可显示时不会留空行，pane 越高只会显示越多。自适应高度模式下 pane 本身也跟随内容：增长到未裁剪版面需要的行数（上限 `CODEX_HUD_HEIGHT_MAX`，至多每十秒一次），内容持续变少两分钟后再收缩；你手动拖出的高度会一直保留到内容变化为止（`CODEX_HUD_HEIGHT_FIT=0` 关闭）。终端尺寸变化时也会在窗口允许的范围内保留手动高度。布局更新不改变选中的 pane，新建会话时默认选择 Codex 主 pane；wrapper 同时保留已有 tmux server 的 `escape-time` 设置。
 
 窄 pane 上按"整个单元"舍弃，而不是把词截断。标题行保住项目名、收缩分支名；环境行取其优先级序列中能放下的最长前缀——权限在前、清单计数在后——实在放不下就整行让出，而不是显示半句安全状态。因为取的是前缀而不是能塞就塞，把 pane 拖宽只会增加单元，短的低优先单元也不会再占掉高优先单元的位置。
 
@@ -226,6 +228,8 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 
 `CODEX_HUD_SESSION_START`、`CODEX_HUD_MAIN_PANE`、`CODEX_HUD_TMUX_SESSION`
 属于 wrapper→HUD 的内部传参，不建议手动设置。
+
+创建会话时，`CODEX_HOME` 与 `CODEX_SESSIONS_PATH` 会同时传给 Codex 和 HUD，已有 tmux server 也不会覆盖它们。重载 HUD 时沿用该会话主 Codex 的数据目录，同时从调用者刷新 HUD 显示设置；空值或取消设置会明确清除 server 中遗留的显示变量，包括 `NO_COLOR`。
 
 </details>
 

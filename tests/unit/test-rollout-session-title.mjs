@@ -66,12 +66,19 @@ try {
   assert.equal(later?.session?.title, '把视频转成 1080p ↵ 并检查音轨是否同步 sk-abcdef');
 
   // ---- bounded: a long prompt is cut with an ellipsis -----------------------
-  fs.writeFileSync(rolloutPath, meta + userMessage('2026-09-05T01:27:47.000Z', 'x'.repeat(200)));
+  fs.writeFileSync(rolloutPath, meta + userMessage('2026-09-05T01:27:47.000Z', 'x'.repeat(600)));
   const bounded = new RolloutParser(10);
   bounded.setRolloutPath(rolloutPath);
   const long = (await bounded.parse())?.session?.title ?? '';
-  assert.ok(long.length <= 60, `the stored title is bounded: ${long.length}`);
+  assert.ok(long.length <= 240, `the stored title is bounded: ${long.length}`);
   assert.ok(long.endsWith('…'));
+
+  const pathPrompt = '优化下/Users/zyb/Desktop/prj/scripts/agent_fleet_monitor.py这个的界面和交互';
+  fs.writeFileSync(rolloutPath, meta + userMessage('2026-09-05T01:27:47.000Z', pathPrompt));
+  const withPath = new RolloutParser(10);
+  withPath.setRolloutPath(rolloutPath);
+  assert.equal((await withPath.parse())?.session?.title, pathPrompt,
+    'keep the task after a long path for display-time normalization');
 
   // ---- only injected messages: no title at all ------------------------------
   fs.writeFileSync(rolloutPath, meta + userMessage('2026-09-05T01:27:47.000Z', '<user_instructions>\nfoo\n</user_instructions>'));

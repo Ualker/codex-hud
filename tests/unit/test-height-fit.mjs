@@ -45,6 +45,26 @@ const policy = () =>
   assert.equal(fit.observe(12, 11, t0 + 210_000), 12, 'different content resumes fitting');
 }
 
+// ---- manual size before the first automatic request or after reload ---------
+{
+  const fit = policy();
+  assert.equal(fit.observe(5, 5, t0), null);
+  assert.equal(fit.observe(5, 9, t0 + 1000), null);
+  assert.equal(fit.observe(5, 9, t0 + 200_000), null,
+    'a drag is respected before the first automatic resize');
+  assert.equal(fit.observe(10, 9, t0 + 210_000), 10);
+
+  const beforeFirstFrame = new HeightFitPolicy({ minRows: 5, maxRows: 12, initialRows: 5 });
+  assert.equal(beforeFirstFrame.observe(5, 9, t0), null);
+  assert.equal(beforeFirstFrame.observe(5, 9, t0 + 200_000), null,
+    'the wrapper height detects a drag before the initial frame');
+  const reloaded = new HeightFitPolicy({ minRows: 5, maxRows: 12, initialRows: 9, manualRows: 9 });
+  assert.equal(reloaded.observe(5, 9, t0), null);
+  assert.equal(reloaded.observe(5, 9, t0 + 200_000), null);
+  assert.equal(reloaded.observe(10, 9, t0 + 210_000), 10,
+    'a preserved manual override resumes fitting on changed content');
+}
+
 // ---- nonsense input is ignored -------------------------------------------------
 {
   const fit = policy();
