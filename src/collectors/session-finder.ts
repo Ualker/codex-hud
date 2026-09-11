@@ -1211,6 +1211,7 @@ export class SessionFinder {
   private fullResolveIntervalMs = FULL_RESOLVE_INTERVAL_MS;
   private fullResolveIntervalMaxMs = FULL_RESOLVE_INTERVAL_MAX_MS;
   private boundViaProcess = false;
+  private historicalPaneProbeDone = false;
   private cachedPanePid: string | null = null;
   private processTree: CachedProcessTree | null = null;
   private runtimeHookOverrides: string[] = [];
@@ -1462,6 +1463,7 @@ export class SessionFinder {
     this.acceptedSnapshotThreadId = null;
     this.snapshotNonceHighWater = null;
     this.boundViaProcess = false;
+    this.historicalPaneProbeDone = false;
     this.cachedPanePid = null;
     this.processTree = null;
     this.runtimeHookOverrides = [];
@@ -1591,10 +1593,32 @@ export class SessionFinder {
       now - THREAD_CANDIDATE_WINDOW_MS,
       (this.targetStartTime?.getTime() ?? 0) - 60_000
     );
-    const candidates = await findThreadCandidatesForProcesses(
-      processTree?.processIds ?? [panePid],
+    const processIds = processTree?.processIds ?? [panePid];
+    let candidates = await findThreadCandidatesForProcesses(
+      processIds,
       sinceMs
     );
+
+    // A reloaded HUD has no in-memory binding. A pane quiet for over a day
+    // can have no recent rows even though its original Codex is still alive.
+    // Recover once from this pane's launch window before guessing by cwd.
+    // Normal polling keeps the smaller window; never scan before launch.
+    const launchMs = this.targetStartTime?.getTime();
+    const historicalSince = Math.max(
+      now - DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS,
+      (launchMs ?? now) - 60_000
+    );
+    if (
+      candidates?.length === 0 && !this.boundViaProcess &&
+      !this.historicalPaneProbeDone && launchMs !== undefined &&
+      Number.isFinite(launchMs) && historicalSince < sinceMs
+    ) {
+      const historical = await findThreadCandidatesForProcesses(processIds, historicalSince);
+      if (historical !== null) {
+        this.historicalPaneProbeDone = true;
+        candidates = historical;
+      }
+    }
 
     if (candidates === null || candidates.length === 0) {
       return { threadId: null, keepCurrent: this.boundViaProcess };

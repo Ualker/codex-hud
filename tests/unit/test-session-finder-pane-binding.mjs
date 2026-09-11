@@ -1332,6 +1332,59 @@ try {
   }
 
   {
+    // Reloading a HUD after more than a day of inactivity must recover the
+    // pane's established thread instead of borrowing another pane's rollout.
+    const cleanupTmux = installFakeTmux({ '%70': '11111' });
+    try {
+      const home = makeTempCodexHome();
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-'));
+      process.env.CODEX_HOME = home;
+      delete process.env.CODEX_SESSIONS_PATH;
+      process.env.CODEX_HUD_MAIN_PANE = '%70';
+      const now = new Date();
+      const hour = 60 * 60 * 1000;
+      const started = new Date(now.getTime() - 48 * hour);
+      const quietThread = '019eb205-0000-7000-8000-000000000001';
+      const otherThread = '019eb205-0000-7000-8000-000000000002';
+      const quietRollout = writeRollout(home, {
+        sessionId: quietThread, cwd, fileOffsetMinutes: -72 * 60,
+        modifiedAt: new Date(now.getTime() - 25 * hour),
+      });
+      const otherRollout = writeRollout(home, {
+        sessionId: otherThread, cwd, modifiedAt: now,
+      });
+      writeStateDb(home, { threads: [
+        { id: quietThread, rolloutPath: quietRollout },
+        { id: otherThread, rolloutPath: otherRollout },
+      ] });
+      writeLogsDb(home, [
+        { threadId: quietThread, processUuid: 'pid:11111:quiet',
+          ts: Math.floor((now.getTime() - 25 * hour) / 1000), body: '' },
+        { threadId: otherThread, processUuid: 'pid:22222:other',
+          ts: Math.floor(now.getTime() / 1000), body: '' },
+      ]);
+
+      const finder = new SessionFinder(cwd, undefined, started);
+      const cold = await finder.check();
+      assert.equal(cold?.sessionId, quietThread,
+        'a cold HUD must recover its quiet pane beyond the regular 24h window');
+      assert.equal(cold?.path, fs.realpathSync(quietRollout));
+      clearLogRows(home);
+      assert.equal((await finder.check(true))?.sessionId, quietThread,
+        'normal polling retains the recovered binding when logs disappear');
+
+      // A new launch reusing the same PID must not recover its old incarnation.
+      appendLogRow(home, { threadId: quietThread, processUuid: 'pid:11111:old',
+        ts: Math.floor((now.getTime() - 25 * hour) / 1000), body: '' });
+      const reused = new SessionFinder(cwd, undefined, new Date(now.getTime() - hour));
+      assert.notEqual((await reused.check())?.sessionId, quietThread,
+        'historical recovery must stay after the target pane launch');
+    } finally {
+      cleanupTmux();
+    }
+  }
+
+  {
     // Fast path: when the rollout file of a freshly created (/new) session
     // appears on disk, noteRolloutAppeared() promotes it immediately instead
     // of waiting out the facts TTL and the next poll.
