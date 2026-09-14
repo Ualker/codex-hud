@@ -738,6 +738,14 @@ const COLLECTOR_LABELS: Record<string, string> = {
   renderer: 'HUD display',
 };
 
+const COLLECTOR_ERROR_HINTS = {
+  'missing-file': 'file missing',
+  'access-denied': 'permission denied',
+  'invalid-log': 'invalid log',
+  'read-limit': 'log record too large',
+  truncated: 'log changed',
+};
+
 export function renderHealthLine(
   data: HudData,
   width: number = Number.POSITIVE_INFINITY,
@@ -752,7 +760,9 @@ export function renderHealthLine(
     }
     const label = COLLECTOR_LABELS[name] ?? name;
     if (health.status === 'error') {
-      warnings.push(`${label} unavailable`);
+      const hint = health.errorKind ? COLLECTOR_ERROR_HINTS[health.errorKind] : undefined;
+      const detail = hint ?? (name === 'agents' ? 'see --doctor' : undefined);
+      warnings.push(`${label} unavailable${detail ? ` (${detail})` : ''}`);
     } else if (health.status === 'stale') {
       // A stale collector has succeeded before, so it always carries a
       // timestamp; `pending` covers the never-succeeded case and stays silent.

@@ -500,6 +500,8 @@ export interface CollectorHealth {
   lastAttemptAt: Date;
   lastSuccessAt?: Date;
   errorSummary?: string;
+  /** Safe, fixed display categories; raw diagnostic text stays in the log. */
+  errorKind?: 'missing-file' | 'access-denied' | 'invalid-log' | 'read-limit' | 'truncated';
 }
 
 export type CollectorHealthMap = Partial<

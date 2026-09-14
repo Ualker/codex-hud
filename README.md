@@ -246,6 +246,14 @@ codex-hud --hud-version      # Print version and revision
 
 ## Configuration
 
+`thread_goal_updated` records from Codex `/goal` are recognized metadata and
+do not trigger protocol warnings. Agent tracking streams complete log records,
+including histories larger than 64 MiB; the memory guard applies to a single
+record. The health row shows a brief reason when known. Session-log and agent
+tracking failures are recorded for `codex-hud --doctor`; JSONL read errors
+include the file and byte offset. Repeated identical failures are logged once
+until the cause changes or the collector recovers.
+
 ### Environment Variables
 
 HUD display variables are captured from your shell when a session starts and

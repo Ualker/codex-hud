@@ -77,6 +77,7 @@ import {
 import { toggleHudDetails } from './render/detail-level.js';
 import { HudNotifier, isCompletedTurnNotifiable } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
+import { recordCollectorFailure } from './utils/collector-health.js';
 import { resolveHudStateFile } from './utils/state-dir.js';
 import { calculateContextUsage } from './context-usage.js';
 import type {
@@ -297,16 +298,7 @@ function recordCollectorError(
   name: keyof CollectorHealthMap,
   error: unknown
 ): void {
-  const previous = collectorHealth[name];
-  collectorHealth[name] = {
-    status: 'error',
-    lastAttemptAt: previous?.lastAttemptAt ?? new Date(),
-    lastSuccessAt: previous?.lastSuccessAt,
-    errorSummary: (error instanceof Error ? error.message : String(error))
-      .replace(/[\r\n\t]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .slice(0, 180),
-  };
+  collectorHealth[name] = recordCollectorFailure(name, error, collectorHealth[name]);
 }
 
 const HUD_TMUX_SESSION = process.env.CODEX_HUD_TMUX_SESSION || undefined;
@@ -1169,7 +1161,6 @@ async function mainLoop(): Promise<void> {
     // stderr would land inside the rendered frame, so diagnostics go to the
     // log file. That is not enough on its own: the screen keeps whatever was
     // painted last, which reads as a healthy idle session. Say so in the pane.
-    logHudError('render', error);
     recordCollectorError('renderer', error);
     renderFallbackFrame(
       collectorHealth.renderer?.errorSummary ?? 'unknown error'
