@@ -1,5 +1,95 @@
 import { open } from 'fs/promises';
 
+export class JsonlReadError extends Error {
+  constructor(
+    public readonly code: 'JSONL_RECORD_TOO_LARGE' | 'JSONL_INVALID' | 'JSONL_TRUNCATED',
+    message: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = 'JsonlReadError';
+  }
+}
+
+/**
+ * Replay complete records without retaining the whole history. The EOF is
+ * captured once, so a busy writer cannot extend a scan forever. Callers stage
+ * their state and commit it only after this function succeeds; a partial last
+ * line is retried from its beginning on the next scan.
+ */
+export async function scanCompleteJsonl(
+  filePath: string,
+  fromOffset: number,
+  consume: (record: unknown) => void | Promise<void>,
+  maxLineBytes: number = 64 * 1024 * 1024
+): Promise<number> {
+  if (!Number.isSafeInteger(fromOffset) || fromOffset < 0) {
+    throw new RangeError('JSONL offset must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) {
+    throw new RangeError('JSONL line limit must be a positive safe integer.');
+  }
+  const handle = await open(filePath, 'r');
+  try {
+    const { size } = await handle.stat();
+    if (size < fromOffset) {
+      throw new JsonlReadError('JSONL_TRUNCATED',
+        `JSONL file was truncated below committed offset ${fromOffset}: ${filePath}`);
+    }
+    let position = fromOffset;
+    let nextOffset = fromOffset;
+    let fragments: Buffer[] = [];
+    let lineBytes = 0;
+    const append = (fragment: Buffer): void => {
+      lineBytes += fragment.length;
+      if (lineBytes > maxLineBytes) {
+        throw new JsonlReadError('JSONL_RECORD_TOO_LARGE',
+          `JSONL record at byte ${nextOffset} exceeds the ${maxLineBytes}-byte limit: ${filePath}`);
+      }
+      if (fragment.length > 0) fragments.push(fragment);
+    };
+    while (position < size) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, size - position));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (bytesRead === 0) {
+        throw new JsonlReadError('JSONL_TRUNCATED',
+          `Unexpected end of JSONL file at offset ${position}: ${filePath}`);
+      }
+      const bytes = chunk.subarray(0, bytesRead);
+      let start = 0;
+      for (;;) {
+        const newline = bytes.indexOf(0x0a, start);
+        if (newline < 0) {
+          append(bytes.subarray(start));
+          break;
+        }
+        append(bytes.subarray(start, newline));
+        const line = (fragments.length === 1
+          ? fragments[0] : Buffer.concat(fragments, lineBytes)).toString('utf8');
+        fragments = [];
+        lineBytes = 0;
+        if (line.trim().length > 0) {
+          let record: unknown;
+          try {
+            record = JSON.parse(line);
+          } catch (error) {
+            throw new JsonlReadError('JSONL_INVALID',
+              `Invalid JSONL record at byte ${nextOffset}: ${filePath}`, { cause: error });
+          }
+          await consume(record);
+        }
+        nextOffset = position + newline + 1;
+        start = newline + 1;
+        if (start >= bytes.length) break;
+      }
+      position += bytesRead;
+    }
+    return nextOffset;
+  } finally {
+    await handle.close();
+  }
+}
+
 export interface JsonlTailBatch<T> {
   records: T[];
   /** Absolute offset of the first record returned after optional alignment. */

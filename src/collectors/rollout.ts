@@ -314,6 +314,8 @@ const KNOWN_EVENT_TYPES = new Set([
   'agent_message',
   'user_message',
   'thread_settings_applied',
+  // codex-cli 0.154 /goal state updates do not change turn or token state.
+  'thread_goal_updated',
   'mcp_tool_call_begin',
   'mcp_tool_call_end',
   // Known low-signal event kinds intentionally ignored by the HUD.

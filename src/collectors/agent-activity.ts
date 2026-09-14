@@ -8,10 +8,7 @@ import {
   findRolloutByThreadId,
   type SessionFile,
 } from './session-finder.js';
-import {
-  readCompleteJsonl,
-  type JsonlTailBatch,
-} from '../utils/jsonl-tail.js';
+import { scanCompleteJsonl } from '../utils/jsonl-tail.js';
 import { logHudError } from '../utils/hud-log.js';
 import { stat } from 'node:fs/promises';
 
@@ -512,10 +509,6 @@ interface TrackedAgentNode extends AgentState {
   retryBackoffMs: number;
 }
 
-interface RootForkBoundary {
-  localBoundaryIndex: number;
-}
-
 // Tracking-error retries start at 1s and cap at 10s between attempts.
 const MIN_TRACKING_RETRY_MS = 1000;
 const MAX_TRACKING_RETRY_MS = 10_000;
@@ -523,11 +516,6 @@ const MAX_TRACKING_RETRY_MS = 10_000;
 // Rollout files never predate their thread's spawn by more than this slack
 // (covers timezone-vs-UTC drift in date directories plus clock skew).
 const ROLLOUT_RESOLVE_SLACK_MS = 48 * 60 * 60 * 1000;
-
-// Rollout reads are materialized in memory; a pathological file becomes a
-// tracking error (with retry backoff) instead of ballooning the process.
-const MAX_ROLLOUT_READ_BYTES = 64 * 1024 * 1024;
-const ROLLOUT_READ_OPTIONS = { maxBytes: MAX_ROLLOUT_READ_BYTES } as const;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -614,39 +602,20 @@ function taskStartedTurnId(record: unknown): string | null {
 // sessions from growing (and re-copying) this set without bound.
 const MAX_TRACKED_TURN_IDS = 1024;
 
-function collectPhysicalTurnIds(
-  records: readonly unknown[],
-  initial: ReadonlySet<string> = new Set<string>()
-): Set<string> {
-  const turnIds = new Set(initial);
-  for (const record of records) {
-    const turnId = physicalLifecycleTurnId(record);
-    if (turnId !== null) {
-      turnIds.add(turnId);
-    }
-  }
+function collectPhysicalTurnId(record: unknown, turnIds: Set<string>): void {
+  const turnId = physicalLifecycleTurnId(record);
+  if (turnId !== null) turnIds.add(turnId);
   if (turnIds.size > MAX_TRACKED_TURN_IDS) {
-    const excess = turnIds.size - MAX_TRACKED_TURN_IDS;
-    let dropped = 0;
-    for (const turnId of turnIds) {
-      if (dropped >= excess) {
-        break;
-      }
-      turnIds.delete(turnId);
-      dropped++;
-    }
+    turnIds.delete(turnIds.values().next().value!);
   }
-  return turnIds;
 }
 
-function findLocalBoundaryIndex(
-  records: readonly unknown[],
+function isLocalBoundary(
+  record: unknown,
   inheritedTurnIds: ReadonlySet<string>
-): number {
-  return records.findIndex((record) => {
-    const turnId = taskStartedTurnId(record);
-    return turnId !== null && !inheritedTurnIds.has(turnId);
-  });
+): boolean {
+  const turnId = taskStartedTurnId(record);
+  return turnId !== null && !inheritedTurnIds.has(turnId);
 }
 
 function validateChildCanonicalMeta(
@@ -811,60 +780,61 @@ export class AgentActivityCollector {
       return true;
     }
 
-    const batch = await readCompleteJsonl<unknown>(
-      root.session.path,
-      root.offset,
-      ROLLOUT_READ_OPTIONS
-    );
-    if (batch.truncated && root.offset > 0) {
-      throw new Error(
-        `Root rollout ${root.session.path} was truncated below committed offset ${root.offset}.`
-      );
-    }
-
+    // Replay into a private candidate. No offsets, seeds or lifecycle state
+    // become visible until every complete record in this snapshot validates.
     const candidate: RootTracker = {
       ...root,
-      physicalTurnIds: collectPhysicalTurnIds(
-        batch.records,
-        root.physicalTurnIds
-      ),
+      physicalTurnIds: new Set(root.physicalTurnIds),
     };
-    let eligibleStartIndex = 0;
-
-    if (!root.canonicalValidated) {
-      const payload = requireCanonicalSessionMeta(
-        batch.records,
-        root.session.sessionId,
-        `Root ${root.session.sessionId}`
-      );
-      candidate.canonicalValidated = true;
-      candidate.forkedFromId = optionalNonEmptyString(
-        payload.forked_from_id,
-        `Root ${root.session.sessionId} forked_from_id`
-      );
-
-      if (candidate.forkedFromId !== null) {
-        try {
-          const boundary = await this.resolveRootForkBoundary(
-            candidate.forkedFromId,
-            batch.records
-          );
-          eligibleStartIndex = boundary.localBoundaryIndex;
-        } catch (error) {
-          this.setRootTrackingError(
-            `Root fork source ${candidate.forkedFromId}: ${errorMessage(error)}`
-          );
-          return false;
-        }
-      }
-    }
-
+    let inheritedTurnIds: Set<string> | null = null;
+    let eligible = root.canonicalValidated;
+    let forkError: string | undefined;
     const seeds: AgentSpawnSeed[] = [];
-    for (const record of batch.records.slice(eligibleStartIndex)) {
-      const seed = normalizeAgentSpawnSeed(record);
-      if (seed !== null) {
-        seeds.push(seed);
+    try {
+      candidate.offset = await scanCompleteJsonl(root.session.path, root.offset, async (record) => {
+        if (!candidate.canonicalValidated) {
+          const payload = requireCanonicalSessionMeta(
+            [record], root.session.sessionId, `Root ${root.session.sessionId}`
+          );
+          candidate.canonicalValidated = true;
+          candidate.forkedFromId = optionalNonEmptyString(
+            payload.forked_from_id, `Root ${root.session.sessionId} forked_from_id`
+          );
+          if (candidate.forkedFromId !== null) {
+            try {
+              inheritedTurnIds = await this.readRootForkTurnIds(candidate.forkedFromId);
+            } catch (error) {
+              forkError = `Root fork source ${candidate.forkedFromId}: ${errorMessage(error)}`;
+              throw error;
+            }
+          } else {
+            eligible = true;
+          }
+        }
+        collectPhysicalTurnId(record, candidate.physicalTurnIds);
+        if (!eligible && inheritedTurnIds !== null) {
+          eligible = isLocalBoundary(record, inheritedTurnIds);
+        }
+        if (eligible) {
+          const seed = normalizeAgentSpawnSeed(record);
+          if (seed !== null) seeds.push(seed);
+        }
+      });
+    } catch (error) {
+      if (forkError !== undefined) {
+        this.setRootTrackingError(forkError);
+        return false;
       }
+      throw error;
+    }
+    if (!candidate.canonicalValidated) {
+      requireCanonicalSessionMeta([], root.session.sessionId, `Root ${root.session.sessionId}`);
+    }
+    if (!eligible) {
+      this.setRootTrackingError(
+        `Root fork source ${candidate.forkedFromId}: root-local task_started boundary is not yet available.`
+      );
+      return false;
     }
 
     const stagedNodes = this.stageSeeds(seeds, candidate.session.sessionId);
@@ -877,7 +847,6 @@ export class AgentActivityCollector {
         });
       }
     }
-    candidate.offset = batch.nextOffset;
     candidate.lastObservedSize = observedSize;
     candidate.trackingError = null;
     this.root = candidate;
@@ -886,10 +855,7 @@ export class AgentActivityCollector {
     return true;
   }
 
-  private async resolveRootForkBoundary(
-    sourceThreadId: string,
-    rootRecords: readonly unknown[]
-  ): Promise<RootForkBoundary> {
+  private async readRootForkTurnIds(sourceThreadId: string): Promise<Set<string>> {
     const source = this.resolveRollout(sourceThreadId);
     if (source === null) {
       throw new Error('exact active/archive rollout is unavailable.');
@@ -899,26 +865,19 @@ export class AgentActivityCollector {
         `resolved rollout session mismatch: expected ${sourceThreadId}, received ${source.sessionId}.`
       );
     }
-
-    const sourceBatch = await readCompleteJsonl<unknown>(
-      source.path,
-      0,
-      ROLLOUT_READ_OPTIONS
-    );
-    requireCanonicalSessionMeta(
-      sourceBatch.records,
-      sourceThreadId,
-      `Root fork source ${sourceThreadId}`
-    );
-    const sourceTurnIds = collectPhysicalTurnIds(sourceBatch.records);
-    const localBoundaryIndex = findLocalBoundaryIndex(rootRecords, sourceTurnIds);
-    if (localBoundaryIndex < 0) {
-      throw new Error('root-local task_started boundary is not yet available.');
+    let canonicalValidated = false;
+    const turnIds = new Set<string>();
+    await scanCompleteJsonl(source.path, 0, (record) => {
+      if (!canonicalValidated) {
+        requireCanonicalSessionMeta([record], sourceThreadId, `Root fork source ${sourceThreadId}`);
+        canonicalValidated = true;
+      }
+      collectPhysicalTurnId(record, turnIds);
+    });
+    if (!canonicalValidated) {
+      requireCanonicalSessionMeta([], sourceThreadId, `Root fork source ${sourceThreadId}`);
     }
-
-    return {
-      localBoundaryIndex,
-    };
+    return turnIds;
   }
 
   private async collectNode(threadId: string, nowMs: number): Promise<void> {
@@ -961,8 +920,7 @@ export class AgentActivityCollector {
     try {
       let rolloutPath = current.rolloutPath;
       let resolvedSessionId: string | null = null;
-      let readOffset = current.offset;
-      let relocated = false;
+      const readOffset = current.offset;
       if (rolloutPath === null) {
         const resolved = this.resolveRollout(current.threadId, resolveSinceMs);
         if (resolved === null) {
@@ -990,13 +948,35 @@ export class AgentActivityCollector {
         return;
       }
 
-      let batch: JsonlTailBatch<unknown>;
+      let candidate = cloneNode(current);
+      const seeds: AgentSpawnSeed[] = [];
+      const replay = async (): Promise<void> => {
+        const nextOffset = await scanCompleteJsonl(rolloutPath!, readOffset, (record) => {
+          if (!candidate.canonicalValidated) {
+            if (resolvedSessionId === null) {
+              throw new Error('unvalidated agent rollout must be resolved before canonical validation.');
+            }
+            validateChildCanonicalMeta([record], resolvedSessionId, candidate);
+            candidate.canonicalValidated = true;
+            candidate.rolloutPath = rolloutPath;
+          }
+          collectPhysicalTurnId(record, candidate.physicalTurnIds);
+          if (!candidate.localBoundaryFound) {
+            candidate.localBoundaryFound = isLocalBoundary(record, parent.physicalTurnIds);
+          }
+          if (candidate.localBoundaryFound) {
+            candidate = { ...candidate, ...reduceAgentLifecycleRecord(candidate, record) };
+            const seed = normalizeAgentSpawnSeed(record);
+            if (seed !== null) seeds.push(seed);
+          }
+        });
+        candidate.offset = nextOffset;
+        if (!candidate.canonicalValidated) {
+          validateChildCanonicalMeta([], resolvedSessionId!, candidate);
+        }
+      };
       try {
-        batch = await readCompleteJsonl<unknown>(
-          rolloutPath,
-          readOffset,
-          ROLLOUT_READ_OPTIONS
-        );
+        await replay();
       } catch (error) {
         if (current.rolloutPath === null || !isMissingFileError(error)) {
           throw error;
@@ -1011,81 +991,23 @@ export class AgentActivityCollector {
             `Agent ${current.threadId} resolved rollout session mismatch: expected ${current.threadId}, received ${resolved.sessionId}.`
           );
         }
-
         rolloutPath = resolved.path;
         resolvedSessionId = resolved.sessionId;
         observedSize = (await stat(rolloutPath)).size;
-        const canonicalBatch = await readCompleteJsonl<unknown>(
-          rolloutPath,
-          0,
-          ROLLOUT_READ_OPTIONS
-        );
-        validateChildCanonicalMeta(
-          canonicalBatch.records,
-          resolvedSessionId,
-          current
-        );
-        batch = await readCompleteJsonl<unknown>(
-          rolloutPath,
-          readOffset,
-          ROLLOUT_READ_OPTIONS
-        );
-        relocated = true;
+        let canonicalValidated = false;
+        await scanCompleteJsonl(rolloutPath, 0, (record) => {
+          if (!canonicalValidated) {
+            validateChildCanonicalMeta([record], resolvedSessionId!, current);
+            canonicalValidated = true;
+          }
+        });
+        if (!canonicalValidated) validateChildCanonicalMeta([], resolvedSessionId, current);
+        candidate = { ...cloneNode(current), canonicalValidated: true, rolloutPath };
+        seeds.length = 0;
+        await replay();
       }
-      if (batch.truncated && readOffset > 0) {
-        throw new Error(
-          `rollout was truncated below committed offset ${readOffset}.`
-        );
-      }
-
-      let candidate = cloneNode(current);
-      if (relocated) {
-        candidate.canonicalValidated = true;
-        candidate.rolloutPath = rolloutPath;
-      } else if (!candidate.canonicalValidated) {
-        if (resolvedSessionId === null) {
-          throw new Error(
-            'unvalidated agent rollout must be resolved before canonical validation.'
-          );
-        }
-        validateChildCanonicalMeta(batch.records, resolvedSessionId, candidate);
-        candidate.canonicalValidated = true;
-        candidate.rolloutPath = rolloutPath;
-      }
-      candidate.lastObservedSize =
-        observedSize ?? (await stat(rolloutPath)).size;
-      candidate.physicalTurnIds = collectPhysicalTurnIds(
-        batch.records,
-        candidate.physicalTurnIds
-      );
-
-      let eligibleStartIndex = 0;
-      if (!candidate.localBoundaryFound) {
-        eligibleStartIndex = findLocalBoundaryIndex(
-          batch.records,
-          parent.physicalTurnIds
-        );
-        if (eligibleStartIndex < 0) {
-          candidate.offset = batch.nextOffset;
-          candidate.trackingError = null;
-          this.commitNodeSuccess(current, candidate);
-          return;
-        }
-        candidate.localBoundaryFound = true;
-      }
-
-      const seeds: AgentSpawnSeed[] = [];
-      for (const record of batch.records.slice(eligibleStartIndex)) {
-        const reduced = reduceAgentLifecycleRecord(candidate, record);
-        candidate = { ...candidate, ...reduced };
-        const seed = normalizeAgentSpawnSeed(record);
-        if (seed !== null) {
-          seeds.push(seed);
-        }
-      }
-
+      candidate.lastObservedSize = observedSize ?? (await stat(rolloutPath)).size;
       const stagedNodes = this.stageSeeds(seeds, candidate.threadId);
-      candidate.offset = batch.nextOffset;
       candidate.trackingError = null;
       this.commitNodeSuccess(current, candidate, stagedNodes);
     } catch (error) {

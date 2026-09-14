@@ -383,6 +383,25 @@ try {
     'token figures still come from token_count alone'
   );
 
+  // /goal writes state updates alongside the normal turn/token events.
+  // They are known metadata and must not produce a persistent warning.
+  for (const goal of [
+    { status: 'active', tokensUsed: 0, timeUsedSeconds: 0 },
+    { status: 'complete', tokensUsed: 500, timeUsedSeconds: 20 },
+    null,
+  ]) {
+    appendRecords([{
+      timestamp: '2026-09-14T12:11:13.103Z',
+      type: 'event_msg',
+      payload: { type: 'thread_goal_updated', threadId: 'goal-thread', goal },
+    }]);
+    const updated = await parser.parse();
+    assert.deepEqual(updated.protocolHealth.unknownEventTypes, {},
+      '/goal updates are known events');
+    assert.deepEqual(updated.tokenUsage, withUsageRecord.tokenUsage);
+    assert.deepEqual(updated.turnActivity, withUsageRecord.turnActivity);
+  }
+
   console.log('test-rollout-current-protocol: PASS');
 } finally {
   const resolvedRoot = fs.realpathSync(tempRoot);
