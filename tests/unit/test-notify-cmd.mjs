@@ -18,7 +18,7 @@ const now = Date.parse('2026-08-20T12:00:00.000Z');
 const context = {
   sessionId: '01a01d4f-41a9-76e1-bff2-984911a0d958',
   tmuxSession: 'codex-hud-prj-2a51592d-20260820115523-29120',
-  cwd: '/Users/zyb/Desktop/prj',
+  cwd: '/Users/admin/Desktop/prj',
 };
 
 const quiet = {

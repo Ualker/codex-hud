@@ -91,7 +91,7 @@ const { extractCodexCliPolicy } = await import(
 // The live 2026-08-24 invocation shape, hooks and all.
 assert.deepEqual(
   extractCodexCliPolicy(
-    `node /Users/zyb/.nvm/versions/node/v25.8.1/bin/codex --enable hooks ` +
+    `node /Users/admin/.nvm/versions/node/v25.8.1/bin/codex --enable hooks ` +
       `--dangerously-bypass-hook-trust -c ${hook('Stop', '/hooks/stop')} ` +
       `--ask-for-approval never --sandbox danger-full-access`
   ),

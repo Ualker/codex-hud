@@ -8,10 +8,10 @@ const FULL_ID = '019ff4e2-a2b5-7352-9076-a7e8e9dc2ecc';
 const data = {
   config: {},
   git: { isGitRepo: false },
-  project: { cwd: '/Users/zyb/Desktop/prj', projectName: 'prj' },
+  project: { cwd: '/Users/admin/Desktop/prj', projectName: 'prj' },
   session: {
     id: FULL_ID,
-    cwd: '/Users/zyb/Desktop/prj',
+    cwd: '/Users/admin/Desktop/prj',
     cliVersion: '0.147.0',
     modelProvider: 'openai',
     startTime: new Date(),

@@ -18,7 +18,7 @@ const ago = (ms) => new Date(now - ms);
 function session(id, over = {}) {
   return {
     id,
-    cwd: '/Users/zyb/Desktop/prj',
+    cwd: '/Users/admin/Desktop/prj',
     projectName: 'prj',
     lastActivityAt: ago(60_000),
     turnActivity: {

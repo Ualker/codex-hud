@@ -222,7 +222,7 @@ SESSION_NAME="${SESSION_PREFIX}-$(date +%Y%m%d%H%M%S)-$$"
 prepare_cmux_codex_hook_router() {
     [[ -n "${CMUX_SURFACE_ID:-}" && "${CMUX_CODEX_HOOKS_DISABLED:-}" != "1" ]] || return 0
 
-    local hook_router="${CMUX_CODEX_HOOK_ROUTER:-${HOME:-/Users/zyb}/.cmux/hooks/cmux-live-tmux-context.sh}"
+    local hook_router="${CMUX_CODEX_HOOK_ROUTER:-${HOME:-/Users/admin}/.cmux/hooks/cmux-live-tmux-context.sh}"
     [[ -x "$hook_router" && "$hook_router" != "$SCRIPT_DIR/codex-hud" ]] || return 0
 
     # Make every cmux wrapper invocation pass through the user-owned inject

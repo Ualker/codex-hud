@@ -20,7 +20,7 @@ const ago = (ms) => new Date(now - ms);
 function session(index, { phase = 'idle', ageMinutes = index + 1 } = {}) {
   return {
     id: `019f${String(index).padStart(4, '0')}-aaaa-7aaa-8aaa-aaaaaaaaaaaa`,
-    cwd: `/Users/zyb/Desktop/proj-${index}`,
+    cwd: `/Users/admin/Desktop/proj-${index}`,
     projectName: `proj-${index}`,
     lastActivityAt: ago(ageMinutes * 60_000),
     turnActivity: {

@@ -26,7 +26,7 @@ const userMessage = (timestamp, text) =>
 const meta = record('2026-09-05T01:27:44.000Z', 'session_meta', {
   id: '01a06f2d-bf84-7091-84b9-3236fa3fb994',
   timestamp: '2026-09-05T01:27:44.000Z',
-  cwd: '/Users/zyb/Desktop/prj',
+  cwd: '/Users/admin/Desktop/prj',
   originator: 'codex_cli_rs',
   cli_version: '0.153.4',
 });
@@ -73,7 +73,7 @@ try {
   assert.ok(long.length <= 240, `the stored title is bounded: ${long.length}`);
   assert.ok(long.endsWith('…'));
 
-  const pathPrompt = '优化下/Users/zyb/Desktop/prj/scripts/agent_fleet_monitor.py这个的界面和交互';
+  const pathPrompt = '优化下/Users/admin/Desktop/prj/scripts/agent_fleet_monitor.py这个的界面和交互';
   fs.writeFileSync(rolloutPath, meta + userMessage('2026-09-05T01:27:47.000Z', pathPrompt));
   const withPath = new RolloutParser(10);
   withPath.setRolloutPath(rolloutPath);

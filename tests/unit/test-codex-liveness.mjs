@@ -94,8 +94,8 @@ for (const phase of ['thinking', 'responding', 'running-tool', 'awaiting-approva
 // whole time. Measured 2026-08-20 (pids from the scratch session).
 const liveShape = [
   ' 2689     1 -zsh',
-  ' 3590  2689 node /Users/zyb/.nvm/versions/node/v25.8.1/bin/codex',
-  ' 2700     1 node /Users/zyb/Desktop/prj/codex-hud/dist/index.js',
+  ' 3590  2689 node /Users/admin/.nvm/versions/node/v25.8.1/bin/codex',
+  ' 2700     1 node /Users/admin/Desktop/prj/codex-hud/dist/index.js',
 ].join('\n');
 
 assert.equal(
@@ -130,7 +130,7 @@ assert.equal(treeContainsCodex(liveShape, 'not-a-pid'), false);
 // are the only policy witness while the session has no rollout.
 assert.equal(
   codexCommandInTree(liveShape, '2689'),
-  'node /Users/zyb/.nvm/versions/node/v25.8.1/bin/codex'
+  'node /Users/admin/.nvm/versions/node/v25.8.1/bin/codex'
 );
 assert.equal(
   codexCommandInTree(binaryShape, '10'),
