@@ -1056,7 +1056,8 @@ create_session() {
     # tmux key tables are server-wide. Preserve unrelated sessions unless the
     # user explicitly opts into the legacy Prefix+H binding.
     if [[ "$bind_toggle" == "1" ]]; then
-        tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'tmux send-keys -t #{@codex_hud_pane} C-t' ''" || true
+        # if-shell branches are tmux commands, not shell commands.
+        tmux bind-key -T prefix H run-shell "tmux if-shell -F '#{@codex_hud_pane}' 'send-keys -t #{@codex_hud_pane} C-t' ''" || true
     fi
     
     SESSION_READY="true"
