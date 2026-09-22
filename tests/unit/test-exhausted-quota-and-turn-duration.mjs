@@ -29,7 +29,7 @@ function baseData(overrides = {}) {
     },
     git: { isGitRepo: false },
     project: {
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       projectName: 'prj',
       agentsMdCount: 1,
       rulesCount: 0,
@@ -46,7 +46,7 @@ function baseData(overrides = {}) {
     displayMode: 'single',
     session: {
       id: '019ff4ef-1111-2222-3333-44444444f767',
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       startTime: ago(3600_000),
     },
     ...overrides,
@@ -238,7 +238,7 @@ assert.match(
  */
 const boundedSession = {
   id: '019ff4ef-1111-2222-3333-44444444f767',
-  cwd: '/Users/zyb/Desktop/prj',
+  cwd: '/Users/admin/Desktop/prj',
   startTime: ago(3600_000),
   model: 'gpt-5.6-sol',
   reasoningEffort: 'max',

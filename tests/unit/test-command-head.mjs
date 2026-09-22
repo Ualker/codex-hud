@@ -82,12 +82,12 @@ const cases = [
   // below.
   [
     [
-      'db_path=/Users/zyb/.cc-switch/cc-switch.db',
-      'settings_path=/Users/zyb/.cc-switch/settings.json',
+      'db_path=/Users/admin/.cc-switch/cc-switch.db',
+      'settings_path=/Users/admin/.cc-switch/settings.json',
       `db_hash_before=$(shasum -a 256 "$db_path" | awk '{print $1}')`,
       `db_mtime_before=$(stat -f '%m' "$db_path")`,
       `settings_hash_before=$(shasum -a 256 "$settings_path" | awk '{print $1}')`,
-      'python3 -B /Users/zyb/.codex/skills/sync_codex_skills.py --dry-run',
+      'python3 -B /Users/admin/.codex/skills/sync_codex_skills.py --dry-run',
     ].join('\n'),
     'shasum ; stat ; shasum …',
   ],

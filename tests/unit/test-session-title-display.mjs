@@ -3,7 +3,7 @@ import { compactSessionTitle } from '../../dist/render/session-title.js';
 import { renderHud } from '../../dist/render/header.js';
 import { stripAnsi, visualLength } from '../../dist/render/colors.js';
 
-const cwd = '/Users/zyb/Desktop/prj';
+const cwd = '/Users/admin/Desktop/prj';
 assert.equal(compactSessionTitle(`${cwd}，修复布局`, cwd), '修复布局');
 assert.equal(compactSessionTitle(`${cwd}/codex-hud，检查升级恢复`, cwd), 'codex-hud，检查升级恢复');
 assert.equal(compactSessionTitle(`优化下${cwd}/scripts/agent_fleet_monitor.py这个的UI`, cwd),

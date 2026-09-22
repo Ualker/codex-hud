@@ -34,7 +34,7 @@ function readySession(rateLimits) {
     config: { model: 'gpt-5.6-sol', sandbox_mode: 'workspace-write', approval_policy: 'on-request' },
     git: { isGitRepo: false },
     project: {
-      cwd: '/Users/zyb/Desktop/prj', projectName: 'prj',
+      cwd: '/Users/admin/Desktop/prj', projectName: 'prj',
       agentsMdCount: 1, rulesCount: 0, mcpCount: 6, configsCount: 0,
       extensionsCount: 0, skillsCount: 17, otherAgentSkillsCount: 0,
       hooksCount: 6, globalConfigActive: true,
@@ -45,7 +45,7 @@ function readySession(rateLimits) {
     rateLimits,
     session: {
       id: '019ff4ef-1111-2222-3333-44444444f767',
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       startTime: ago(3600_000),
     },
   };

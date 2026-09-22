@@ -28,7 +28,7 @@ const limits = (usedPercent) => ({
 
 const session = (id, over = {}) => ({
   id,
-  cwd: '/Users/zyb/Desktop/prj',
+  cwd: '/Users/admin/Desktop/prj',
   projectName: 'prj',
   lastActivityAt: ago(60_000),
   turnActivity: { phase: 'idle', since: ago(120_000), lastActivityAt: ago(60_000) },
@@ -41,7 +41,7 @@ const view = (over, maxLines = 7) =>
     {
       config: {},
       git: { isGitRepo: false },
-      project: { cwd: '/Users/zyb/Desktop/prj', projectName: 'prj' },
+      project: { cwd: '/Users/admin/Desktop/prj', projectName: 'prj' },
       collectorHealth: {},
       displayMode: 'overview',
       ...over,
@@ -114,7 +114,7 @@ const threeSessions = [
     overview: undefined,
     session: {
       id: '019ff4e2-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       model: 'gpt-5.6-sol',
       startTime: ago(3600_000),
     },

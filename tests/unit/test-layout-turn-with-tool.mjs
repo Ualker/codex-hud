@@ -30,7 +30,7 @@ function makeData({ agentCount = 0, planSteps = 0 } = {}) {
     },
     git: { isGitRepo: false },
     project: {
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       projectName: 'prj',
       agentsMdCount: 1,
       rulesCount: 0,
@@ -102,7 +102,7 @@ function makeData({ agentCount = 0, planSteps = 0 } = {}) {
       id: '019fd67f-1111-2222-3333-444444445b93',
       model: 'gpt-5.6-sol',
       reasoningEffort: 'max',
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       cliVersion: '0.147.0',
       modelProvider: 'openai',
       sandboxMode: 'workspace-write',

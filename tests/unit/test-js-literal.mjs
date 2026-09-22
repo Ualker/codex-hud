@@ -14,11 +14,11 @@ import { parseJsLiteral, findJsStringContaining } from '../../dist/utils/js-lite
 {
   const value = parseJsLiteral(`{
     cmd: "nl -ba file | sed -n '1,20p'",   // read the head
-    workdir: "/Users/zyb/Desktop/prj",
+    workdir: "/Users/admin/Desktop/prj",
     timeout_ms: 30000,
   }`);
   assert.equal(value.cmd, "nl -ba file | sed -n '1,20p'");
-  assert.equal(value.workdir, '/Users/zyb/Desktop/prj');
+  assert.equal(value.workdir, '/Users/admin/Desktop/prj');
   assert.equal(value.timeout_ms, 30000);
 }
 

@@ -15,7 +15,7 @@ const layout = {
 const now = Date.now();
 
 const project = {
-  cwd: '/Users/zyb/Desktop/prj',
+  cwd: '/Users/admin/Desktop/prj',
   projectName: 'prj',
   agentsMdCount: 0,
   rulesCount: 0,
@@ -124,7 +124,7 @@ const row1 = (data) =>
       id: '019ff4e2-1111-2222-3333-444444442ecc',
       model: 'gpt-5.6-sol',
       reasoningEffort: 'max',
-      cwd: '/Users/zyb/Desktop/prj',
+      cwd: '/Users/admin/Desktop/prj',
       startTime: new Date(now - 3 * 3600_000),
     },
   });

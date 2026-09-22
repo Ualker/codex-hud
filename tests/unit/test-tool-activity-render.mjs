@@ -171,7 +171,7 @@ assert.match(
 
 // Path details truncate from the start so the file name tail survives.
 const editCall = call('edit-1', 'edit', 'completed', {
-  summary: '/Users/zyb/projects/deeply/nested/module/feature-flags.ts',
+  summary: '/Users/admin/projects/deeply/nested/module/feature-flags.ts',
   duration: 12,
 });
 const editLine = stripAnsi(renderToolsLine(activity([editCall]), 46, 2_500) ?? '');

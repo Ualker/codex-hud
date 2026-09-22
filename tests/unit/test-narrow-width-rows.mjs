@@ -24,7 +24,7 @@ const data = {
     untracked: 2,
   },
   project: {
-    cwd: '/Users/zyb/Desktop/prj',
+    cwd: '/Users/admin/Desktop/prj',
     projectName: 'prj',
     agentsMdCount: 1,
     rulesCount: 0,
