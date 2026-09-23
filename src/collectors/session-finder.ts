@@ -896,7 +896,11 @@ async function getProcessTreeSnapshot(
   let output: string;
   const finishProbe = startProbe('ps');
   try {
-    ({ stdout: output } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,command='], {
+    // -ww: the HUD pane exports COLUMNS (its own width), and procps then cuts
+    // every command at that width — `... bin/codex app-server --listen unix://
+    // --managed-daemon` lost its flag at 116 columns, so no pane ever saw the
+    // daemon on a live host. BSD ps ignores COLUMNS off a tty; -ww is harmless.
+    ({ stdout: output } = await execFileAsync('ps', ['-axww', '-o', 'pid=,ppid=,command='], {
       encoding: 'utf8',
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: 10 * 1024 * 1024,
