@@ -239,6 +239,21 @@ export function isCodexProcessCommand(command: string): boolean {
   return codexArgumentsStart(command) !== null;
 }
 
+/**
+ * First argument after the Codex binary when it is not an option (`exec`,
+ * `app-server`, `resume`, ...); null for option-first interactive launches
+ * and non-Codex commands. `ps` flattens argv, so a bare prompt argument reads
+ * as its first word — callers must match against known subcommand names.
+ */
+export function codexSubcommand(command: string): string | null {
+  const argumentsStart = codexArgumentsStart(command);
+  if (argumentsStart === null) {
+    return null;
+  }
+  const first = command.slice(argumentsStart).trim().split(/\s+/, 1)[0] ?? '';
+  return first && !first.startsWith('-') ? first : null;
+}
+
 export interface CodexRuntimeHookState {
   overrides: string[];
   enabled: boolean | null;

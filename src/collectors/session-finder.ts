@@ -15,6 +15,15 @@ import {
   isCodexProcessCommand,
 } from './runtime-hooks.js';
 import { isProcessAlive } from './codex-liveness.js';
+import {
+  DaemonLedger,
+  connectionThreads,
+  isInteractiveCodexCommand,
+  isManagedDaemonCommand,
+  mapConnectionsToClients,
+  type DaemonClient,
+  type LedgerRow,
+} from './codex-daemon.js';
 import type { SessionInfo } from '../types.js';
 
 /**
@@ -855,6 +864,14 @@ interface ProcessTreeSnapshot {
   commands: string[];
   /** Pids in the tree whose command line is a Codex invocation. */
   codexPids: string[];
+  /**
+   * Managed app-server daemons anywhere in the process table. Their subtrees
+   * are never part of `processIds`: the daemon logs every pane's threads, so
+   * the pane whose Codex launched it would otherwise see all of them.
+   */
+  daemonPids: string[];
+  /** Innermost interactive Codex processes anywhere in the process table. */
+  tuiPids: string[];
 }
 
 /**
@@ -873,7 +890,7 @@ async function getProcessTreeSnapshot(
   rootPid: string
 ): Promise<ProcessTreeSnapshot | null> {
   if (!/^\d+$/.test(rootPid)) {
-    return { processIds: [], commands: [], codexPids: [] };
+    return { processIds: [], commands: [], codexPids: [], daemonPids: [], tuiPids: [] };
   }
 
   let output: string;
@@ -906,13 +923,28 @@ async function getProcessTreeSnapshot(
     childrenByParent.set(parentPid, children);
   }
 
+  const daemonPids = [...commandsByPid.keys()].filter((pid) =>
+    isManagedDaemonCommand(commandsByPid.get(pid) ?? '')
+  );
+  const daemons = new Set(daemonPids);
+  const interactive = new Set(
+    [...commandsByPid.keys()].filter((pid) =>
+      isInteractiveCodexCommand(commandsByPid.get(pid) ?? '')
+    )
+  );
+  // The node launcher and the native binary both look like Codex; the TUI is
+  // the innermost one (the daemon it may have spawned is not interactive).
+  const tuiPids = [...interactive].filter(
+    (pid) => !(childrenByParent.get(pid) ?? []).some((child) => interactive.has(child))
+  );
+
   const result: string[] = [];
   const seen = new Set<string>();
   const queue = [rootPid];
 
   while (queue.length > 0 && result.length < 32) {
     const pid = queue.shift();
-    if (!pid || seen.has(pid)) {
+    if (!pid || seen.has(pid) || daemons.has(pid)) {
       continue;
     }
 
@@ -929,7 +961,152 @@ async function getProcessTreeSnapshot(
     codexPids: result.filter((pid) =>
       isCodexProcessCommand(commandsByPid.get(pid) ?? '')
     ),
+    daemonPids,
+    tuiPids,
   };
+}
+
+/** Boot time from /proc/stat (Linux); null elsewhere. */
+function readBootTimeSeconds(): number | null {
+  try {
+    const match = /^btime\s+(\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8'));
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Process start times in epoch ms. Linux reads /proc (no spawn; starttime is
+ * in USER_HZ=100 ticks); elsewhere one `ps -o lstart=` call (1s resolution).
+ * Exited or unreadable processes are simply missing from the result.
+ */
+async function getProcessStartTimesMs(pids: readonly string[]): Promise<Map<string, number>> {
+  const starts = new Map<string, number>();
+  const valid = [...new Set(pids)].filter((pid) => /^\d+$/.test(pid));
+  if (valid.length === 0) {
+    return starts;
+  }
+
+  const bootSeconds = readBootTimeSeconds();
+  if (bootSeconds !== null) {
+    for (const pid of valid) {
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+        if (Number.isFinite(ticks)) {
+          starts.set(pid, (bootSeconds + ticks / 100) * 1000);
+        }
+      } catch {
+        // exited between the table walk and now
+      }
+    }
+    return starts;
+  }
+
+  const finishProbe = startProbe('ps');
+  try {
+    // lstart is localized ("三  9月/23 20:10:02 2026" under zh_CN); only the C
+    // locale's "Wed Sep 23 20:10:02 2026" is something Date.parse reads.
+    const { stdout } = await execFileAsync('ps', ['-o', 'pid=,lstart=', '-p', valid.join(',')], {
+      encoding: 'utf8',
+      timeout: PROBE_TIMEOUT_MS,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    });
+    for (const line of stdout.split('\n')) {
+      const match = /^\s*(\d+)\s+(\S.*\S)\s*$/.exec(line);
+      const parsed = match ? Date.parse(match[2]) : Number.NaN;
+      if (match && Number.isFinite(parsed)) {
+        starts.set(match[1], parsed);
+      }
+    }
+  } catch {
+    // no start times: the connect-line pairing still works
+  } finally {
+    finishProbe();
+  }
+  return starts;
+}
+
+// Rows per ledger query and queries per refresh: the first refresh of a
+// long-lived daemon catches up in bounded steps, later ones read only new rows.
+const DAEMON_LEDGER_BATCH = 2000;
+const DAEMON_LEDGER_MAX_BATCHES = 20;
+// Keyed by logs database and daemon pid; logs rotation or a new daemon starts over.
+const daemonLedgers = new Map<string, DaemonLedger>();
+
+/**
+ * Bring the connection ledger of a managed daemon up to date (see
+ * codex-daemon.ts). Only rows after the last one seen are read. Returns null
+ * when no logs database is readable.
+ */
+async function refreshDaemonLedger(
+  daemonPid: string,
+  sinceMs: number
+): Promise<DaemonLedger | null> {
+  const dbPath = getLogDatabaseCandidates()[0];
+  if (!dbPath || !/^\d+$/.test(daemonPid)) {
+    return null;
+  }
+
+  const key = `${dbPath}\n${daemonPid}`;
+  let ledger = daemonLedgers.get(key);
+  if (!ledger) {
+    if (daemonLedgers.size >= 4) {
+      daemonLedgers.clear();
+    }
+    ledger = new DaemonLedger(daemonPid);
+    daemonLedgers.set(key, ledger);
+  }
+
+  const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
+  for (let batch = 0; batch < DAEMON_LEDGER_MAX_BATCHES; batch++) {
+    // Newlines and the column separator are flattened so each row stays one
+    // line; the span header sits at the start of the body.
+    const sql = `
+SELECT id, ts, ts_nanos, COALESCE(thread_id, ''), COALESCE(process_uuid, ''),
+  substr(replace(replace(replace(COALESCE(feedback_log_body, ''), char(10), ' '), char(13), ' '), char(31), ' '), 1, 1500)
+FROM logs
+WHERE id > ${ledger.lastRowId}
+  AND ts >= ${sinceSeconds}
+  AND (
+    (process_uuid LIKE 'pid:${daemonPid}:%' AND feedback_log_body LIKE '%app_server.connection_id=%')
+    OR feedback_log_body LIKE 'connected app-server%'
+  )
+ORDER BY id
+LIMIT ${DAEMON_LEDGER_BATCH}
+`.trim();
+    const output = await querySqlite(dbPath, [sql]);
+    if (output === null) {
+      return ledger.lastRowId > 0 ? ledger : null;
+    }
+
+    const rows: LedgerRow[] = [];
+    for (const line of output.split('\n')) {
+      if (!line) {
+        continue;
+      }
+      const [idRaw, tsRaw, nanosRaw, threadId = '', processUuid = '', body = ''] = line.split('\x1f');
+      const id = Number(idRaw);
+      const ts = Number(tsRaw);
+      const nanos = Number(nanosRaw);
+      if (!Number.isFinite(id) || !Number.isFinite(ts)) {
+        continue;
+      }
+      rows.push({
+        id,
+        tsMs: ts * 1000 + (Number.isFinite(nanos) ? nanos / 1_000_000 : 0),
+        threadId,
+        processUuid,
+        body,
+      });
+    }
+    ledger.ingest(rows);
+    if (rows.length < DAEMON_LEDGER_BATCH) {
+      break;
+    }
+  }
+  return ledger;
 }
 
 function extractLogField(body: string, field: string): string | undefined {
@@ -1194,6 +1371,19 @@ interface AnnotatedThread {
 interface PaneThreadBinding {
   threadId: string | null;
   keepCurrent: boolean;
+  /**
+   * The pane's Codex is a managed-daemon client. Its binding comes from the
+   * daemon's connection ledger only: the shell-snapshot and cwd fallbacks
+   * would bind another pane's session.
+   */
+  daemonClient?: boolean;
+}
+
+interface DaemonLink {
+  daemonPid: string;
+  tuiPid: string;
+  connectionId: number;
+  threadId: string | null;
 }
 
 export class SessionFinder {
@@ -1217,6 +1407,7 @@ export class SessionFinder {
   private runtimeHookOverrides: string[] = [];
   private runtimeHooksEnabled: boolean | null = null;
   private threadFactsCache = new Map<string, ThreadFacts>();
+  private daemonLink: DaemonLink | null = null;
 
   constructor(
     targetCwd?: string,
@@ -1332,6 +1523,15 @@ export class SessionFinder {
       if (current && currentExists) {
         return current;
       }
+    }
+
+    // A managed-daemon client with no known thread stays unbound. The daemon
+    // writes every shell snapshot (with the TMUX_PANE of whichever pane
+    // launched it) and panes share a cwd, so both fallbacks below would show
+    // another pane's session — seen as three panes all titled with one task.
+    if (binding.daemonClient) {
+      this.currentThreadId = null;
+      return this.applyResolveBackoff(this.resolveNextSession(null, false), previousPath);
     }
 
     const threadId = this.resolveSnapshotThread(mainPaneId);
@@ -1468,6 +1668,7 @@ export class SessionFinder {
     this.processTree = null;
     this.runtimeHookOverrides = [];
     this.runtimeHooksEnabled = null;
+    this.daemonLink = null;
     return paneChanged;
   }
 
@@ -1620,6 +1821,19 @@ export class SessionFinder {
       }
     }
 
+    if (
+      (candidates === null || candidates.length === 0) &&
+      processTree &&
+      processTree.daemonPids.length > 0
+    ) {
+      // Nothing in the pane's own tree logs threads while a managed daemon
+      // runs: the pane's Codex is a daemon client (see codex-daemon.ts).
+      const viaDaemon = await this.resolveDaemonThread(processTree, now);
+      if (viaDaemon) {
+        return viaDaemon;
+      }
+    }
+
     if (candidates === null || candidates.length === 0) {
       return { threadId: null, keepCurrent: this.boundViaProcess };
     }
@@ -1627,6 +1841,69 @@ export class SessionFinder {
     const annotated = await this.annotateCandidates(candidates);
     const chosen = this.chooseThread(annotated);
     return { threadId: chosen, keepCurrent: this.boundViaProcess };
+  }
+
+  /**
+   * Thread of a managed-daemon client pane: the one its daemon connection is
+   * on. Null when the pane has no Codex TUI, so the caller keeps its own
+   * answer. A pairing once found is kept while the daemon and the TUI live;
+   * the connect-line pass may still correct it.
+   */
+  private async resolveDaemonThread(
+    tree: ProcessTreeSnapshot,
+    now: number
+  ): Promise<PaneThreadBinding | null> {
+    // One daemon serves a CODEX_HOME; the pane's TUI is its innermost Codex.
+    const daemonPid = tree.daemonPids[0];
+    const tuiPid = [...tree.processIds].reverse().find((pid) => tree.tuiPids.includes(pid));
+    if (!daemonPid || !tuiPid) {
+      return null;
+    }
+
+    const previous =
+      this.daemonLink?.daemonPid === daemonPid && this.daemonLink.tuiPid === tuiPid
+        ? this.daemonLink
+        : null;
+    const starts = await getProcessStartTimesMs([daemonPid, ...tree.tuiPids]);
+    // Connections cannot predate their daemon: read its rows from its start.
+    const ledger = await refreshDaemonLedger(
+      daemonPid,
+      (starts.get(daemonPid) ?? now - DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS) - 60_000
+    );
+    if (!ledger) {
+      return { threadId: previous?.threadId ?? null, keepCurrent: true, daemonClient: true };
+    }
+
+    const clients: DaemonClient[] = tree.tuiPids.map((pid) => ({
+      pid,
+      startMs: starts.get(pid) ?? Number.NaN,
+    }));
+    const pairs = mapConnectionsToClients(
+      clients,
+      ledger.connections,
+      ledger.connectedAtMs,
+      now,
+      previous ? new Map([[tuiPid, previous.connectionId]]) : undefined
+    );
+    const connectionId = pairs.get(tuiPid);
+    if (connectionId === undefined) {
+      this.daemonLink = null;
+      return { threadId: null, keepCurrent: this.boundViaProcess, daemonClient: true };
+    }
+
+    const { current } = connectionThreads(ledger.connections.get(connectionId));
+    // Rows of a long-idle connection may have rotated out of the logs.
+    const threadId =
+      current ?? (previous?.connectionId === connectionId ? previous.threadId : null);
+    this.daemonLink = { daemonPid, tuiPid, connectionId, threadId };
+    if (!threadId) {
+      return { threadId: null, keepCurrent: this.boundViaProcess, daemonClient: true };
+    }
+
+    // Rank it like the per-process path, so noteRolloutAppeared promotes a
+    // log-only /new thread as soon as its rollout lands.
+    await this.annotateCandidates([{ threadId, lastTs: now }]);
+    return { threadId, keepCurrent: true, daemonClient: true };
   }
 
   /**

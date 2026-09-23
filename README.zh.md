@@ -281,6 +281,7 @@ npm run test:render            # 运行渲染示例
 
 | 日期 | 变更 |
 |------|------|
+| 2026-09-23 | 适配 codex 0.156 managed daemon（`features.daemon_auto_start`）：各 pane 改按自己的 daemon 连接绑定会话（`app_server.connection_id`，先按 TUI 连上 daemon 的时刻配对、再按启动先后），不再扫 pane 进程树——那里多数 pane 一个会话都看不到，拉起 daemon 的那个 pane 却能看到所有 pane 的会话；daemon 客户端不再回退到 shell 快照或按目录猜 |
 | 2026-09-10 | 冷启动优先绑定真实会话；静默工作状态检查进程存活；列表共用进程快照；重启失败/启动即退出如实报错；RC 符号链接、权限和重复安装保护；默认收起静态详情，`d` 独立展开，滚轮不切换模式，标题优先于运行时长；74server 纳入 CI |
 | 2026-09-05 | rollout 变化即时上屏（fs.watch + 唤醒重排渲染 tick）；版面改为回填式行预算、环境行并入第 1 行；pane 高度跟随内容；鼠标上报（点击切视图、滚轮切详情，不再进 copy-mode 冻结）；首条提示词作会话标题上第 1 行与概览；验证安全字形集与逐帧 spinner；`Turn:` 标签；未识别记录备注写明类型；探测慢备注；命令头过滤 shell 内建；进程树与 Codex pid 缓存替代大部分 `ps`；工具完成触发 git 刷新；多 HUD 共享账号配额/git 快照；慢采集器进程内异步执行（不再有 worker isolate）；`Prefix+H` 未占用即安装；`--cycle-details`；`--list` 标注最新会话；`--doctor` 报告通知钩子 |
 | 2026-09-03 | 白名单收录 codex 0.153 的 `token_usage_record` |
