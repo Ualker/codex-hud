@@ -275,7 +275,12 @@ fs.writeFileSync(
   path.join(binDir, 'ps'),
   `#!/usr/bin/env bash
 if [[ "\${1:-}" == "-o" && "\${2:-}" == pid=,lstart= ]]; then cat ${JSON.stringify(path.join(root, 'starts'))}; exit 0; fi
-cat ${JSON.stringify(path.join(root, 'table'))}
+# The HUD pane exports COLUMNS; procps then cuts each line at that width unless
+# asked for unlimited width (-ww). Without it the daemon loses --managed-daemon.
+case "$1" in
+  *ww*) cat ${JSON.stringify(path.join(root, 'table'))} ;;
+  *) cut -c1-100 ${JSON.stringify(path.join(root, 'table'))} ;;
+esac
 `
 );
 fs.writeFileSync(
