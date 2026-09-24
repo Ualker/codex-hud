@@ -8,8 +8,9 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
-import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
+import { getCodexDataNamespace, getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 import { startProbe } from '../utils/probe-latency.js';
+import { readSharedSnapshot, writeSharedSnapshot } from '../utils/shared-snapshot.js';
 import {
   extractCodexRuntimeHookState,
   isCodexProcessCommand,
@@ -21,8 +22,10 @@ import {
   isInteractiveCodexCommand,
   isManagedDaemonCommand,
   mapConnectionsToClients,
+  reviveLedgerSnapshot,
   type DaemonClient,
   type LedgerRow,
+  type LedgerSnapshot,
 } from './codex-daemon.js';
 import type { SessionInfo } from '../types.js';
 
@@ -1039,6 +1042,55 @@ const DAEMON_LEDGER_MAX_BATCHES = 20;
 // Keyed by logs database and daemon pid; logs rotation or a new daemon starts over.
 const daemonLedgers = new Map<string, DaemonLedger>();
 
+// Codex keeps the newest 1000 thread-less rows per process and 1000 rows per
+// thread, so a HUD started (or reloaded) late reads a pruned history: old
+// connections seem to begin hours after their TUI, and the resume row of a
+// long session is gone — the pane stayed unbound, or took the thread its
+// connection had left. HUDs of one Codex home therefore pass their ledgers
+// on through a state file: each folds it in once it knows its daemon's
+// process, and writes the union back at most every LEDGER_SHARE_INTERVAL_MS.
+const LEDGER_SHARE_INTERVAL_MS = 30_000;
+const LEDGER_SHARE_MAX_AGE_MS = DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS;
+const ledgerSharedAt = new WeakMap<DaemonLedger, number>();
+
+interface SharedDaemonLedger {
+  dbPath: string;
+  ledger: LedgerSnapshot;
+}
+
+function shareDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number): void {
+  if (
+    !ledger.processUuid ||
+    nowMs - (ledgerSharedAt.get(ledger) ?? Number.NEGATIVE_INFINITY) < LEDGER_SHARE_INTERVAL_MS
+  ) {
+    return;
+  }
+  ledgerSharedAt.set(ledger, nowMs);
+  try {
+    const name = `daemon-ledger-${getCodexDataNamespace()}`;
+    const shared = readSharedSnapshot(
+      name,
+      LEDGER_SHARE_MAX_AGE_MS,
+      (raw) => {
+        const value = (raw ?? {}) as Partial<SharedDaemonLedger>;
+        return value.dbPath === dbPath ? reviveLedgerSnapshot(value.ledger) : null;
+      },
+      nowMs
+    );
+    // A file left by an earlier daemon process is simply overwritten.
+    if (shared) {
+      ledger.merge(shared);
+    }
+    ledger.prune(nowMs);
+    const snapshot = ledger.snapshot();
+    if (snapshot) {
+      writeSharedSnapshot(name, { dbPath, ledger: snapshot } satisfies SharedDaemonLedger, nowMs);
+    }
+  } catch {
+    // Sharing is an aid; binding must never depend on it.
+  }
+}
+
 /**
  * Bring the connection ledger of a managed daemon up to date (see
  * codex-daemon.ts). Only rows after the last one seen are read. Returns null
@@ -1046,7 +1098,8 @@ const daemonLedgers = new Map<string, DaemonLedger>();
  */
 async function refreshDaemonLedger(
   daemonPid: string,
-  sinceMs: number
+  sinceMs: number,
+  nowMs: number = Date.now()
 ): Promise<DaemonLedger | null> {
   const dbPath = getLogDatabaseCandidates()[0];
   if (!dbPath || !/^\d+$/.test(daemonPid)) {
@@ -1064,6 +1117,7 @@ async function refreshDaemonLedger(
   }
 
   const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
+  let read = 0;
   for (let batch = 0; batch < DAEMON_LEDGER_MAX_BATCHES; batch++) {
     // Newlines and the column separator are flattened so each row stays one
     // line; the span header sits at the start of the body.
@@ -1106,9 +1160,13 @@ LIMIT ${DAEMON_LEDGER_BATCH}
       });
     }
     ledger.ingest(rows);
+    read += rows.length;
     if (rows.length < DAEMON_LEDGER_BATCH) {
       break;
     }
+  }
+  if (read > 0) {
+    shareDaemonLedger(ledger, dbPath, nowMs);
   }
   return ledger;
 }
@@ -1879,7 +1937,8 @@ export class SessionFinder {
     // Connections cannot predate their daemon: read its rows from its start.
     const ledger = await refreshDaemonLedger(
       daemonPid,
-      (starts.get(daemonPid) ?? now - DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS) - 60_000
+      (starts.get(daemonPid) ?? now - DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS) - 60_000,
+      now
     );
     if (!ledger) {
       return { threadId: previous?.threadId ?? null, keepCurrent: true, daemonClient: true };
