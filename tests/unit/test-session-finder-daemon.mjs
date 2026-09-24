@@ -390,6 +390,7 @@ const THREAD_B = '01a0cd70-1111-7222-8333-944455556666';
 const THREAD_C = '01a0cdc2-dd83-7832-884b-aa0a34d4aeff';
 // The session %2's TUI started on before moving to B.
 const THREAD_X = '01a0cd66-0000-7000-8000-000000000001';
+const THREAD_D = '01a0cd77-3333-7444-8555-a66677778888';
 const T0 = Date.now() - 3_600_000;
 
 // Pane %1's Codex launched the daemon; %4's TUI never shows up in its logs.
@@ -405,6 +406,8 @@ const table = [
   `302 300 ${NATIVE} --sandbox danger-full-access`,
   `400 1 -zsh`,
   `402 400 ${NATIVE} --sandbox danger-full-access`,
+  `500 1 -zsh`,
+  `502 500 ${NATIVE} --sandbox danger-full-access`,
 ].join('\n');
 fs.writeFileSync(path.join(root, 'table'), `${table}\n`);
 fs.writeFileSync(path.join(root, 'starts'), '');
@@ -429,7 +432,7 @@ while [[ "\${1:-}" != "" ]]; do
   shift || true
 done
 case "$target" in
-  %1) echo 100 ;; %2) echo 200 ;; %3) echo 300 ;; %4) echo 400 ;;
+  %1) echo 100 ;; %2) echo 200 ;; %3) echo 300 ;; %4) echo 400 ;; %5) echo 500 ;;
   *) exit 1 ;;
 esac
 `
@@ -488,6 +491,12 @@ log(T0 + 6_760, 103, span('thread/start', 5));
 log(T0 + 7_000, 103, span('thread/start', 5), THREAD_X);
 log(T0 + 11_100, 302, 'connected app-server platform has_platform_family=true');
 log(T0 + 11_200, 103, span('thread/start', 8));
+// %5's Codex runs its own app-server (in-process mode, as on the Mac): it
+// logs that app-server's spans and its thread itself, and its connect line
+// lands next to %3's connection.
+log(T0 + 11_150, 502, 'connected app-server platform has_platform_family=true');
+log(T0 + 11_160, 502, span('thread/start', 1));
+log(T0 + 12_000, 502, span('thread/start', 1), THREAD_D);
 log(T0 + 17_000, 103, span('thread/start', 2), THREAD_A);
 log(T0 + 26_000, 103, span('thread/start', 5), THREAD_B);
 log(T0 + 34_000, 103, span('thread/start', 8), THREAD_C);
@@ -503,6 +512,7 @@ for (const threadId of [THREAD_A, THREAD_B]) {
 
 const rolloutA = writeRollout(THREAD_A, new Date(Date.now() - 20 * 60_000));
 const rolloutB = writeRollout(THREAD_B, new Date(Date.now() - 60_000));
+const rolloutD = writeRollout(THREAD_D, new Date(Date.now() - 120_000));
 // The daemon writes every shell snapshot; the one naming %4 belongs to B.
 fs.mkdirSync(path.join(home, 'shell_snapshots'), { recursive: true });
 fs.writeFileSync(
@@ -546,8 +556,12 @@ try {
   const c = await resolve('%3');
   assert.equal(
     c.session?.path, `codex-log://${THREAD_C}`,
-    "a new session without a rollout yet is followed through the logs, not the TUI's own rows"
+    "a new session without a rollout yet is followed through the logs, not the TUI's own rows," +
+      " and an in-process TUI connecting alongside takes no part in the pairing"
   );
+
+  const e = await resolve('%5');
+  assert.equal(e.session?.path, rolloutD, 'an in-process TUI binds by its own rows');
 
   const d = await resolve('%4');
   assert.equal(

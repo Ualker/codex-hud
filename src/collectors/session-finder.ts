@@ -1091,6 +1091,42 @@ function shareDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number):
   }
 }
 
+// TUIs running their own app-server (in-process mode) next to a managed
+// daemon — four on the Mac beside a live one — log that app-server's
+// request spans under their own pid, which a daemon client never does
+// (none of the clients on the three hosts). Their own rows bind them, and they
+// stay out of the daemon's pairing: a connect line or start time close to a
+// client's could hand them another pane's connection. A process keeps its
+// mode, so a positive answer is kept while the pid lives.
+const inProcessTuis = new Set<string>();
+
+async function findInProcessTuis(pids: readonly string[]): Promise<Set<string>> {
+  for (const pid of [...inProcessTuis]) {
+    if (!pids.includes(pid)) {
+      inProcessTuis.delete(pid);
+    }
+  }
+  const dbPath = getLogDatabaseCandidates()[0];
+  for (const pid of pids) {
+    if (!dbPath || !/^\d+$/.test(pid) || inProcessTuis.has(pid)) {
+      continue;
+    }
+    const where =
+      `process_uuid >= 'pid:${pid}:' AND process_uuid < 'pid:${pid};' AND thread_id IS NULL ` +
+      `AND feedback_log_body LIKE '%app_server.connection_id=%'`;
+    // Unprompted, SQLite walks idx_logs_thread_id over every thread-less row
+    // (7-20ms on Train2); the partial per-process index takes 0.04-2ms.
+    const output =
+      (await querySqlite(dbPath, [
+        `SELECT 1 FROM logs INDEXED BY idx_logs_process_uuid_threadless_ts WHERE ${where} LIMIT 1`,
+      ])) ?? (await querySqlite(dbPath, [`SELECT 1 FROM logs WHERE ${where} LIMIT 1`]));
+    if (output) {
+      inProcessTuis.add(pid);
+    }
+  }
+  return new Set(pids.filter((pid) => inProcessTuis.has(pid)));
+}
+
 /**
  * Bring the connection ledger of a managed daemon up to date (see
  * codex-daemon.ts). Only rows after the last one seen are read. Returns null
@@ -1913,10 +1949,10 @@ export class SessionFinder {
 
   /**
    * Thread of a managed-daemon client pane: the one its daemon connection is
-   * on. Null when the pane has no Codex TUI; no threadId when the TUI is not
-   * paired (yet), so the caller still reads the pane's own rows. A pairing
-   * once found is kept while the daemon and the TUI live; the connect-line
-   * pass may still correct it.
+   * on. Null when the pane has no Codex TUI or its TUI runs its own
+   * app-server; no threadId when the TUI is not paired (yet), so the caller
+   * still reads the pane's own rows. A pairing once found is kept while the
+   * daemon and the TUI live; the connect-line pass may still correct it.
    */
   private async resolveDaemonThread(
     tree: ProcessTreeSnapshot,
@@ -1926,6 +1962,11 @@ export class SessionFinder {
     const daemonPid = tree.daemonPids[0];
     const tuiPid = [...tree.processIds].reverse().find((pid) => tree.tuiPids.includes(pid));
     if (!daemonPid || !tuiPid) {
+      return null;
+    }
+    const inProcess = await findInProcessTuis(tree.tuiPids);
+    if (inProcess.has(tuiPid)) {
+      this.daemonLink = null;
       return null;
     }
 
@@ -1944,10 +1985,9 @@ export class SessionFinder {
       return { threadId: previous?.threadId ?? null, keepCurrent: true, daemonClient: true };
     }
 
-    const clients: DaemonClient[] = tree.tuiPids.map((pid) => ({
-      pid,
-      startMs: starts.get(pid) ?? Number.NaN,
-    }));
+    const clients: DaemonClient[] = tree.tuiPids
+      .filter((pid) => !inProcess.has(pid))
+      .map((pid) => ({ pid, startMs: starts.get(pid) ?? Number.NaN }));
     const pairs = mapConnectionsToClients(
       clients,
       ledger.connections,
