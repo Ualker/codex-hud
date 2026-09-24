@@ -1205,6 +1205,10 @@ async function findThreadCandidatesForProcesses(
     .map((processId) => `process_uuid LIKE '${escapeSqlString(`pid:${processId}:%`)}'`)
     .join(' OR ');
   const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
+  // The TUI's agents overview logs a row for every thread it lists, other
+  // panes' included; none of them says what this process runs (a Train2 pane
+  // bound a neighbour's session this way).
+  const listingFilter = `target NOT LIKE 'codex_tui::app::agents_overview%'`;
   // Materializing the ts window first pins the plan to the ts index. On the
   // flat query SQLite instead scans the whole thread_id index to avoid the
   // GROUP BY sort, which walks every logged row ever written (measured
@@ -1216,6 +1220,7 @@ WITH recent_logs AS MATERIALIZED (
   FROM logs
   WHERE ts >= ${sinceSeconds}
     AND (${processFilter})
+    AND ${listingFilter}
 )
 SELECT thread_id, max(ts) AS last_ts
 FROM recent_logs
@@ -1232,6 +1237,7 @@ SELECT thread_id, max(ts) AS last_ts
 FROM logs
 WHERE ts >= ${sinceSeconds}
   AND (${processFilter})
+  AND ${listingFilter}
   AND thread_id IS NOT NULL
   AND thread_id != ''
 GROUP BY thread_id
@@ -1794,6 +1800,17 @@ export class SessionFinder {
       return { threadId: null, keepCurrent: false };
     }
 
+    // A managed-daemon client runs no thread itself: its daemon connection
+    // says which one it is on (see codex-daemon.ts). Ask that first — the
+    // rows such a TUI does log can name other panes' threads.
+    const viaDaemon =
+      processTree && processTree.daemonPids.length > 0
+        ? await this.resolveDaemonThread(processTree, now)
+        : null;
+    if (viaDaemon?.threadId) {
+      return viaDaemon;
+    }
+
     const sinceMs = Math.max(
       now - THREAD_CANDIDATE_WINDOW_MS,
       (this.targetStartTime?.getTime() ?? 0) - 60_000
@@ -1825,21 +1842,10 @@ export class SessionFinder {
       }
     }
 
-    if (
-      (candidates === null || candidates.length === 0) &&
-      processTree &&
-      processTree.daemonPids.length > 0
-    ) {
-      // Nothing in the pane's own tree logs threads while a managed daemon
-      // runs: the pane's Codex is a daemon client (see codex-daemon.ts).
-      const viaDaemon = await this.resolveDaemonThread(processTree, now);
-      if (viaDaemon) {
-        return viaDaemon;
-      }
-    }
-
     if (candidates === null || candidates.length === 0) {
-      return { threadId: null, keepCurrent: this.boundViaProcess };
+      // Nothing in the pane's own tree logs threads while a managed daemon
+      // runs: the pane's Codex is a daemon client that is not paired yet.
+      return viaDaemon ?? { threadId: null, keepCurrent: this.boundViaProcess };
     }
 
     const annotated = await this.annotateCandidates(candidates);
@@ -1849,9 +1855,10 @@ export class SessionFinder {
 
   /**
    * Thread of a managed-daemon client pane: the one its daemon connection is
-   * on. Null when the pane has no Codex TUI, so the caller keeps its own
-   * answer. A pairing once found is kept while the daemon and the TUI live;
-   * the connect-line pass may still correct it.
+   * on. Null when the pane has no Codex TUI; no threadId when the TUI is not
+   * paired (yet), so the caller still reads the pane's own rows. A pairing
+   * once found is kept while the daemon and the TUI live; the connect-line
+   * pass may still correct it.
    */
   private async resolveDaemonThread(
     tree: ProcessTreeSnapshot,

@@ -108,14 +108,22 @@ for (const body of [
 
 const T = Date.UTC(2026, 8, 23, 3, 38, 20);
 const NOW = T + 25_000_000;
+// A session connection: it started a thread right after connecting.
 function book(spec) {
   return new Map(
     Object.entries(spec).map(([id, [firstMs, lastMs, client]]) => [
       Number(id),
-      { firstMs, lastMs: lastMs ?? NOW - 30_000, client, events: [] },
+      {
+        firstMs,
+        lastMs: lastMs ?? NOW - 30_000,
+        client,
+        events: [{ atMs: firstMs + 100, method: 'thread/start', threadId: `thread-${id}` }],
+      },
     ])
   );
 }
+// A TUI's startup probe: one experimentalFeature/list, never a thread.
+const probe = (atMs) => ({ firstMs: atMs, lastMs: atMs, client: 'codex-tui', events: [] });
 const asObject = (pairs) => Object.fromEntries([...pairs].sort());
 
 {
@@ -240,6 +248,51 @@ const asObject = (pairs) => Object.fromEntries([...pairs].sort());
   );
 }
 
+{
+  // Train_52, 12:48:31: TUI 1054 opened probe connection 7, then 8; its
+  // connect line came 45ms after the probe's request and 14ms after 8's
+  // first. The probe took the pane (connect line ambiguous, lower id first
+  // in order) and kept it unbound for 15 minutes.
+  const S = Date.UTC(2026, 8, 23, 12, 48, 31, 500);
+  const now = S + 60_000;
+  const conns = book({ 2: [S - 8_590_000, S + 55_000, 'codex-tui'], 8: [S + 1_511, now - 5_000, 'codex-tui'] });
+  conns.set(7, probe(S + 1_480));
+  const clients = [{ pid: '1054', startMs: S }];
+  const connected = new Map([['1054', S + 1_525]]);
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, now)), { 1054: 8 });
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), now)), { 1054: 8 });
+  // Until 8's thread row is read the pane waits instead of taking the probe.
+  conns.get(8).events = [];
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, now)), {});
+}
+
+{
+  // Three panes opened ten-odd seconds apart while the ones they replace are
+  // closing: every new TUI brings a probe, and the old connections stay live.
+  const S = Date.UTC(2026, 8, 23, 12, 46, 51, 950);
+  const now = S + 120_000;
+  const conns = book({
+    9: [S - 33_860_000, S + 73_000, 'codex-tui'],
+    12: [S - 33_858_000, S + 44_000, 'codex-tui'],
+    15: [S - 33_380_000, S + 45_000, 'codex-tui'],
+    29: [S + 1_300, now - 5_000, 'codex-tui'],
+    32: [S + 18_100, now - 5_000, 'codex-tui'],
+    35: [S + 29_500, now - 5_000, 'codex-tui'],
+  });
+  conns.set(28, probe(S + 1_200));
+  conns.set(31, probe(S + 18_000));
+  conns.set(34, probe(S + 29_400));
+  const clients = [
+    { pid: '15107', startMs: S },
+    { pid: '16839', startMs: S + 17_130 },
+    { pid: '18096', startMs: S + 27_520 },
+  ];
+  const connected = new Map([['15107', S + 1_350], ['16839', S + 18_150], ['18096', S + 29_560]]);
+  const expected = { 15107: 29, 16839: 32, 18096: 35 };
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, now)), expected);
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), now)), expected);
+}
+
 // ---------------------------------------------------------------- SessionFinder
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-daemon-'));
@@ -332,17 +385,20 @@ executeSql(dbPath, `CREATE TABLE logs (
   thread_id TEXT,
   process_uuid TEXT
 );`);
-function log(atMs, pid, body, threadId = null) {
+function log(atMs, pid, body, threadId = null, target = 't') {
   executeSql(
     dbPath,
     `INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid)
-     VALUES (${Math.floor(atMs / 1000)}, ${(atMs % 1000) * 1_000_000}, 'INFO', 't', '${q(body)}',
+     VALUES (${Math.floor(atMs / 1000)}, ${(atMs % 1000) * 1_000_000}, 'INFO', '${q(target)}', '${q(body)}',
        ${threadId ? `'${q(threadId)}'` : 'NULL'}, 'pid:${pid}:uuid-${pid}');`
   );
 }
 
+// Each TUI opens a probe connection just before its real one (Train_52).
+log(T0 + 4_790, 103, span('experimentalFeature/list', 1));
 log(T0 + 4_800, 102, 'connected app-server platform has_platform_family=true');
 log(T0 + 4_880, 103, span('thread/start', 2));
+log(T0 + 6_600, 103, span('experimentalFeature/list', 4));
 log(T0 + 6_630, 202, 'connected app-server platform has_platform_family=true');
 log(T0 + 6_760, 103, span('thread/start', 5));
 log(T0 + 11_100, 302, 'connected app-server platform has_platform_family=true');
@@ -352,6 +408,12 @@ log(T0 + 26_000, 103, span('thread/start', 5), THREAD_B);
 log(T0 + 34_000, 103, span('thread/start', 8), THREAD_C);
 for (const connection of [2, 5, 8]) {
   log(Date.now() - 30_000, 103, span('account/rateLimits/read', connection));
+}
+// Rows a daemon client does log can name other panes' threads: %3's TUI
+// mentions A, and %4's agents overview lists A and B (Train2, 12:49).
+log(Date.now() - 20_000, 302, 'thread named by the TUI', THREAD_A);
+for (const threadId of [THREAD_A, THREAD_B]) {
+  log(Date.now() - 20_000, 402, 'agents overview row', threadId, 'codex_tui::app::agents_overview_threads');
 }
 
 const rolloutA = writeRollout(THREAD_A, new Date(Date.now() - 20 * 60_000));
@@ -386,18 +448,21 @@ try {
   );
 
   const b = await resolve('%2');
-  assert.equal(b.session?.path, rolloutB, 'a pane outside the daemon tree binds through its connection');
+  assert.equal(
+    b.session?.path, rolloutB,
+    'a pane outside the daemon tree binds through its connection, not its TUI probe'
+  );
 
   const c = await resolve('%3');
   assert.equal(
     c.session?.path, `codex-log://${THREAD_C}`,
-    'a new session without a rollout yet is followed through the logs, not guessed by cwd'
+    "a new session without a rollout yet is followed through the logs, not the TUI's own rows"
   );
 
   const d = await resolve('%4');
   assert.equal(
     d.session, null,
-    'an unpaired daemon client stays unbound: no cwd guess, no daemon-written snapshot'
+    'an unpaired daemon client stays unbound: no agents-overview row, cwd guess or daemon-written snapshot'
   );
 
   // /new in pane %1: the connection moves on and only new rows are read.

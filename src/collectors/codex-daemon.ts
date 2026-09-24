@@ -12,13 +12,21 @@
  *
  * What ties a pane to its thread instead (measured on three Linux hosts):
  * - every daemon request span logs `app_server.connection_id=N` and the
- *   client name; thread/start, thread/resume, thread/fork and turn/start rows
- *   also carry the thread_id that connection is on;
+ *   client name; some rows of thread/start, thread/resume and thread/fork
+ *   spans also carry the thread_id that connection is on;
  * - the TUI logs `connected app-server platform ...` when it connects, within
- *   0.08-0.44s of that connection's first request on the daemon side;
+ *   0.44s (before or after) of that connection's first request on the daemon
+ *   side;
+ * - just before, each TUI opens a probe connection (`experimentalFeature/list`
+ *   only, 45ms ahead of the connect line on Train_52) that never carries a
+ *   thread;
  * - connection ids grow in connection order and each TUI connects right after
  *   it starts, so when that log line is missing (1 of 7 panes) the live
  *   connections sorted by id line up with the TUIs sorted by start time.
+ *
+ * Codex keeps only the newest 1000 thread-less rows per process (and 1000 per
+ * thread), so a daemon's request rows cover minutes to hours: the ledger has
+ * to be read as it grows, and a fresh one sees old connections start late.
  */
 
 import { codexSubcommand, isCodexProcessCommand } from './runtime-hooks.js';
@@ -36,8 +44,9 @@ const THREAD_METHODS = new Set(['thread/start', 'thread/resume', 'thread/fork', 
 
 /**
  * TUI-side connect line vs the daemon's first request on that connection
- * (measured 0.08-0.44s). Panes launched together connect 2-5s apart, so a
- * wider window already sees the neighbour's connection and pairs nobody.
+ * (measured within 0.44s, either side). Panes launched together connect 2-5s
+ * apart, so a wider window already sees the neighbour's connection and pairs
+ * nobody.
  */
 export const CONNECT_TOLERANCE_MS = 1_000;
 /** Order fallback: a connection may appear this early (tick/second rounding)... */
@@ -175,8 +184,11 @@ export class DaemonLedger {
 /**
  * Pair daemon connections with TUI processes: pid -> connection id.
  *
- * - Only TUI connections are paired (client name mentions `tui`, or no name
- *   but at least one thread request); when any of them was active within
+ * - Only session connections are paired: at least one thread request, and a
+ *   client name that mentions `tui` (or none). A TUI's probe connection meets
+ *   its connect line as closely as the real one does and, with the lower id,
+ *   won the order pass: new panes stayed unbound until the probe fell out of
+ *   LIVE_WINDOW_MS. When any session connection was active within
  *   LIVE_WINDOW_MS, only the live ones take part.
  * - First pass: the TUI's own connect line, when exactly one connection and
  *   exactly one TUI meet within CONNECT_TOLERANCE_MS. This pass may correct a
@@ -197,7 +209,7 @@ export function mapConnectionsToClients(
   let candidates = [...connections.entries()]
     .filter(([, connection]) => {
       const client = (connection.client ?? '').toLowerCase();
-      return client.includes('tui') || (!client && connection.events.length > 0);
+      return connection.events.length > 0 && (!client || client.includes('tui'));
     })
     .map(([id]) => id);
   const live = candidates.filter(
