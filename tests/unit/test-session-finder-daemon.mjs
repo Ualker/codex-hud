@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,8 +11,11 @@ import {
   isManagedDaemonCommand,
   mapConnectionsToClients,
   parseConnectionSpan,
+  reviveLedgerSnapshot,
 } from '../../dist/collectors/codex-daemon.js';
 import { SessionFinder } from '../../dist/collectors/session-finder.js';
+import { getCodexDataNamespace } from '../../dist/utils/codex-path.js';
+import { resolveHudStateFile } from '../../dist/utils/state-dir.js';
 import { executeSql } from '../helpers/sqlite.mjs';
 
 // With features.daemon_auto_start (Codex 0.156+) every TUI is a client of one
@@ -102,6 +106,84 @@ for (const body of [
   assert.equal(ledger.connectedAtMs.get('49030'), 1000);
   assert.deepEqual(connectionThreads(connection), { current: 'bbbb', before: ['aaaa'] });
   assert.deepEqual(connectionThreads(undefined), { current: null, before: [] });
+  assert.equal(ledger.processUuid, 'pid:49747:u');
+}
+
+{
+  // Rows of one stay fold into the latest; switches are all kept.
+  const ledger = new DaemonLedger('49747');
+  ledger.ingest(
+    [[1, 1000, 'aaaa'], [2, 1500, 'aaaa'], [3, 2000, 'bbbb'], [4, 2500, 'aaaa'], [5, 2600, 'aaaa']].map(
+      ([id, tsMs, threadId]) => ({ id, tsMs, threadId, processUuid: 'pid:49747:u', body: span('thread/start', 2) })
+    )
+  );
+  assert.deepEqual(ledger.connections.get(2).events.map((e) => [e.atMs, e.threadId]), [
+    [1500, 'aaaa'], [2000, 'bbbb'], [2600, 'aaaa'],
+  ]);
+}
+
+{
+  // A snapshot handed to the next HUD process: pruned rows only live on there.
+  const DAY = 24 * 60 * 60_000;
+  const now = 10 * DAY;
+  const row = (id, tsMs, connection, method, threadId = '') => ({
+    id, tsMs, threadId, processUuid: 'pid:49747:u', body: span(method, connection),
+  });
+  const old = new DaemonLedger('49747');
+  old.ingest([
+    { id: 1, tsMs: now - 3_600_000, threadId: '', processUuid: 'pid:49030:u', body: 'connected app-server platform' },
+    row(2, now - 3_599_900, 2, 'account/read'),
+    row(3, now - 3_599_000, 2, 'thread/start', 'aaaa'),
+    row(4, now - 1_800_000, 2, 'thread/resume', 'bbbb'),
+    row(5, now - 2 * DAY, 9, 'thread/start', 'gone'),
+  ]);
+  const saved = old.snapshot();
+  assert.equal(saved.processUuid, 'pid:49747:u');
+  assert.deepEqual(reviveLedgerSnapshot(JSON.parse(JSON.stringify(saved))), saved, 'survives the JSON round trip');
+
+  // What a fresh ledger reads after Codex pruned: 2's first rows and the
+  // resume row of the long session it moved to are gone.
+  const fresh = new DaemonLedger('49747');
+  assert.equal(fresh.merge(saved), false, 'nothing is merged before the daemon process is known');
+  fresh.ingest([
+    { id: 1, tsMs: now - 3_600_000, threadId: '', processUuid: 'pid:49030:u', body: 'connected app-server platform' },
+    row(3, now - 3_599_000, 2, 'thread/start', 'aaaa'),
+    row(7, now - 60_000, 2, 'account/rateLimits/read'),
+  ]);
+  assert.equal(connectionThreads(fresh.connections.get(2)).current, 'aaaa', 'the pruned view is stale');
+  assert.equal(fresh.merge(saved), true);
+  const merged = fresh.connections.get(2);
+  assert.equal(merged.firstMs, now - 3_599_900);
+  assert.equal(merged.lastMs, now - 60_000);
+  assert.equal(connectionThreads(merged).current, 'bbbb');
+  assert.equal(fresh.lastRowId, 7);
+
+  // Another daemon process (same pid, new uuid) shares nothing.
+  const other = new DaemonLedger('49747');
+  other.ingest([{ ...row(8, now, 2, 'thread/start', 'cccc'), processUuid: 'pid:49747:v' }]);
+  assert.equal(other.merge(saved), false);
+  assert.equal(connectionThreads(other.connections.get(2)).current, 'cccc');
+
+  // A day without requests ends a connection; old connect lines go with it.
+  fresh.connectedAtMs.set('11111', now - 2 * DAY);
+  fresh.prune(now);
+  assert.deepEqual([...fresh.connections.keys()].sort((a, b) => a - b), [2]);
+  assert.deepEqual([...fresh.connectedAtMs.keys()], ['49030']);
+  fresh.connectedAtMs.set('49030', now - 2 * DAY);
+  fresh.connections.get(2).firstMs = now - 2 * DAY + 300;
+  fresh.prune(now);
+  assert.deepEqual([...fresh.connectedAtMs.keys()], ['49030'], "kept while it meets a live connection's first request");
+
+  for (const junk of [null, 'x', {}, { ...saved, processUuid: 'nope' }, { ...saved, lastRowId: 'x' }]) {
+    assert.equal(reviveLedgerSnapshot(junk), null);
+  }
+  const partial = reviveLedgerSnapshot({
+    ...saved,
+    connections: [[2, saved.connections[0][1]], ['x', {}], [3, { firstMs: 1 }]],
+    connectedAtMs: [['49030', 5], ['bad', 6], ['7', 'x']],
+  });
+  assert.deepEqual(partial.connections.map(([id]) => id), [2]);
+  assert.deepEqual(partial.connectedAtMs, [['49030', 5]]);
 }
 
 // ---------------------------------------------------------------- pairing
@@ -306,6 +388,8 @@ fs.mkdirSync(binDir, { recursive: true });
 const THREAD_A = '01a0cd66-960e-7300-85f4-a302e3c3e015';
 const THREAD_B = '01a0cd70-1111-7222-8333-944455556666';
 const THREAD_C = '01a0cdc2-dd83-7832-884b-aa0a34d4aeff';
+// The session %2's TUI started on before moving to B.
+const THREAD_X = '01a0cd66-0000-7000-8000-000000000001';
 const T0 = Date.now() - 3_600_000;
 
 // Pane %1's Codex launched the daemon; %4's TUI never shows up in its logs.
@@ -401,6 +485,7 @@ log(T0 + 4_880, 103, span('thread/start', 2));
 log(T0 + 6_600, 103, span('experimentalFeature/list', 4));
 log(T0 + 6_630, 202, 'connected app-server platform has_platform_family=true');
 log(T0 + 6_760, 103, span('thread/start', 5));
+log(T0 + 7_000, 103, span('thread/start', 5), THREAD_X);
 log(T0 + 11_100, 302, 'connected app-server platform has_platform_family=true');
 log(T0 + 11_200, 103, span('thread/start', 8));
 log(T0 + 17_000, 103, span('thread/start', 2), THREAD_A);
@@ -430,10 +515,15 @@ const saved = {
   CODEX_HOME: process.env.CODEX_HOME,
   CODEX_SESSIONS_PATH: process.env.CODEX_SESSIONS_PATH,
   CODEX_HUD_MAIN_PANE: process.env.CODEX_HUD_MAIN_PANE,
+  HOME: process.env.HOME,
+  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
 };
 process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ''}`;
 process.env.CODEX_HOME = home;
 delete process.env.CODEX_SESSIONS_PATH;
+// HUDs share their daemon ledger through a state file: keep it out of the real home.
+process.env.HOME = path.join(root, 'home');
+process.env.XDG_STATE_HOME = path.join(root, 'state');
 
 async function resolve(pane, finder = new SessionFinder(cwd, undefined, new Date(T0))) {
   process.env.CODEX_HUD_MAIN_PANE = pane;
@@ -470,6 +560,51 @@ try {
   log(Date.now() - 5_000, 103, span('thread/start', 2), THREAD_A2);
   const again = await resolve('%1', a.finder);
   assert.equal(again.session?.path, `codex-log://${THREAD_A2}`, 'the pane follows its /new session');
+
+  // A HUD reloaded hours later. B and C grew into long sessions, and Codex
+  // keeps 1000 rows per thread and 1000 thread-less rows per process: the
+  // thread/start rows of B and C are gone, and so are the daemon's early
+  // requests. What survives says %2 is still on X and %3 on nothing.
+  const sharedFile = resolveHudStateFile(`shared-daemon-ledger-${getCodexDataNamespace()}.json`);
+  assert.ok(sharedFile && fs.existsSync(sharedFile), 'the HUDs shared their ledger');
+  const record = fs.readFileSync(sharedFile);
+  const rolloutC = writeRollout(THREAD_C, new Date());
+  executeSql(
+    dbPath,
+    `DELETE FROM logs WHERE thread_id IN ('${THREAD_B}', '${THREAD_C}')
+       OR (process_uuid = 'pid:103:uuid-103' AND thread_id IS NULL
+           AND ts < ${Math.floor((Date.now() - 600_000) / 1000)});`
+  );
+  // Each reload is a new process: nothing of this one's ledger carries over.
+  const sessionFinderUrl = new URL('../../dist/collectors/session-finder.js', import.meta.url).href;
+  const reload = () => {
+    const script = `
+      const { SessionFinder } = await import(${JSON.stringify(sessionFinderUrl)});
+      const paths = {};
+      for (const pane of ['%2', '%3']) {
+        process.env.CODEX_HUD_MAIN_PANE = pane;
+        const finder = new SessionFinder(${JSON.stringify(cwd)}, undefined, new Date(${T0}));
+        paths[pane] = (await finder.check(true))?.path ?? null;
+      }
+      console.log(JSON.stringify(paths));`;
+    const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8',
+      env: process.env,
+    });
+    return JSON.parse(stdout.trim().split('\n').pop());
+  };
+
+  fs.rmSync(sharedFile);
+  const blind = reload();
+  assert.notEqual(blind['%2'], rolloutB, 'without the shared ledger the pruned logs mislead');
+  assert.notEqual(blind['%3'], rolloutC, 'without the shared ledger the pruned logs mislead');
+
+  fs.writeFileSync(sharedFile, record);
+  assert.deepEqual(
+    reload(),
+    { '%2': rolloutB, '%3': rolloutC },
+    'a reloaded HUD picks up the ledger its predecessors recorded'
+  );
 
   console.log('test-session-finder-daemon: PASS');
 } finally {

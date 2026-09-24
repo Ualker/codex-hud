@@ -26,7 +26,9 @@
  *
  * Codex keeps only the newest 1000 thread-less rows per process (and 1000 per
  * thread), so a daemon's request rows cover minutes to hours: the ledger has
- * to be read as it grows, and a fresh one sees old connections start late.
+ * to be read as it grows. A fresh one sees old connections start late and
+ * misses the resume row of a long session, so HUDs hand their ledgers on
+ * through a shared state file (see session-finder).
  */
 
 import { codexSubcommand, isCodexProcessCommand } from './runtime-hooks.js';
@@ -59,6 +61,11 @@ export const STARTUP_WINDOW_MS = 300_000;
  * fallback it would shift every later pairing by one.
  */
 export const LIVE_WINDOW_MS = 15 * 60_000;
+/**
+ * A saved ledger forgets a connection after a day without requests: live
+ * TUIs poll every few minutes, so its TUI is gone.
+ */
+export const LEDGER_KEEP_MS = 24 * 60 * 60_000;
 
 export interface ThreadEvent {
   atMs: number;
@@ -85,6 +92,15 @@ export interface LedgerRow {
   threadId: string;
   processUuid: string;
   body: string;
+}
+
+/** A ledger as plain JSON, handed from one HUD process to the next. */
+export interface LedgerSnapshot {
+  /** `pid:<PID>:<UUID>` of the daemon process the facts belong to. */
+  processUuid: string;
+  lastRowId: number;
+  connections: Array<[number, DaemonConnection]>;
+  connectedAtMs: Array<[string, number]>;
 }
 
 export function isManagedDaemonCommand(command: string): boolean {
@@ -132,6 +148,69 @@ export function parseConnectionSpan(
 }
 
 /**
+ * Thread events oldest first, each run on one thread folded into its latest
+ * row: only the switches between threads matter, and a long stay would
+ * otherwise keep every row of it.
+ */
+function compactEvents(events: readonly ThreadEvent[]): ThreadEvent[] {
+  const compacted: ThreadEvent[] = [];
+  for (const event of [...events].sort((left, right) => left.atMs - right.atMs)) {
+    if (compacted[compacted.length - 1]?.threadId === event.threadId) {
+      compacted[compacted.length - 1] = event;
+    } else {
+      compacted.push(event);
+    }
+  }
+  return compacted;
+}
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+/** A LedgerSnapshot read back from disk; malformed entries are dropped. */
+export function reviveLedgerSnapshot(raw: unknown): LedgerSnapshot | null {
+  const value = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  if (
+    typeof value.processUuid !== 'string' ||
+    !pidOfProcessUuid(value.processUuid) ||
+    !isFiniteNumber(value.lastRowId) ||
+    !Array.isArray(value.connections) ||
+    !Array.isArray(value.connectedAtMs)
+  ) {
+    return null;
+  }
+  const connections: Array<[number, DaemonConnection]> = [];
+  for (const entry of value.connections as unknown[]) {
+    const [id, item] = Array.isArray(entry) ? entry : [];
+    const { firstMs, lastMs, client, events } = (item ?? {}) as Record<string, unknown>;
+    if (
+      !Number.isInteger(id) ||
+      !isFiniteNumber(firstMs) ||
+      !isFiniteNumber(lastMs) ||
+      (client !== null && typeof client !== 'string') ||
+      !Array.isArray(events)
+    ) {
+      continue;
+    }
+    const kept = (events as unknown[]).filter(
+      (event): event is ThreadEvent =>
+        typeof event === 'object' &&
+        event !== null &&
+        isFiniteNumber((event as ThreadEvent).atMs) &&
+        typeof (event as ThreadEvent).method === 'string' &&
+        typeof (event as ThreadEvent).threadId === 'string' &&
+        (event as ThreadEvent).threadId !== ''
+    );
+    connections.push([id as number, { firstMs, lastMs, client, events: compactEvents(kept) }]);
+  }
+  const connectedAtMs = (value.connectedAtMs as unknown[]).filter(
+    (entry): entry is [string, number] =>
+      Array.isArray(entry) && /^\d+$/.test(String(entry[0])) && isFiniteNumber(entry[1])
+  );
+  return { processUuid: value.processUuid, lastRowId: value.lastRowId, connections, connectedAtMs };
+}
+
+/**
  * Connection book of one daemon, fed incrementally with log rows (oldest
  * first). Rows of other processes only contribute TUI connect lines.
  */
@@ -140,6 +219,8 @@ export class DaemonLedger {
   /** Latest `connected app-server` line per TUI pid. */
   readonly connectedAtMs = new Map<string, number>();
   lastRowId = 0;
+  /** `pid:<PID>:<UUID>` of the daemon, once one of its rows was read. */
+  processUuid: string | null = null;
 
   constructor(readonly daemonPid: string) {}
 
@@ -159,6 +240,7 @@ export class DaemonLedger {
       if (pid !== this.daemonPid) {
         continue;
       }
+      this.processUuid = row.processUuid;
       const span = parseConnectionSpan(row.body);
       if (!span) {
         continue;
@@ -174,8 +256,75 @@ export class DaemonLedger {
         connection.client = span.client;
       }
       if (row.threadId && span.method && THREAD_METHODS.has(span.method)) {
-        connection.events.push({ atMs: row.tsMs, method: span.method, threadId: row.threadId });
-        connection.events.sort((left, right) => left.atMs - right.atMs);
+        connection.events = compactEvents([
+          ...connection.events,
+          { atMs: row.tsMs, method: span.method, threadId: row.threadId },
+        ]);
+      }
+    }
+  }
+
+  /** Facts as plain JSON; null until a row of the daemon itself was read. */
+  snapshot(): LedgerSnapshot | null {
+    if (!this.processUuid) {
+      return null;
+    }
+    return {
+      processUuid: this.processUuid,
+      lastRowId: this.lastRowId,
+      connections: [...this.connections].map(([id, connection]) => [
+        id,
+        { ...connection, events: [...connection.events] },
+      ]),
+      connectedAtMs: [...this.connectedAtMs],
+    };
+  }
+
+  /**
+   * Fold in what another HUD process recorded of this same daemon process.
+   * Rows Codex has pruned since live on only there, so facts are united:
+   * the earliest first request, the latest activity, every thread switch.
+   * False (and nothing merged) until this ledger has seen its daemon's rows,
+   * and for any other daemon process.
+   */
+  merge(snapshot: LedgerSnapshot): boolean {
+    if (!this.processUuid || snapshot.processUuid !== this.processUuid) {
+      return false;
+    }
+    for (const [id, theirs] of snapshot.connections) {
+      const mine = this.connections.get(id);
+      this.connections.set(id, {
+        firstMs: Math.min(mine?.firstMs ?? theirs.firstMs, theirs.firstMs),
+        lastMs: Math.max(mine?.lastMs ?? theirs.lastMs, theirs.lastMs),
+        client: mine?.client ?? theirs.client,
+        events: compactEvents([...(mine?.events ?? []), ...theirs.events]),
+      });
+    }
+    for (const [pid, atMs] of snapshot.connectedAtMs) {
+      this.connectedAtMs.set(pid, Math.max(this.connectedAtMs.get(pid) ?? atMs, atMs));
+    }
+    this.lastRowId = Math.max(this.lastRowId, snapshot.lastRowId);
+    return true;
+  }
+
+  /**
+   * Forget connections silent for LEDGER_KEEP_MS, and connect lines older
+   * than that which no longer sit next to a kept connection's first request
+   * (the only thing they are compared with).
+   */
+  prune(nowMs: number): void {
+    for (const [id, connection] of this.connections) {
+      if (connection.lastMs < nowMs - LEDGER_KEEP_MS) {
+        this.connections.delete(id);
+      }
+    }
+    const firsts = [...this.connections.values()].map((connection) => connection.firstMs);
+    for (const [pid, atMs] of this.connectedAtMs) {
+      if (
+        atMs < nowMs - LEDGER_KEEP_MS &&
+        !firsts.some((firstMs) => Math.abs(firstMs - atMs) <= CONNECT_TOLERANCE_MS)
+      ) {
+        this.connectedAtMs.delete(pid);
       }
     }
   }
