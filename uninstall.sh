@@ -38,7 +38,7 @@ show_help() {
 Codex HUD uninstaller
 
 Usage:
-  ./uninstall.sh        Remove codex-hud aliases and stop HUD sessions
+  ./uninstall.sh        Remove codex-hud aliases and stop HUD panes (keep Codex running)
   ./uninstall.sh --help Show this help message
 
 Quick command wrapper:
@@ -169,66 +169,42 @@ remove_alias() {
     info "Removed codex-hud alias from $rc_file"
 }
 
-# Kill any existing codex-hud tmux sessions
+# Stop only this checkout's registered HUD panes, leaving main panes alive.
 kill_sessions() {
-    if command -v tmux >/dev/null 2>&1; then
-        local sessions
-        # The Prefix+H toggle is installed server-wide; only a binding of ours
-        # (it targets @codex_hud_pane) is removed.
+    command -v tmux >/dev/null 2>&1 || return 0
+    local session hud main command owner pane_session
+    while IFS= read -r session; do
+        [[ -n "$session" ]] || continue
+        hud=$(tmux show-option -t "$session" -qv @codex_hud_pane 2>/dev/null || true)
+        main=$(tmux show-option -t "$session" -qv @codex_hud_main_pane 2>/dev/null || true)
+        [[ "$hud" =~ ^%[0-9]+$ && "$main" =~ ^%[0-9]+$ && "$hud" != "$main" ]] || continue
+        owner=$(tmux show-option -t "$session" -qv @codex_hud_root 2>/dev/null || true)
+        [[ -z "$owner" || "$owner" == "$SCRIPT_DIR" ]] || continue
+        pane_session=$(tmux display-message -p -t "$hud" '#{session_name}' 2>/dev/null || true)
+        [[ "$pane_session" == "$session" ]] || continue
+        pane_session=$(tmux display-message -p -t "$main" '#{session_name}' 2>/dev/null || true)
+        [[ "$pane_session" == "$session" ]] || continue
+        command=$(tmux display-message -p -t "$hud" '#{pane_start_command}' 2>/dev/null || true)
+        # A root marker alone can be stale after a manual respawn. Require our
+        # entrypoint as well, including for legacy installations without a marker.
+        if [[ "$command" == *"$SCRIPT_DIR/dist/index.js"* || "$command" == *"$SCRIPT_DIR/bin/codex-hud-renderer"* ]]; then
+            tmux kill-pane -t "$hud" 2>/dev/null || continue
+            tmux set-option -u -t "$session" @codex_hud_pane 2>/dev/null || true
+            info "Stopped HUD pane $hud; preserved main pane $main"
+        fi
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+    # Other checkouts may still depend on the shared binding.
+    if ! tmux list-panes -a -F '#{@codex_hud_pane}' 2>/dev/null | grep -q '%'; then
         if tmux list-keys -T prefix H 2>/dev/null | grep -q codex_hud_pane; then
             tmux unbind-key -T prefix H 2>/dev/null || true
         fi
-        sessions=$(tmux list-sessions 2>/dev/null | grep "^codex-hud-" | cut -d: -f1 || true)
-        
-        if [[ -n "$sessions" ]]; then
-            step "Killing codex-hud tmux sessions..."
-            for session in $sessions; do
-                tmux kill-session -t "$session" 2>/dev/null || true
-                info "Killed session: $session"
-            done
-        fi
-        
-        # Also kill any panes running the HUD renderer
-        step "Cleaning up HUD panes..."
-        for session in $(tmux list-sessions -F "#{session_name}" 2>/dev/null || true); do
-            # Find panes running the codex-hud node process
-            for pane in $(tmux list-panes -t "$session" -F "#{pane_id}:#{pane_current_command}" 2>/dev/null || true); do
-                if [[ "$pane" == *"node"* ]] || [[ "$pane" == *"codex-hud"* ]]; then
-                    local pane_id="${pane%%:*}"
-                    # Check if this pane is running our HUD
-                    local pane_cmd
-                    pane_cmd=$(tmux display-message -p -t "$pane_id" "#{pane_start_command}" 2>/dev/null || true)
-                    if [[ "$pane_cmd" == *"codex-hud"* ]] || [[ "$pane_cmd" == *"dist/index.js"* ]]; then
-                        tmux kill-pane -t "$pane_id" 2>/dev/null || true
-                        info "Killed HUD pane: $pane_id"
-                    fi
-                fi
-            done
-        done
     fi
 }
 
-# Restore original codex alias from backup
 restore_backup() {
+    restore_rc_aliases
     if [[ -f "$BACKUP_FILE" ]]; then
-        step "Restoring original codex alias from backup..."
-        
-        local shell_name
-        shell_name=$(detect_shell)
-        local rc_file
-        rc_file=$(get_rc_file "$shell_name")
-        
-        if [[ -n "$rc_file" ]] && [[ -f "$rc_file" ]]; then
-            # Append the backed up aliases to the rc file
-            echo "" >> "$rc_file"
-            echo "# Restored codex alias from codex-hud backup" >> "$rc_file"
-            cat "$BACKUP_FILE" >> "$rc_file"
-            info "Restored original alias to $rc_file"
-            
-            # Remove the backup file after restoration
-            rm -f "$BACKUP_FILE"
-            info "Removed backup file: $BACKUP_FILE"
-        fi
+        warn "Legacy alias backup has no source paths; preserved for manual recovery: $BACKUP_FILE"
     fi
 }
 

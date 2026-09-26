@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Restart only renderer fatal failures; ordinary exits and config errors stay stopped.
+set -u
+HUD_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+restarts=0
+renderer_pid=''
+stop_renderer() {
+    trap '' TERM INT HUP
+    if [[ -n "$renderer_pid" ]]; then
+        kill -TERM "$renderer_pid" 2>/dev/null || true
+        wait "$renderer_pid" 2>/dev/null || true
+    fi
+    exit 0
+}
+trap stop_renderer TERM INT HUP
+while :; do
+    started=$SECONDS
+    # Explicit stdin redirection prevents a background shell job getting /dev/null.
+    node "$HUD_RUNTIME_DIR/dist/index.js" <&0 &
+    renderer_pid=$!
+    wait "$renderer_pid"
+    status=$?
+    renderer_pid=''
+    [[ "$status" == 75 ]] || exit "$status"
+    if (( SECONDS - started >= 60 )); then restarts=0; fi
+    restarts=$((restarts + 1))
+    if (( restarts > 3 )); then
+        printf '\nHUD recovery stopped after 3 retries. Run codex-hud --doctor, then --reload.\n' >&2
+        exit 75
+    fi
+    sleep "$restarts"
+done

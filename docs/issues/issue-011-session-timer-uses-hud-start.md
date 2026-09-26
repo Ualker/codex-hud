@@ -33,3 +33,8 @@ Session Timer 基于 rollout 的 session start time 显示。
 - 修复时间：2026-01-30
 - 变更说明：计时展示优先使用 rollout 中 session startTime，HUD 启动时间仅作回退。
 - 验证方式：未执行；建议 resume 后确认计时连续准确。
+
+
+## 当前核验
+
+2026-09-26 核验：usage-line 使用 session.startTime；未绑定时不把 HUD 启动时间当会话时间。回归：test-session-id-row、test-review-regressions。

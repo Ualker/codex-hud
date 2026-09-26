@@ -268,8 +268,8 @@ backup_existing_aliases() {
     
     if [[ -n "$existing_aliases" ]]; then
         warn "Found existing codex alias entries in $rc_file"
-        echo "$existing_aliases" >> "$BACKUP_FILE"
-        info "Backed up to $BACKUP_FILE"
+        backup_rc_aliases "$rc_file" "$existing_aliases" || return 1
+        info "Backed up aliases with their original RC path"
         
         local temp_file
         temp_file=$(prepare_rc_temp "$rc_file") || return 1

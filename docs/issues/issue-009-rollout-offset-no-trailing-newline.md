@@ -27,5 +27,10 @@
 - 将 `newOffset` 与 `fileSize` 做 `min` 限制，避免超过真实文件大小。
 
 ## 修复记录
-- 状态：待修复
+- 状态：已修复
 - 备注：与 CRLF 的偏移问题不同，此处是末行无换行导致偏移偏大。
+
+
+## 当前核验
+
+2026-09-26 核验：仅提交完整换行之前的记录，未写完的尾行保持原 offset 等待后续追加。回归：test-agent-jsonl-tail、test-rollout-parse-skip。

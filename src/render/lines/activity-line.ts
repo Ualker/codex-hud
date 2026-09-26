@@ -40,7 +40,7 @@ import { osc8Link, fileUrl } from '../../utils/hyperlinks.js';
 
 const DESCENDANT_PREFIX = '↳';
 
-type ToolDetailsMode = 'off' | 'targets' | 'full';
+export type ToolDetailsMode = 'off' | 'targets' | 'full';
 
 // Runtime override set by the `t` hotkey; the environment variable only
 // provides the initial mode.
@@ -752,6 +752,7 @@ export function renderHealthLine(
   nowMs: number = Date.now()
 ): string | null {
   const warnings: string[] = [];
+  if ((data.pendingBytes ?? 0) >= 1024 * 1024) warnings.push(`Catching up · ${Math.ceil(data.pendingBytes! / 1024 / 1024)} MiB queued`);
   for (const [name, health] of Object.entries(
     data.collectorHealth ?? {}
   )) {
@@ -786,7 +787,9 @@ export function renderHealthLine(
       )
     );
     if (nested) {
-      warnings.push(nested);
+      const types = Object.keys(mergeUnknownCounters(protocolHealth.unknownTopLevelTypes,
+        protocolHealth.unknownResponseTypes, protocolHealth.unknownEventTypes)).length;
+      warnings.push(hudDetailsExpanded() ? nested : `Protocol compatibility · ${types} ${plural(types, 'type')} · d details`);
     }
     if (protocolHealth.malformedLines > 0) {
       const count = protocolHealth.malformedLines;
@@ -885,8 +888,12 @@ export function renderNoteLine(
   const protocolNote = data.protocolHealth
     ? describeUnknownRecords(data.protocolHealth.unknownTopLevelTypes)
     : null;
-  if (protocolNote) {
-    notes.push(protocolNote);
+  const nested = data.protocolHealth && Object.keys({...data.protocolHealth.unknownResponseTypes,...data.protocolHealth.unknownEventTypes}).length > 0;
+  if (protocolNote && (hudDetailsExpanded() || !nested)) {
+    notes.push(hudDetailsExpanded() ? protocolNote : `Protocol notice · ${Object.keys(data.protocolHealth!.unknownTopLevelTypes).length} ${plural(Object.keys(data.protocolHealth!.unknownTopLevelTypes).length, 'type')} · d details`);
+  }
+  if (hudDetailsExpanded() && data.rateLimitsObservedAt) {
+    notes.push(`Quota: ${data.rateLimitsSource ?? 'logs'} · observed ${formatAge(Date.now()-data.rateLimitsObservedAt.getTime())} ago`);
   }
   const slowest = data.slowProbes?.[0];
   if (slowest) {
@@ -1625,3 +1632,5 @@ function buildSessionDetailParts(
     width
   );
 }
+
+export function setToolDetailsMode(mode: ToolDetailsMode): void { toolDetailsModeOverride = mode; }

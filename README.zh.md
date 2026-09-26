@@ -13,6 +13,41 @@
 
 ![Codex HUD — 单 Session 模式](./doc/fig/single.svg)
 
+
+## 交互、恢复与诊断
+
+以下按键在 HUD pane 获得焦点时使用；主 pane 中仍可通过 `Prefix+H` 切换视图。
+
+| 按键 | 操作 |
+| --- | --- |
+| `?` | 打开／关闭五行帮助面板 |
+| `Esc` | 关闭帮助；没有帮助时返回 Codex 主 pane |
+| `Ctrl+T` | 切换单会话／overview |
+| `t` / `d` | 循环工具详情／切换 HUD 完整详情 |
+| `c` | 切换 `standard`／`coexist` 布局 |
+| `j` / `k`、方向键 | 选择 overview 行；选中行保持可见 |
+| `Enter` | 重新验证绑定后，进入选中会话的主 pane |
+| `f` | 筛选等待审批、失败、中断或日志不可用的会话；再次按下显示全部 |
+
+视图、详情、工具信息、布局、短标签和筛选条件按 tmux session 保存，重载 HUD 后继续使用。显式环境设置发生变化时优先采用新设置。短标签可替代长提示词标题，并同步到 overview：
+
+```bash
+codex-hud --label "HUD review" --layout coexist --tmux-style blue-purple
+codex-hud --label "HUD review" --reload --target SESSION_NAME
+codex-hud --doctor --json
+npm run bench
+```
+
+HUD 参数放在 Codex 参数或控制命令前。`standard` 保留常规布局；`coexist` 适合与 Codex 原生底栏共存，优先显示任务、子代理与告警，平静时的 Context 放进完整详情，高占用时仍显示。常驻权限标识改用信息强调色，与黄色即时告警区分。可选的 `blue-purple` 配色只改变目标 tmux session；`--tmux-style default` 清除这几个局部样式覆盖。对应环境变量为 `CODEX_HUD_LABEL`、`CODEX_HUD_LAYOUT`、`CODEX_HUD_TMUX_STYLE`。
+
+紧凑详情将协议警告按类型汇总；`d` 展示类型名称及异常记录数量，完整详情也显示额度来源和观测时间。`--doctor --json` 提供绑定依据、CLI/Node 版本、读取位置／积压、采集器健康状态和偏好。运行时快照最多每 10 秒刷新，进程已退出或快照过旧时标记为不新鲜；不包含提示词正文或认证信息。
+
+日志解析会丢弃重绑定之前的旧读取，校验记录结构，并分批追赶大段积压。`Catching up` 表示仍在读取历史；大量积压期间暂停通知。通知冷却按会话／回合隔离。显式 `CODEX_HOME` 不可用时报告该目录错误，避免串到默认账号目录。
+
+未捕获的全局异常会结束渲染器，wrapper 仅重启 HUD 进程并限制连续重试次数（三次，逐步退避）；主 Codex 继续运行。正常退出及启动配置错误不会自动重启。卸载也只停止本 checkout 登记的 HUD pane，保留主 pane。alias 备份按原始配置路径恢复，保留 shell 语法；如果用户已有更新的 alias，或遇到缺少来源信息的旧格式备份，会保留备份并提示，不覆盖当前配置。
+
+离线[性能基准](./docs/PERFORMANCE.md)覆盖多种高度、overview 和四个并发长日志读取器。所有 tmux 集成测试使用隔离 server 或替身。
+
 ## 为什么需要 Codex HUD？
 
 **Q: Codex CLI 本身就能用，为什么还需要 HUD？**

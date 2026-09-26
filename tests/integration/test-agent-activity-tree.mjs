@@ -381,12 +381,33 @@ try {
     appendRolloutRecords(directAPath, [
       taskComplete({ turnId: directATurn, timestamp: timestamp(6_400) }),
     ]);
+    // 0.157.1 also announces completion in the parent's item stream. This
+    // must not reject the batch, respawn the child, or hide its active subtree.
+    appendRolloutRecords(rootPath, [
+      paginatedAgentStart({
+        eventId: 'subagent-completed-direct-a-turn',
+        childThreadId: DIRECT_A,
+        agentPath: '/root/direct_a',
+        kind: 'completed',
+        occurredAtMs: 6_400,
+        timestamp: timestamp(6_400),
+      }),
+    ]);
     const terminalAnchor = await collector.collect(6_400);
     const directARow = terminalAnchor.rows.find((row) => row.threadId === DIRECT_A);
     assert.ok(directARow);
     assert.equal(directARow.status, 'running');
     assert.equal(directARow.activeDescendantCount, 1);
     assert.equal(directARow.elapsedStartedAt.getTime(), 6_000);
+
+    const replayCollector = new AgentActivityCollector({
+      inactivityTimeoutMs: 2_000,
+      resolveRollout: createResolver(files, []),
+      logError: () => {},
+    });
+    replayCollector.setRootSession(rootSession);
+    assert.deepEqual((await replayCollector.collect(6_400)).rows, terminalAnchor.rows,
+      'reloading a rollout containing a completion marker preserves the active tree');
 
     appendRolloutRecords(grandchildPath, [
       taskComplete({ turnId: grandchildTurn, timestamp: timestamp(6_500) }),
@@ -508,7 +529,7 @@ try {
     const transactionPrefix = fs.readFileSync(partialPath, 'utf8');
     appendRolloutRecords(partialPath, [
       transactionSeed,
-      legacyAgentStart({ kind: 'completed', timestamp: timestamp(8_400) }),
+      legacyAgentStart({ kind: 'future_kind', timestamp: timestamp(8_400) }),
     ]);
     const processingError = await collector.collect(8_400);
     assert.equal(processingError.rows[0].status, 'tracking-error');

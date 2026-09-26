@@ -16,3 +16,5 @@ export function toggleHudDetails(nowMs: number = Date.now()): boolean {
 export function hudDetailsNotice(nowMs: number = Date.now()): string | null {
   return nowMs < noticeUntilMs ? `Details: ${hudDetailsExpanded() ? 'full' : 'compact'}` : null;
 }
+
+export function setHudDetails(expanded: boolean): void { expandedOverride = expanded; }

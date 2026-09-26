@@ -47,6 +47,7 @@ const TMUX_MAX_BUFFER = 1024 * 1024;
 const BOUND_OPTION = '@codex_hud_bound';
 
 interface BoundPayload {
+  label?: string;
   tmuxSession: string;
   sessionId: string;
   ownerPid?: number;
@@ -59,6 +60,7 @@ interface BoundPayload {
 }
 
 export interface OpenHudBinding {
+  label?: string;
   tmuxSession: string;
   sessionId: string;
   /** Absent when the bound session has not produced a rollout yet. */
@@ -127,7 +129,8 @@ export function publishHudBinding(
   approvalNeeded: boolean = false,
   likelyInterrupted: boolean = false,
   codexExited: boolean = false,
-  freshPrompt: boolean = false
+  freshPrompt: boolean = false,
+  label?: string
 ): Promise<void> {
   if (!tmuxSession) {
     return Promise.resolve();
@@ -138,6 +141,7 @@ export function publishHudBinding(
         tmuxSession,
         sessionId,
         ownerPid: process.pid,
+        ...(label ? { label } : {}),
         ...(rolloutPath ? { rolloutPath } : {}),
         ...(cwd ? { cwd } : {}),
         ...(approvalNeeded ? { approvalNeeded: true } : {}),
@@ -185,6 +189,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
       likelyInterrupted,
       codexExited,
       freshPrompt,
+      label,
     } = parsed as Record<string, unknown>;
     if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
       return null;
@@ -195,6 +200,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
     return {
       tmuxSession,
       sessionId,
+      ...(typeof label === 'string' ? {label} : {}),
       ...(typeof rolloutPath === 'string' && rolloutPath
         ? { rolloutPath }
         : {}),

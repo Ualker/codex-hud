@@ -63,8 +63,15 @@ try {
     .find((line) => /^bind-key\s+-T\s+prefix\s+H\s/.test(line));
   assert.ok(binding, 'the wrapper must install Prefix+H');
   const commandFile = path.join(root, 'toggle.conf');
-  fs.writeFileSync(commandFile, binding.replace(/^bind-key\s+-T\s+prefix\s+H\s+/, '') + '\n');
-  tmux(['source-file', '-t', main, commandFile]);
+  const command = binding.replace(/^bind-key\s+-T\s+prefix\s+H\s+/, '');
+  assert.match(command, /^run-shell\s/, 'the binding must retain its format-expansion layer');
+  const executeBinding = (pane) => {
+    // tmux 3.2a has no source-file -t. run-shell -t supplies the same pane
+    // context while still exercising the installed command's nested parser.
+    fs.writeFileSync(commandFile, command.replace(/^run-shell\s+/, `run-shell -t ${quote(pane)} `) + '\n');
+    tmux(['source-file', commandFile]);
+  };
+  executeBinding(main);
   await waitFor(() => fs.existsSync(input), 'Prefix+H must send Ctrl+T to the HUD pane');
   assert.deepEqual(fs.readFileSync(input), Buffer.from([0x14]));
   assert.equal(tmux(['display-message', '-p', '-t', session, '#{pane_id}']), main,
@@ -74,7 +81,7 @@ try {
   const other = tmux(['new-session', '-d', '-s', 'without-hud', '-P', '-F', '#{pane_id}',
     `exec ${quote(process.execPath)} ${quote(helper)} ${quote(otherInput)}`]);
   await waitFor(() => fs.existsSync(`${otherInput}.ready`), 'unrelated pane must start');
-  tmux(['source-file', '-t', other, commandFile]);
+  executeBinding(other);
   await delay(100);
   assert.equal(fs.existsSync(otherInput), false, 'a session without a HUD must receive no keys');
   assert.deepEqual(fs.readFileSync(input), Buffer.from([0x14]),

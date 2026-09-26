@@ -1,3 +1,4 @@
+import { asRecord, AGENT_ACTIVITY_KINDS, type JsonRecord } from '../protocol/rollout-record.js';
 import type {
   AgentActivity,
   AgentActivityRow,
@@ -43,12 +44,6 @@ export interface DeriveAgentActivityOptions {
   nowMs: number;
   inactivityTimeoutMs: number;
   rootTrackingError?: boolean;
-}
-
-type JsonRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): JsonRecord | null {
-  return typeof value === 'object' && value !== null ? (value as JsonRecord) : null;
 }
 
 export function parseAgentInactivityTimeoutMs(raw: string | undefined): number {
@@ -418,12 +413,14 @@ function isStartedActivityKind(value: unknown): boolean {
     return true;
   }
 
-  if (value === 'interacted' || value === 'interrupted') {
+  // 0.157.1 also emits a parent-side completion marker. The child's own
+  // lifecycle records remain authoritative; this does not register a spawn.
+  if (typeof value === 'string' && AGENT_ACTIVITY_KINDS.has(value)) {
     return false;
   }
 
   throw new Error(
-    'Invalid agent spawn activity: kind must be "started", "interacted", or "interrupted".'
+    'Invalid agent spawn activity: kind must be "started", "interacted", "interrupted", or "completed".'
   );
 }
 
@@ -686,6 +683,7 @@ export class AgentActivityCollector {
   private readonly logError: TrackingErrorLogger;
   private readonly trackingErrorRetryMinMs: number;
   private readonly trackingErrorRetryMaxMs: number;
+  private generation = 0;
   private root: RootTracker | null = null;
   private readonly nodes = new Map<string, TrackedAgentNode>();
 
@@ -710,6 +708,7 @@ export class AgentActivityCollector {
       return;
     }
 
+    this.generation++;
     this.nodes.clear();
     this.root = session
       ? {
@@ -734,7 +733,9 @@ export class AgentActivityCollector {
       });
     }
 
+    const generation = this.generation;
     const rootReady = await this.collectRoot();
+    if (generation !== this.generation) return this.snapshot(nowMs);
     if (!rootReady) {
       return deriveAgentActivity({
         rootThreadId: this.root.session.sessionId,
@@ -749,6 +750,7 @@ export class AgentActivityCollector {
     const queued = new Set(queue);
     for (let index = 0; index < queue.length; index++) {
       await this.collectNode(queue[index], nowMs);
+      if (generation !== this.generation) return this.snapshot(nowMs);
       for (const threadId of this.nodes.keys()) {
         if (!queued.has(threadId)) {
           queued.add(threadId);
@@ -765,13 +767,24 @@ export class AgentActivityCollector {
     });
   }
 
+  isTrackedRollout(filePath: string): boolean {
+    return [...this.nodes.values()].some(node => node.rolloutPath === filePath);
+  }
+
+  private snapshot(nowMs: number): AgentActivity {
+    return deriveAgentActivity({ rootThreadId: this.root?.session.sessionId ?? '',
+      nodes: [...this.nodes.values()], nowMs, inactivityTimeoutMs: this.inactivityTimeoutMs });
+  }
+
   private async collectRoot(): Promise<boolean> {
+    const generation = this.generation;
     const root = this.root;
     if (root === null) {
       return false;
     }
 
     const observedSize = (await stat(root.session.path)).size;
+    if (generation !== this.generation) return false;
     if (
       root.canonicalValidated &&
       root.trackingError === null &&
@@ -821,12 +834,14 @@ export class AgentActivityCollector {
         }
       });
     } catch (error) {
+      if (generation !== this.generation) return false;
       if (forkError !== undefined) {
         this.setRootTrackingError(forkError);
         return false;
       }
       throw error;
     }
+    if (generation !== this.generation) return false;
     if (!candidate.canonicalValidated) {
       requireCanonicalSessionMeta([], root.session.sessionId, `Root ${root.session.sessionId}`);
     }
@@ -881,6 +896,7 @@ export class AgentActivityCollector {
   }
 
   private async collectNode(threadId: string, nowMs: number): Promise<void> {
+    const generation = this.generation;
     const current = this.nodes.get(threadId);
     const root = this.root;
     if (!current || root === null) {
@@ -1007,10 +1023,12 @@ export class AgentActivityCollector {
         await replay();
       }
       candidate.lastObservedSize = observedSize ?? (await stat(rolloutPath)).size;
+      if (generation !== this.generation) return;
       const stagedNodes = this.stageSeeds(seeds, candidate.threadId);
       candidate.trackingError = null;
       this.commitNodeSuccess(current, candidate, stagedNodes);
     } catch (error) {
+      if (generation !== this.generation) return;
       this.setNodeTrackingError(current, errorMessage(error), nowMs);
     }
   }

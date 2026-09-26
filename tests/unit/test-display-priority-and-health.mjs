@@ -173,6 +173,8 @@ assert.equal(renderProtocolNoteLine({ ...data, protocolHealth: undefined }, 100)
       unknownEventTypes: { item_started: 3, other: 1 },
     },
   };
+  assert.match(stripAnsi(renderHealthLine(nested,100,now)), /Protocol compatibility.*3 types.*d details/);
+  process.env.CODEX_HUD_DETAILS='full';
   const line = stripAnsi(renderHealthLine(nested, 100, now));
   assert.match(line, /5 unrecognized Codex records: item_started, future_call, other/);
   assert.equal(renderProtocolNoteLine(nested, 100), null);
@@ -184,6 +186,7 @@ assert.equal(renderProtocolNoteLine({ ...data, protocolHealth: undefined }, 100)
     },
   };
   assert.match(stripAnsi(renderHealthLine(many, 100, now)), /: a, b, c, …/);
+  delete process.env.CODEX_HUD_DETAILS;
 }
 
 // A collector that has not finished its first run is `pending`, not a fault.

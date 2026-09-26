@@ -1,3 +1,7 @@
+import { isRootRolloutForCwd } from './utils/rollout-wake.js';
+import { publishDiagnostics } from './utils/diagnostics.js';
+import { loadPreferences, savePreferences, normalizePreferences, filteredSessions, moveSelection, focusSession } from './ui/state.js';
+import { installFatalHandlers } from './utils/fatal-error.js';
 /**
  * Codex HUD - Main entry point
  * Phase 3: Redesigned with claude-hud style rendering
@@ -72,9 +76,11 @@ import {
 } from './render/index.js';
 import {
   cycleToolDetailsMode,
+  setToolDetailsMode,
+  toolDetailsMode,
   rateLimitAlertKind,
 } from './render/lines/activity-line.js';
-import { toggleHudDetails } from './render/detail-level.js';
+import { toggleHudDetails, setHudDetails, hudDetailsExpanded } from './render/detail-level.js';
 import { HudNotifier, isCompletedTurnNotifiable } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
 import { recordCollectorFailure } from './utils/collector-health.js';
@@ -216,9 +222,22 @@ function noteWakeSignal(): void {
   }
 }
 
+let uiPreferences = normalizePreferences({});
+let helpVisible = false;
+let overviewSelectionId: string | undefined;
+let uiNotice: string | undefined;
+let uiNoticeUntil = 0;
+function persistUi(): void {
+  uiPreferences = { ...uiPreferences, mode: displayMode, details: hudDetailsExpanded() ? 'full' : 'compact', tools: toolDetailsMode() };
+  void savePreferences(HUD_TMUX_SESSION, uiPreferences);
+}
+function showUiNotice(message: string): void { uiNotice=message;uiNoticeUntil=Date.now()+4000;renderNow(); }
+
 function toggleDisplayMode(): void {
   noteWakeSignal();
   displayMode = displayMode === 'single' ? 'overview' : 'single';
+  helpVisible = false;
+  persistUi();
   if (displayMode === 'overview') {
     void overviewCache.refresh(true).catch(() => {
       // Keep the previous overview snapshot.
@@ -318,8 +337,10 @@ const freshPromptDetector = new FreshPromptDetector({
 // the user configured a command.
 const notifier = new HudNotifier();
 
+let bindingGeneration = 0;
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   if (isShuttingDown) return;
+  bindingGeneration++;
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
   approvalDetector.reset();
   stallDetector.reset();
@@ -336,7 +357,9 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
     HUD_CWD,
     false,
     false,
-    false
+    false,
+    false,
+    uiPreferences.label
   ).catch(() => {
     // The overview degrades to the mtime scan; never fail a binding on this.
   });
@@ -591,7 +614,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
 
     let unavailable = false;
     try {
-      if (cached.size !== sessionFile.size || !cached.parser.getCached()) {
+      if (cached.size !== sessionFile.size || !cached.parser.getCached() || (cached.parser.getCached()?.pendingBytes ?? 0) >= 1024 * 1024) {
         await cached.parser.parse();
         cached.size = sessionFile.size;
       }
@@ -641,7 +664,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       cwd,
       projectName: cwd ? path.basename(cwd) : undefined,
       tmuxSession: binding?.tmuxSession,
-      title: result.session?.title,
+      title: binding?.label || result.session?.title,
       model: result.session?.model,
       turnActivity,
       lastActivityAt:
@@ -663,6 +686,7 @@ async function refreshOverviewData(): Promise<SessionOverview> {
       cwd: binding.cwd,
       projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
       tmuxSession: binding.tmuxSession,
+      title: binding.label,
       neverStarted: !binding.rolloutPath,
       ...(binding.rolloutPath ? { unavailable: true } : {}),
     });
@@ -707,7 +731,8 @@ async function publishCurrentHudBinding(): Promise<void> {
     approvalDetector.isApprovalNeeded(),
     stallDetector.isLikelyInterrupted(),
     codexLiveness.isCodexGone(),
-    freshPromptDetector.isPaneOnFreshSession()
+    freshPromptDetector.isPaneOnFreshSession(),
+    uiPreferences.label
   );
 }
 
@@ -810,6 +835,7 @@ function noteToolCompletions(): void {
  * which is up to three seconds in deep idle.
  */
 async function refreshRolloutOnly(): Promise<boolean> {
+  const generation = bindingGeneration;
   const session = sessionFinder.getCurrentSession();
   if (!session || !fs.existsSync(session.path)) {
     cachedAgentActivity = undefined;
@@ -820,8 +846,10 @@ async function refreshRolloutOnly(): Promise<boolean> {
   const before = rolloutParser.getCached();
   try {
     await parseRolloutSafely();
+    if (generation !== bindingGeneration) return false;
     recordCollectorSuccess('rollout');
   } catch (error) {
+    if (generation !== bindingGeneration) return false;
     recordCollectorError('rollout', error);
     return false;
   }
@@ -847,6 +875,7 @@ function refreshAgents(): Promise<void> {
     return agentRefreshInFlight;
   }
 
+  const generation = bindingGeneration;
   const request = (async () => {
     const session = sessionFinder.getCurrentSession();
     if (!session || !fs.existsSync(session.path)) {
@@ -855,9 +884,12 @@ function refreshAgents(): Promise<void> {
     }
     recordCollectorAttempt('agents');
     try {
-      cachedAgentActivity = await agentActivityCollector.collect(Date.now());
+      const activity = await agentActivityCollector.collect(Date.now());
+      if (generation !== bindingGeneration) return;
+      cachedAgentActivity = activity;
       recordCollectorSuccess('agents');
     } catch (error) {
+      if (generation !== bindingGeneration) return;
       recordCollectorError('agents', error);
     }
   })().finally(() => {
@@ -892,6 +924,12 @@ function collectData(): HudData {
       ? { overview: overviewCache.getHealth() }
       : {};
   const baseData = {
+    layoutPreset: uiPreferences.layout,
+    sessionLabel: uiPreferences.label,
+    helpVisible,
+    uiNotice: Date.now() < uiNoticeUntil ? uiNotice : undefined,
+    overviewFilter: uiPreferences.filter,
+    overviewSelectionId,
     config: slowData.config,
     git: gitCache.get(),
     project: slowData.project,
@@ -928,6 +966,10 @@ function collectData(): HudData {
   quotaTrend.observe(accountLimits?.limits, accountLimits?.observedAt);
   const quotaProjections = quotaTrend.projectAll(rateLimits) ?? undefined;
   const boundSession = rolloutData?.session ?? session?.metadata ?? undefined;
+  const quotaFromAccount = rateLimits === accountLimits?.limits;
+  const freshness = { rateLimitsSource: quotaFromAccount ? 'account logs' : 'session log',
+    rateLimitsObservedAt: (quotaFromAccount ? accountLimits?.observedAt : rolloutData?.rateLimitsAt) ?? undefined,
+    pendingBytes: rolloutData?.pendingBytes };
   const codexExited = codexLiveness.isCodexGone() && isLivenessProbeCandidate({
     turnActivity: rolloutData?.turnActivity, lastEventAt: rolloutData?.lastEventTime,
   });
@@ -942,6 +984,7 @@ function collectData(): HudData {
   if (displayMode === 'overview') {
     return {
       ...baseData,
+      ...freshness,
       displayMode,
       overview: overviewCache.get(),
       // Lets the overview mark the row this HUD is bound to.
@@ -978,6 +1021,7 @@ function collectData(): HudData {
 
   return {
     ...baseData,
+    ...freshness,
     session: boundSession,
     toolActivity: rolloutData?.toolActivity ?? undefined,
     agentActivity: cachedAgentActivity,
@@ -1135,7 +1179,7 @@ async function mainLoop(): Promise<void> {
     // Observed after the frame so a notification can never precede the pane
     // stating the same thing. Rising edges only; see notify.ts.
     const lastTurnMs = data.turnActivity?.lastTurnDurationMs;
-    notifier.observe(
+    if ((data.pendingBytes ?? 0) < 1024 * 1024) notifier.observe(
       {
         'approval-needed': data.turnActivity?.phase === 'awaiting-approval',
         'turn-interrupted': data.turnActivity?.phase === 'interrupted',
@@ -1148,12 +1192,18 @@ async function mainLoop(): Promise<void> {
       },
       {
         sessionId: sessionFinder.getCurrentSession()?.sessionId,
+        turnId: data.turnActivity?.turnId,
         tmuxSession: HUD_TMUX_SESSION,
         cwd: HUD_CWD,
         lastTurnDurationMs: lastTurnMs,
         lastTurnError: data.turnActivity?.lastTurnError,
       }
     );
+    publishDiagnostics(HUD_TMUX_SESSION, {binding:sessionFinder.getDiagnostics(),
+      rollout:rolloutParser.getDiagnostics(),cliVersion:data.session?.cliVersion,
+      collectors:data.collectorHealth,protocol:data.protocolHealth,
+      quota:{source:data.rateLimitsSource,observedAt:data.rateLimitsObservedAt},
+      preferences:uiPreferences,mainPane:process.env.CODEX_HUD_MAIN_PANE});
     const plan = computeCadence();
     sessionFinder.setDeepIdle(plan.deepIdle);
     scheduleMainLoop(plan.renderMs);
@@ -1329,9 +1379,7 @@ function setupKeyListener(): void {
   // copy-mode over it, which froze the frame on screen.
   enableMouseReporting();
   const parseInput = createMouseInputParser(isViewToggleClick);
-  process.stdin.on('data', (data: Buffer) => {
-    noteWakeSignal();
-    const { mouse, keys: input } = parseInput(data.toString('utf8'));
+  const handleKey = (input: string): void => {
     // Raw mode suppresses the terminal's SIGINT; handle Ctrl+C explicitly so
     // the pane stays killable and the cursor is restored on the way out.
     if (input.includes('\u0003')) {
@@ -1340,14 +1388,32 @@ function setupKeyListener(): void {
     }
     // Any interaction with the pane re-arms the hotkey hint.
     revealStatusHint();
-    if (mouse.handled) {
-      if (mouse.click) {
-        toggleDisplayMode();
-      }
-      // Wheel reports are consumed to keep tmux out of copy-mode. Scrolling
-      // across this pane must not silently change its density or tool mode.
-      renderNow();
+    if (input === '?') { helpVisible = !helpVisible; renderNow(); return; }
+    if (input === '\u001b') {
+      if (helpVisible) {helpVisible=false;renderNow();}
+      else void focusSession(HUD_TMUX_SESSION).then(ok=>{if(!ok)showUiNotice('Main pane unavailable');});
       return;
+    }
+    if (input === 'c' || input === 'C') {
+      uiPreferences.layout=uiPreferences.layout==='standard'?'coexist':'standard';
+      persistUi();showUiNotice(`Layout: ${uiPreferences.layout}`);return;
+    }
+    if (displayMode === 'overview') {
+      const rows=filteredSessions(overviewCache.get().sessions,uiPreferences.filter);
+      if (input === 'f' || input === 'F') {
+        uiPreferences.filter=uiPreferences.filter==='all'?'attention':'all';
+        overviewSelectionId=undefined;persistUi();renderNow();return;
+      }
+      if (['j','k','\u001b[A','\u001b[B'].includes(input)) {
+        overviewSelectionId=moveSelection(rows,overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId,
+          input==='j'||input==='\u001b[B'?1:-1);
+        renderNow();return;
+      }
+      if (input === '\r' || input === '\n') {
+        const selected=rows.find(row=>row.id===(overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId)) ?? rows[0];
+        void focusSession(selected?.tmuxSession,selected?.id).then(ok=>{if(!ok){showUiNotice('Session unavailable; refreshing overview');void overviewCache.refresh(true).catch(()=>undefined);}});
+        return;
+      }
     }
     if (TOGGLE_KEYS.some((key) => input.includes(key))) {
       toggleDisplayMode();
@@ -1362,7 +1428,23 @@ function setupKeyListener(): void {
     } else if (input === 'd' || input === 'D') {
       toggleHudDetails();
     }
+    persistUi();
     renderNow();
+  };
+  let escapeTimer: NodeJS.Timeout | undefined;
+  process.stdin.on('data', (data: Buffer) => {
+    noteWakeSignal();
+    if (escapeTimer) clearTimeout(escapeTimer);
+    const {mouse,keys}=parseInput(data.toString('utf8'));
+    revealStatusHint();
+    if (mouse.handled) { if(mouse.click) toggleDisplayMode(); renderNow(); }
+    // A transport read can contain several key presses. Only recognize a
+    // complete stream of HUD keys; arbitrary pasted text is never a command.
+    const tokens=keys.match(/\u001b\[[AB]|[?cdtfjkCDTFJK\r\n\u0003\u0014]/g) ?? [];
+    if(tokens.join('')===keys) for(const key of tokens) handleKey(key);
+    escapeTimer=setTimeout(()=>{
+      if(parseInput.flush()==='\u001b') handleKey('\u001b');
+    },80);
   });
 }
 
@@ -1370,6 +1452,11 @@ function setupKeyListener(): void {
  * Main entry point
  */
 async function main(): Promise<void> {
+  uiPreferences=await loadPreferences(HUD_TMUX_SESSION);
+  displayMode=uiPreferences.mode;
+  setHudDetails(uiPreferences.details==='full');
+  setToolDetailsMode(uiPreferences.tools);
+  await savePreferences(HUD_TMUX_SESSION,uiPreferences);
   const inactivityTimeoutMs = parseAgentInactivityTimeoutMs(
     process.env[AGENT_INACTIVITY_TIMEOUT_ENV]
   );
@@ -1390,19 +1477,11 @@ async function main(): Promise<void> {
   process.on('SIGUSR2', () => {
     noteWakeSignal();
     cycleToolDetailsMode();
+    persistUi();
     renderNow();
   });
 
-  // Last-resort diagnostics: a stray throw or rejection escaping a timer or
-  // watcher path must not kill the pane silently. remain-on-exit would leave
-  // a dead pane visible, but a HUD that logs and keeps rendering is strictly
-  // better than either.
-  process.on('uncaughtException', (error) => {
-    logHudError('uncaught-exception', error);
-  });
-  process.on('unhandledRejection', (reason) => {
-    logHudError('unhandled-rejection', reason);
-  });
+  installFatalHandlers();
 
   // Handle stdin close (tmux pane closed)
   process.stdin.on('close', () => void shutdown());
@@ -1425,15 +1504,20 @@ async function main(): Promise<void> {
   });
 
   hudFileWatcher.onRolloutChange(async (rolloutPath) => {
-    // Any rollout appearing or changing (bound or not) is activity: it ends
-    // deep idle so a /new session in the pane is rebound at base cadence.
-    noteWakeSignal();
-    // A new rollout file may establish a freshly created (/new) session;
-    // let the finder re-rank it immediately instead of waiting out the poll.
+    const generation = bindingGeneration;
+    const currentPath = sessionFinder.getCurrentSession()?.path;
+    const candidate = rolloutPath !== currentPath && await isRootRolloutForCwd(rolloutPath,HUD_CWD_REAL);
+    if (candidate) sessionFinder.setDeepIdle(false);
     await sessionFinder.noteRolloutAppeared(rolloutPath);
-    void sessionFinder.check();
-    await refreshRolloutAndAgents();
-    void refreshPaneDetectors();
+    await sessionFinder.check(candidate);
+    const relevant = generation !== bindingGeneration ||
+      rolloutPath === sessionFinder.getCurrentSession()?.path ||
+      agentActivityCollector.isTrackedRollout(rolloutPath);
+    if (relevant || candidate || displayMode === 'overview') noteWakeSignal();
+    if (relevant) {
+      await refreshRolloutAndAgents();
+      void refreshPaneDetectors();
+    }
     if (displayMode === 'overview') {
       // Respect the snapshot TTL: with a working session watcher these
       // events can arrive in bursts across every active session.

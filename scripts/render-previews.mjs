@@ -87,3 +87,6 @@ preview('overview', 'Codex HUD / overview / rendered fixture', { ...data, displa
 preview('single-light', 'Codex HUD / light terminal / rendered fixture', data, 140, 6, true);
 preview('single-narrow', 'Codex HUD / 60 columns', { ...data, partialHistory: true,
   turnActivity: { ...data.turnActivity, phase: 'awaiting-approval' } }, 60, 6);
+
+preview('coexist', 'Codex HUD / companion layout', { ...data, layoutPreset: 'coexist', sessionLabel: 'HUD review' });
+preview('help', 'Codex HUD / keyboard help', { ...data, helpVisible: true });

@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs';
+import { KNOWN_TOP_LEVEL_TYPES, KNOWN_RESPONSE_TYPES, KNOWN_EVENT_TYPES, normalizeRolloutRecord } from '../protocol/rollout-record.js';
 import type {
   RolloutLine,
   ResponseItemPayload,
@@ -63,6 +64,8 @@ export interface RolloutParseResult {
    * survives every later incremental parse.
    */
   partialHistory: boolean;
+  /** Bytes after the committed cursor; large backlogs are replayed in bounded passes. */
+  pendingBytes?: number;
   /**
    * No runtime-state record can have been missed: the bounded first read
    * scans the skipped middle for state markers, so with zero malformed lines
@@ -275,65 +278,6 @@ function decodeFileUrlPath(value: string): string | undefined {
   }
 }
 
-const KNOWN_TOP_LEVEL_TYPES = new Set([
-  'session_meta',
-  'response_item',
-  'event_msg',
-  'turn_context',
-  'compacted',
-  'world_state',
-  // codex-cli 0.153+ persists each model response's token usage as its own
-  // record (usage / turn_token_usage / thread_token_usage). It lands 1:1
-  // beside the token_count event this parser already consumes, with the same
-  // figures and without rate_limits or the context window, so it is
-  // known-and-ignored rather than protocol drift.
-  'token_usage_record',
-]);
-
-const KNOWN_RESPONSE_TYPES = new Set([
-  'message',
-  'reasoning',
-  'function_call',
-  'function_call_output',
-  'custom_tool_call',
-  'custom_tool_call_output',
-  'tool_search_call',
-  'tool_search_output',
-]);
-
-const KNOWN_EVENT_TYPES = new Set([
-  'plan_update',
-  'token_count',
-  'rate_limit',
-  'context_compacted',
-  'turn_started',
-  'task_started',
-  'task_complete',
-  'turn_aborted',
-  'agent_reasoning',
-  'agent_message',
-  'user_message',
-  'thread_settings_applied',
-  // codex-cli 0.154 /goal state updates do not change turn or token state.
-  'thread_goal_updated',
-  'mcp_tool_call_begin',
-  'mcp_tool_call_end',
-  // Known low-signal event kinds intentionally ignored by the HUD.
-  'patch_apply_begin',
-  'patch_apply_end',
-  'exec_command_begin',
-  'exec_command_end',
-  'view_image_tool_call',
-  'web_search_begin',
-  'web_search_end',
-  // codex-cli 0.147+ unified thread-item stream: completed items
-  // (AgentMessage/CommandExecution/Reasoning/UserMessage/...) duplicate the
-  // response_item records this parser already consumes; SubAgentActivity
-  // variants are consumed by the agent-activity collector.
-  'item_completed',
-  // Subagent spawn markers, consumed by the agent-activity collector.
-  'sub_agent_activity',
-]);
 
 function incrementCounter(
   counters: Record<string, number>,
@@ -1244,6 +1188,7 @@ const HISTORY_MARKER_OVERLAP = Math.max(
 );
 
 interface RolloutBatch {
+  pendingBytes?: number;
   records: RolloutLine[];
   nextOffset: number;
   truncated: boolean;
@@ -1267,6 +1212,7 @@ function hasTokenCount(records: readonly RolloutLine[]): boolean {
  * plan event so its latest state survives without creating an orphaned call.
  */
 function recoverHistoryStateRecord(record: RolloutLine): RolloutLine | undefined {
+  if (!normalizeRolloutRecord(record)) throw new Error('Invalid rollout record shape.');
   if (
     record.type === 'session_meta' ||
     record.type === 'turn_context' ||
@@ -1479,7 +1425,9 @@ async function readRolloutBatch(
   const readWholeSpan = async (offset: number): Promise<RolloutBatch> => ({
     ...(await readCompleteJsonl<RolloutLine>(rolloutPath, offset, {
       skipMalformed: true,
+      validateRecord: (record) => normalizeRolloutRecord(record) !== null,
       maxBytes: MAX_INCREMENTAL_READ_BYTES,
+      batchBytes: 4 * 1024 * 1024,
     })),
     partialHistory: false,
   });
@@ -1492,10 +1440,12 @@ async function readRolloutBatch(
   const [head, tail] = await Promise.all([
     readCompleteJsonl<RolloutLine>(rolloutPath, 0, {
       skipMalformed: true,
+      validateRecord: (record) => normalizeRolloutRecord(record) !== null,
       toOffset: INITIAL_HEAD_BYTES,
     }),
     readCompleteJsonl<RolloutLine>(rolloutPath, size - INITIAL_TAIL_BYTES, {
       skipMalformed: true,
+      validateRecord: (record) => normalizeRolloutRecord(record) !== null,
       alignToLineStart: true,
     }),
   ]);
@@ -1579,6 +1529,7 @@ export async function parseRolloutFile(
   let lastAssistantMessageTime: Date | null = null;
   let lastEventTime: Date | null = null;
   let partialHistory = false;
+  let pendingBytes = 0;
   let batchWasTruncated = false;
   const protocolHealth: ProtocolHealth = {
     unknownTopLevelTypes: {},
@@ -1604,6 +1555,7 @@ export async function parseRolloutFile(
     lastAssistantMessageTime,
     lastEventTime,
     partialHistory,
+    pendingBytes,
     runtimeStateComplete:
       protocolHealth.malformedLines === 0 && !batchWasTruncated,
   });
@@ -1623,6 +1575,7 @@ export async function parseRolloutFile(
   // permanently by advancing the cursor to EOF.
   const batch = await readRolloutBatch(rolloutPath, fromOffset);
   partialHistory = batch.partialHistory;
+  pendingBytes = batch.pendingBytes ?? 0;
   batchWasTruncated = batch.truncated;
   protocolHealth.malformedLines += batch.malformedLines;
   if (batch.truncated) {
@@ -1818,7 +1771,9 @@ export async function parseRolloutFile(
     }
   };
 
-  for (const entry of batch.records) {
+  for (const raw of batch.records) {
+    const entry = normalizeRolloutRecord(raw);
+    if (!entry) { protocolHealth.malformedLines++; continue; }
     const timestamp = new Date(entry.timestamp);
     if (!Number.isFinite(timestamp.getTime())) {
       continue;
@@ -2242,6 +2197,7 @@ export async function parseRolloutFile(
  * Rollout parser with state tracking for incremental updates
  */
 export class RolloutParser {
+  private generation = 0;
   private rolloutPath: string | null = null;
   private lastOffset: number = 0;
   private cachedResult: RolloutParseResult | null = null;
@@ -2257,6 +2213,7 @@ export class RolloutParser {
       return;
     }
 
+    this.generation++;
     this.rolloutPath = path;
     this.lastOffset = 0;
     this.cachedResult = null;
@@ -2271,13 +2228,17 @@ export class RolloutParser {
       return null;
     }
 
+    const generation = this.generation;
+    const rolloutPath = this.rolloutPath;
+
     // Fallback polling calls parse every couple of seconds; when the file has
     // not grown past the committed offset there is nothing to read and the
     // merge below would only churn allocations. A size below the offset means
     // truncation and must take the full path.
     if (this.cachedResult) {
       try {
-        const { size } = await fs.promises.stat(this.rolloutPath);
+        const { size } = await fs.promises.stat(rolloutPath);
+        if (generation !== this.generation) return this.cachedResult;
         if (size === this.lastOffset) {
           return this.cachedResult;
         }
@@ -2286,21 +2247,25 @@ export class RolloutParser {
       }
     }
 
+    if (generation !== this.generation) return this.cachedResult;
+    const stagedCalls = new Map(Array.from(this.runningCalls, ([id,call]) => [id,{...call}]));
     const previousRunningCalls = new Map(
-      Array.from(this.runningCalls.entries()).map(([id, call]) => [
+      Array.from(stagedCalls.entries()).map(([id, call]) => [
         id,
         { call, name: call.name },
       ])
     );
     const { result, newOffset, runningCalls, wasTruncated } = await parseRolloutFile(
-      this.rolloutPath,
+      rolloutPath,
       this.lastOffset,
       this.maxRecentCalls,
-      this.runningCalls,
+      stagedCalls,
       this.cachedResult?.session ?? null,
       this.cachedResult?.turnActivity ?? null,
       this.cachedResult?.rateLimits ?? null
     );
+
+    if (generation !== this.generation) return this.cachedResult;
 
     // Some rollouts first emit a generic function_call and later enrich that
     // same call_id with mcp_tool_call_end. The running ToolCall object is
@@ -2481,14 +2446,21 @@ export class RolloutParser {
    * Force a full re-parse from the beginning
    */
   async fullParse(): Promise<RolloutParseResult | null> {
+    this.generation++;
     this.lastOffset = 0;
     this.cachedResult = null;
+    this.runningCalls = new Map();
     return this.parse();
   }
 
   /**
    * Get the current cached result without re-parsing
    */
+  getDiagnostics(): { path: string | null; offset: number; pendingBytes: number; generation: number } {
+    return {path:this.rolloutPath, offset:this.lastOffset,
+      pendingBytes:this.cachedResult?.pendingBytes ?? 0, generation:this.generation};
+  }
+
   getCached(): RolloutParseResult | null {
     return this.cachedResult;
   }

@@ -632,6 +632,15 @@ export interface SessionInfo {
 // ============================================================================
 
 export interface HudData {
+  layoutPreset?: 'standard' | 'coexist';
+  sessionLabel?: string;
+  helpVisible?: boolean;
+  uiNotice?: string;
+  overviewFilter?: 'all' | 'attention';
+  overviewSelectionId?: string;
+  pendingBytes?: number;
+  rateLimitsSource?: string;
+  rateLimitsObservedAt?: Date;
   // Core info
   config: CodexConfig;
   git: GitStatus;
@@ -741,6 +750,8 @@ export interface HudData {
 // ============================================================================
 
 export interface RenderOptions {
+  /** Filled from the same prepared layout, without formatting a second frame. */
+  measure?: { wantedRows: number };
   width: number;
   showDetails: boolean;
   layout?: LayoutConfig;

@@ -30,3 +30,8 @@
 - 修复时间：2026-01-30
 - 变更说明：为 fileStream 增加 error 监听并统一收敛为安全 resolve，避免未处理异常导致进程退出。
 - 验证方式：未执行；建议读取中删除/移动文件验证进程不崩溃。
+
+
+## 当前核验
+
+2026-09-26 核验：异步文件读取使用 try/finally 关闭句柄，读取错误进入采集器健康状态；全局异常通过独立 renderer supervisor 限次恢复，不继续使用未定义进程状态。回归：test-collector-failure-diagnostics、test-fatal-recovery。
