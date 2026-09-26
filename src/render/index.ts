@@ -36,8 +36,8 @@ let hasEverRendered = false;
 // path (focus the pane first) even when the wrapper had installed a global
 // toggle that works from the Codex pane.
 const STATUS_HINT = process.env.CODEX_HUD_TOGGLE_KEY
-  ? `[view] · ${process.env.CODEX_HUD_TOGGLE_KEY} view · t tools · d details`
-  : '[view] · Ctrl+T view · t tools · d details';
+  ? `[view] · ${process.env.CODEX_HUD_TOGGLE_KEY} view · t tools · d details · ? help`
+  : '[view] · Ctrl+T view · t tools · d details · ? help';
 let viewHotspot: { start: number; end: number } | undefined;
 
 export function isViewToggleClick(column: number, row: number): boolean {
@@ -265,6 +265,7 @@ export function renderToStdout(data: HudData): RenderedFrame {
   const hintVisible = statusHintVisible();
   const hint = hintVisible ? STATUS_HINT : '[view]';
   const options: RenderOptions = {
+    measure: { wantedRows: 0 },
     width,
     showDetails: true,
     layout,
@@ -280,16 +281,13 @@ export function renderToStdout(data: HudData): RenderedFrame {
   advanceSpinnerFrame();
   const fitted = fitLinesToViewport(renderHud(data, options), maxLines, width);
   const lines = truncateLines(
-    applyStatusHint(fitted, width, hint, hudDetailsNotice()),
+    applyStatusHint(fitted, width, hint, data.uiNotice ?? hudDetailsNotice()),
     width
   );
-  // What the pane would need to show everything; the height fitter asks tmux
-  // for it. The unclipped layout is a second cheap string render.
+  // The layout reports its uncompressed height using the cells already
+  // prepared for this frame; the height fitter needs no second render.
   const rendered: RenderedFrame = {
-    wantedRows: renderHud(data, {
-      ...options,
-      maxLines: Number.POSITIVE_INFINITY,
-    }).length,
+    wantedRows: options.measure?.wantedRows ?? lines.length,
     height,
   };
 

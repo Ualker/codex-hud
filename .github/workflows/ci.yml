@@ -15,11 +15,13 @@ jobs:
       matrix:
         # 20 is the engines floor and exercises the sqlite3-CLI binding
         # fallback; 22+ exercises the built-in node:sqlite path.
-        node: ['20', '22']
+        node: ['20', '22', '24']
         os: [ubuntu-latest]
         include:
           - os: macos-latest
             node: '22'
+          - os: macos-latest
+            node: '24'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

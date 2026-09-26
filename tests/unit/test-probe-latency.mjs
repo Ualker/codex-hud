@@ -71,7 +71,7 @@ resetProbeLatency();
       120
     )
   );
-  assert.match(both, /2 unrecognized Codex records: token_usage_record · probes slow · tmux 5\.4s/);
+  assert.match(both, /Protocol notice · 1 type · d details · probes slow · tmux 5\.4s/);
 }
 
 console.log('test-probe-latency: PASS');

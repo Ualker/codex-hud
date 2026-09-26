@@ -73,7 +73,7 @@ export function renderEnvironmentLine(
     runtimeApprovalPolicy ??
     (configBlind ? undefined : data.config.approval_policy);
   const fullAccess = sandbox === 'danger-full-access';
-  const badgePart = fullAccess ? theme.warning('[FULL ACCESS]') : null;
+  const badgePart = fullAccess ? theme.info('[FULL ACCESS]') : null;
 
   // Approval and sandbox are security state, so they must survive before
   // inventory counts on narrow panes. The badge already states the whole

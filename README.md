@@ -13,6 +13,41 @@ Real-time statusline HUD for [OpenAI Codex CLI](https://github.com/openai/codex)
 
 ![Codex HUD — Single Session](./doc/fig/single.svg)
 
+
+## Interaction and recovery
+
+HUD keys work while the HUD pane has focus. `Prefix+H` still switches views from the main pane.
+
+| Key | Action |
+| --- | --- |
+| `?` | Open/close the five-line help panel |
+| `Esc` | Close help, or return to the main Codex pane |
+| `Ctrl+T` | Switch single/overview |
+| `t` / `d` | Cycle tool detail / toggle full HUD detail |
+| `c` | Switch `standard` / `coexist` layout |
+| `j` / `k`, arrows | Select an overview row; selection stays visible |
+| `Enter` | Open the selected session's main pane after revalidating its binding |
+| `f` | Filter overview to sessions needing attention, or show all |
+
+View, detail level, tool detail, layout, label and filter are saved per tmux session and survive HUD reloads. Changed explicit environment settings override saved defaults. A short label replaces the long prompt title in both views:
+
+```bash
+codex-hud --label "HUD review" --layout coexist --tmux-style blue-purple
+codex-hud --label "HUD review" --reload --target SESSION_NAME
+codex-hud --doctor --json
+npm run bench
+```
+
+HUD options precede Codex arguments or control commands. `--layout standard` retains the regular layout. `coexist` prioritizes work, agents and warnings alongside Codex's native footer; calm context metrics move to full details, while context pressure stays visible. Static full-access badges use the information accent, distinct from yellow action warnings. The optional `blue-purple` tmux style affects only the selected session; `--tmux-style default` clears those local style overrides. Environment equivalents are `CODEX_HUD_LABEL`, `CODEX_HUD_LAYOUT`, and `CODEX_HUD_TMUX_STYLE`.
+
+Protocol warnings are grouped by type in compact detail; `d` exposes the type names and unreadable-record count. Full details also identify the quota source and observation age. `--doctor --json` includes live binding evidence, CLI/Node versions, parser offsets/backlog, collector health and preferences. Runtime snapshots refresh at most every 10 seconds; the report marks dead owners or old snapshots as not fresh. It does not include prompt bodies or authentication data.
+
+Rollout reads discard stale work after rebinding, validate record envelopes, and replay large backlogs in bounded batches. `Catching up` identifies pending data; notifications are suppressed during substantial catch-up. Notification cooldown is isolated by session/turn. An explicit unavailable `CODEX_HOME` reports an error instead of reading another profile.
+
+Unexpected global exceptions stop the renderer. The wrapper restarts only that process with a capped backoff (three retries per crash burst), leaving Codex running; ordinary exits and startup configuration errors do not restart. Uninstall likewise stops only the HUD panes owned by this checkout and preserves main panes. Alias backups retain their original RC paths and shell dialects; newer user aliases and ambiguous legacy flat backups are preserved rather than overwritten.
+
+The offline [performance benchmark](./docs/PERFORMANCE.md) covers frame rendering and four concurrent long-log readers. All tmux integration tests use isolated servers or substitutes.
+
 ## Why Codex HUD?
 
 **Q: Codex CLI already works. Why do I need a HUD?**

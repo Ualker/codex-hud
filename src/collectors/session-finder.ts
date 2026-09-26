@@ -1491,6 +1491,8 @@ interface DaemonLink {
 }
 
 export class SessionFinder {
+  private lastCheckError: string | null = null;
+  private lastCheckAt = 0;
   private currentSession: SessionFile | null = null;
   private checkInterval: NodeJS.Timeout | null = null;
   private checkInFlight: Promise<SessionFile | null> | null = null;
@@ -1554,7 +1556,8 @@ export class SessionFinder {
     }
 
     this.checkInFlight = this.runCheck(force)
-      .catch(() => this.currentSession)
+      .then(session => { this.lastCheckError=null; this.lastCheckAt=Date.now(); return session; })
+      .catch(error => { this.lastCheckError=String(error instanceof Error ? error.message : error).slice(0,240); return this.currentSession; })
       .finally(() => {
         this.checkInFlight = null;
         if (this.checkQueuedForce) {
@@ -2148,6 +2151,14 @@ export class SessionFinder {
   /**
    * Get the current session
    */
+  getDiagnostics(): object {
+    return {sessionId:this.currentSession?.sessionId ?? null, paneId:this.currentPaneId,
+      source:!this.currentSession ? 'unbound' : this.daemonLink ? 'daemon-connection' :
+        this.boundViaProcess ? 'process' : this.acceptedSnapshotThreadId===this.currentSession.sessionId ? 'pane-snapshot' : 'cwd-fallback',
+      daemonConnectionId:this.daemonLink?.connectionId, lastCheckAt:this.lastCheckAt || null,
+      lastResolveAt:this.lastFullResolveAt || null, error:this.lastCheckError};
+  }
+
   getCurrentSession(): SessionFile | null {
     return this.currentSession;
   }

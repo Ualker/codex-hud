@@ -28,3 +28,8 @@
 ## 修复记录
 - 状态：待讨论
 - 备注：当前仅为潜在风险提示，尚未验证。
+
+
+## 当前核验
+
+2026-09-26 核验：readCompleteJsonl 按 Buffer 中最后一个换行的绝对字节位置提交 offset，包含 CRLF 与 UTF-8 的实际长度。回归：test-agent-jsonl-tail、test-rollout-offset。

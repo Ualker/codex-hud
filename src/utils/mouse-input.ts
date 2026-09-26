@@ -47,7 +47,7 @@ export function interpretMouseInput(
 /** Stdin chunks can split a mouse report at any byte boundary. */
 export function createMouseInputParser(hitTest: (column: number, row: number) => boolean) {
   let pending = '';
-  return (chunk: string): { mouse: MouseIntent; keys: string } => {
+  const parse = (chunk: string): { mouse: MouseIntent; keys: string } => {
     let input = pending + chunk;
     pending = '';
     const escape = input.lastIndexOf('\x1b');
@@ -60,4 +60,5 @@ export function createMouseInputParser(hitTest: (column: number, row: number) =>
     }
     return { mouse: interpretMouseInput(input, hitTest), keys: input.replace(MOUSE_EVENT_PATTERN, '') };
   };
+  return Object.assign(parse, { flush: (): string => { const tail=pending; pending=''; return tail; } });
 }

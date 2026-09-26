@@ -33,6 +33,8 @@ export type HudNotifyEvent =
 
 export interface NotifyContext {
   sessionId?: string;
+  turnId?: string;
+  approvalId?: string;
   tmuxSession?: string;
   cwd: string;
   /** Wall time of the finished turn; rides in the turn-completed and turn-failed payloads. */
@@ -124,6 +126,7 @@ export class HudNotifier {
     'turn-completed': false,
     'turn-failed': false,
   };
+  private lastScope = '';
   private lastFiredMs: Partial<Record<HudNotifyEvent, number>> = {};
 
   constructor(options?: {
@@ -140,6 +143,8 @@ export class HudNotifier {
    */
   reset(): void {
     this.seeded = false;
+    this.lastFiredMs = {};
+    this.lastScope = '';
     this.lastState = {
       'approval-needed': false,
       'turn-interrupted': false,
@@ -160,6 +165,12 @@ export class HudNotifier {
   ): HudNotifyEvent[] {
     const fired: HudNotifyEvent[] = [];
     try {
+      const scope = JSON.stringify([context.sessionId, context.turnId, context.approvalId]);
+      const scopeChanged = scope !== this.lastScope;
+      if (scopeChanged) {
+        this.lastFiredMs = {};
+        this.lastScope = scope;
+      }
       const previous = this.lastState;
       const wasSeeded = this.seeded;
       this.lastState = { ...states };
@@ -168,7 +179,7 @@ export class HudNotifier {
         return fired;
       }
       for (const event of EVENT_NAMES) {
-        if (!states[event] || previous[event]) {
+        if (!states[event] || (previous[event] && !scopeChanged)) {
           continue;
         }
         const firedAt = this.lastFiredMs[event];

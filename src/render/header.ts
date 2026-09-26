@@ -1,3 +1,4 @@
+import { filteredSessions } from '../ui/state.js';
 /**
  * Header line renderer
  * 
@@ -201,7 +202,8 @@ function renderExpandedLayout(
   layout: LayoutConfig,
   width: number,
   maxLines: number = Number.POSITIVE_INFINITY,
-  reservedRow1Width: number = 0
+  reservedRow1Width: number = 0,
+  measure?: { wantedRows: number }
 ): string[] {
   const separator = layout.showSeparators ? inlineSeparator() : '  ';
   // The small view button stays reachable even with a long project/model.
@@ -215,7 +217,7 @@ function renderExpandedLayout(
     maxWidth: headingWidth, showContext: false, framed: false,
   });
   const title = (budget: number): string | null => renderSessionTitleCell(
-    data.session?.title, budget, data.session?.cwd ?? data.project.cwd
+    data.sessionLabel || data.session?.title, budget, data.session?.cwd ?? data.project.cwd
   );
   const buildRow1 = (suffix: string | null): string => {
     const join = (parts: (string | null)[]): string => parts.filter(Boolean).join(separator);
@@ -480,7 +482,7 @@ function renderExpandedLayout(
     // fits; otherwise only the sandbox badge moves up, so the permission mode
     // never disappears with the row.
     const movedAccessBadge = fullAccess
-      ? theme.warning('[FULL ACCESS]')
+      ? theme.info('[FULL ACCESS]')
       : accessUnknown
         ? colors.dim('[ACCESS ?]')
         : null;
@@ -566,6 +568,7 @@ function renderExpandedLayout(
     showNote: true,
     showBuild: true,
   };
+  if (measure) measure.wantedRows = assemble(everything).length;
   if (!Number.isFinite(maxLines)) {
     return assemble(everything);
   }
@@ -713,6 +716,9 @@ function renderOverviewLayout(
     }
   }
 
+  allSessions = filteredSessions(allSessions, data.overviewFilter ?? 'all');
+  if (!allSessions.length) return [colors.dim('No sessions need attention · f: show all')];
+
   // The weekly quota is the one number that describes the whole fleet rather
   // than any single row, and the overview is where the fleet is. Pressure
   // takes a row from the session list the way it does in the single view;
@@ -736,7 +742,7 @@ function renderOverviewLayout(
   const overview = {
     sessions: orderForViewport(
       allSessions,
-      data.overviewSelfSessionId,
+      data.overviewSelectionId ?? data.overviewSelfSessionId,
       Math.max(1, maxLines - reserved)
     ),
   };
@@ -904,7 +910,7 @@ function renderOverviewLayout(
     ];
     // Mark the row this HUD is bound to; the address column tells the rows
     // apart, but not which one you are already looking at.
-    const marker =
+    const marker = session.id === data.overviewSelectionId ? theme.info('> ') :
       data.overviewSelfSessionId !== undefined &&
       session.id === data.overviewSelfSessionId
         ? theme.info(`${icons.bullet} `)
@@ -946,7 +952,7 @@ function boundSessionAsOverviewItem(
     id: session.id,
     cwd: session.cwd ?? data.project.cwd,
     projectName: data.project.projectName,
-    title: session.title,
+    title: data.sessionLabel || session.title,
     model: session.model,
     turnActivity: data.turnActivity,
     lastActivityAt: data.turnActivity?.lastActivityAt,
@@ -957,27 +963,46 @@ function boundSessionAsOverviewItem(
 /**
  * Render the full HUD output (all lines)
  */
+/** A companion to Codex's native status line: activity first, calm capacity in details. */
+function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number): string[] {
+  const title = sanitizeTerminalText(data.sessionLabel || data.session?.title || data.project.projectName);
+  const identity = `${theme.value(truncate(title, Math.max(8, Math.floor(width * .5))))}  ${renderEnvironmentLine(data,width,{compact:true}) ?? ''}`;
+  const suppressTools = data.paneFreshSession || data.turnActivity?.phase === 'exited';
+  const liveTools = data.toolActivity && !suppressTools ? {...data.toolActivity,
+    recentCalls: data.toolActivity.recentCalls.filter(c=>c.status==='running'||
+      (c.status==='error' && data.turnActivity?.phase !== 'idle' &&
+        (data.turnActivity?.phase === 'failed' || Date.now()-c.timestamp.getTime()-(c.duration ?? 0)<60_000)))} : undefined;
+  const rows = [identity, data.paneFreshSession ? colors.dim('New session at the prompt · binds on its first message') : renderTurnActivityLine(data.turnActivity,width) ?? renderBindingHintLine(data,width),
+    renderHealthLine(data,width), renderRateLimitLine(data,width),
+    ...renderAgentLines(data.agentActivity,width),
+    renderToolsLine(liveTools,width,Date.now(),data.partialHistory,data.turnActivity?.phase==='awaiting-approval',data.project.cwd),
+    renderTodosLine(data.planProgress,width)];
+  if (hudDetailsExpanded() || (data.contextUsage?.percent ?? 0) >= 70) rows.push(renderTokenLine(data,width));
+  if (hudDetailsExpanded()) rows.push(renderSessionDetailLine(data,width),renderNoteLine(data,width));
+  return rows.filter((row): row is string=>Boolean(row)).map(row=>truncateAnsi(row,width));
+}
+
 export function renderHud(data: HudData, options: RenderOptions): string[] {
   const layout = options.layout ?? DEFAULT_LAYOUT;
-
-  if (data.displayMode === 'overview') {
-    return renderOverviewLayout(
-      data,
-      layout,
-      Math.max(1, options.width - Math.min(7, options.reservedRow1Width ?? 0)),
-      options.maxLines ?? Number.POSITIVE_INFINITY
-    );
+  const width = options.width;
+  let rows: string[];
+  if (data.helpVisible) {
+    rows = [
+      theme.value('HUD help · ? close · Esc return to Codex'),
+      'Ctrl+T / Prefix+H view · t tool detail · d full detail',
+      'Overview: j/k or arrows select · Enter open · f all/attention',
+      `c layout: ${data.layoutPreset ?? 'standard'} · view/details persist on reload`,
+      'Short name: codex-hud --label "task name" [Codex options]',
+    ].map(row=>truncateAnsi(row,width));
+  } else if (data.displayMode === 'overview') {
+    rows = renderOverviewLayout(data,layout,Math.max(1,width-Math.min(7,options.reservedRow1Width ?? 0)),options.maxLines ?? Infinity);
+  } else if (data.layoutPreset === 'coexist') {
+    rows = renderCoexistLayout(data,layout,width);
+  } else if (layout.mode === 'compact') {
+    rows = renderCompactLayout(data,layout,width);
+  } else {
+    return renderExpandedLayout(data,layout,width,options.maxLines ?? Infinity,options.reservedRow1Width ?? 0,options.measure);
   }
-  
-  if (layout.mode === 'compact') {
-    return renderCompactLayout(data, layout, options.width);
-  }
-
-  return renderExpandedLayout(
-    data,
-    layout,
-    options.width,
-    options.maxLines ?? Number.POSITIVE_INFINITY,
-    options.reservedRow1Width ?? 0
-  );
+  if(options.measure) options.measure.wantedRows=rows.length;
+  return rows;
 }

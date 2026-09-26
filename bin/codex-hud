@@ -701,6 +701,17 @@ set_fixed_hud_height() {
     fi
 
     tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane_id" || return 1
+    tmux set-option -t "$session_name" -q @codex_hud_root "$HUD_DIR" || return 1
+    case "${CODEX_HUD_TMUX_STYLE:-}" in
+        blue-purple)
+            tmux set-option -t "$session_name" status-style 'bg=#20202e,fg=#b8b8df' || return 1
+            tmux set-option -t "$session_name" status-left-style 'fg=#92b4ff,bold' || return 1
+            tmux set-option -t "$session_name" status-right-style 'fg=#b9a3e3' || return 1 ;;
+        default)
+            tmux set-option -u -t "$session_name" status-style || true
+            tmux set-option -u -t "$session_name" status-left-style || true
+            tmux set-option -u -t "$session_name" status-right-style || true ;;
+    esac
     tmux set-option -t "$session_name" -q @codex_hud_auto "$auto_setting" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_height_adaptive "$adaptive_setting" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_height_min "$min_setting" || return 1
@@ -827,6 +838,8 @@ HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HOME
     CODEX_SESSIONS_PATH
     CODEX_HUD_MODE
+    CODEX_HUD_LAYOUT
+    CODEX_HUD_LABEL
     CODEX_HUD_HEIGHT_FIT
     CODEX_HUD_TOOL_DETAILS
     CODEX_HUD_DETAILS
@@ -877,7 +890,7 @@ build_hud_pane_command() {
             env_unsets+=" -u ${var}"
         fi
     done
-    printf '%s' "cd ${cwd_escaped} && exec env${env_unsets} LINES='$height' COLUMNS='$width' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$session_name' CODEX_HUD_TOGGLE_KEY='$toggle_key'${env_parts} node '$HUD_DIR/dist/index.js'"
+    printf '%s' "cd ${cwd_escaped} && exec env${env_unsets} LINES='$height' COLUMNS='$width' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$session_name' CODEX_HUD_TOGGLE_KEY='$toggle_key'${env_parts} bash '$HUD_DIR/bin/codex-hud-renderer'"
 }
 
 # Create new tmux session with HUD
@@ -1192,6 +1205,12 @@ show_help() {
 codex-hud - Codex CLI with HUD display
 
 Usage: codex-hud [options] [codex options...]
+
+  --label NAME         Short session title (also in overview)
+  --layout PRESET      standard or coexist (press c to switch)
+  --tmux-style STYLE   blue-purple or default; this session only
+  --doctor --json      Structured live diagnostics
+  HUD keys: ? help, Esc return, j/k/arrows select, Enter open, f filter
 
 This wrapper launches Codex in a tmux session with a real-time status bar
 showing model info, git status, project info, token usage, and more.
@@ -1744,6 +1763,21 @@ show_hud_version() {
     echo "codex-hud $version ($revision)"
 }
 
+# HUD options precede Codex arguments, whose own parsing remains untouched.
+while [[ "${1:-}" == --label || "${1:-}" == --layout || "${1:-}" == --tmux-style ]]; do
+    [[ "$#" -ge 2 ]] || error "$1 requires a value"
+    case "$1" in
+        --label) export CODEX_HUD_LABEL="$2" ;;
+        --layout)
+            [[ "$2" == standard || "$2" == coexist ]] || error "--layout must be standard or coexist"
+            export CODEX_HUD_LAYOUT="$2" ;;
+        --tmux-style)
+            [[ "$2" == blue-purple || "$2" == default ]] || error "--tmux-style must be blue-purple or default"
+            export CODEX_HUD_TMUX_STYLE="$2" ;;
+    esac
+    shift 2
+done
+
 # Check for special flags first
 case "${1:-}" in
     -h|--help)
@@ -1751,6 +1785,11 @@ case "${1:-}" in
         exit 0
         ;;
     --self-check|--doctor)
+        if [[ "${2:-}" == --json ]]; then
+            [[ "$#" == 2 ]] || error "Usage: codex-hud --doctor --json"
+            [[ -f "$HUD_DIR/dist/doctor.js" ]] || error "Build first: npm run build"
+            exec node "$HUD_DIR/dist/doctor.js"
+        fi
         self_check
         exit 0
         ;;

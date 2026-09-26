@@ -197,3 +197,22 @@
 - **wrapper（P3）**：`--cycle-details`（USR2）；`CODEX_HUD_BIND_TOGGLE` 未设时 `Prefix+H` 未被占用即安装（自己的旧绑定算未占用）；`--list` 标注 `(newest here…)`；`--doctor` 报告通知钩子是否配置；帮助文案更新；`uninstall.sh` 解绑我们的 `Prefix+H`；`CODEX_HUD_HEIGHT_FIT` 进烘焙变量表。
 - **文档**：README（en/zh）同步以上全部与 Changelog 补齐 08-05 至 09-05 各轮；README.ja/ko 顶部声明内容停留在 2026-08-04。
 - 验证：见本轮提交说明；`npm test` 全量。
+
+
+## 2026-09-26（全面评审修复，已完成）
+
+范围：当前本机分支，保留此前 Codex 0.157.1 兼容补丁；不创建 commit 或推送。
+
+- [x] 正确性：重绑隔离、日志分批追赶和坏记录隔离、通知去重、显式数据目录严格校验、共享协议入口。
+- [x] 管理：卸载只处理自有 HUD pane、按文件备份恢复 alias、全局异常受控退出与 HUD 独立恢复。
+- [x] 体验：共存布局、权限与告警层级、短标签、帮助/返回、overview 导航过滤、告警汇总、会话级偏好、数据来源与时间。
+- [x] 性能与诊断：相关日志唤醒、避免重复布局、基准脚本、结构化 doctor、Node 24 CI。
+- [x] 验收：中英文文档及旧 issue 状态、回归与全套测试、隔离 tmux 交互、实际 HUD 重载和主 pane 存活验证。
+
+已建立复现：无关 dist/index.js pane 被误杀；读 A 时绑定 B 导致 A 覆盖；三种 shell alias 合并恢复到 zsh；跨会话通知冷却；65 MiB 增量永久超限；payload:null 阻断；CODEX_HOME 无效时回退。复现使用临时文件或替身，不操作真实会话。
+
+验证结果：本机 Node v24.21.0，`npm test` 通过类型检查、构建、84 个单元测试脚本和 41 个集成测试脚本。最后补强卸载的陈旧归属标记／跨会话 pane 防护后，定向重跑卸载和管理命令回归通过；版本化协议 fixture 回放通过。Shell 语法检查、`git diff --check`、文档预览生成通过。65 MiB 积压在 17 批内追到 EOF；隔离 tmux 的真实按键、偏好重载、overview 过滤与跨会话跳转均通过。另修复该交互验收发现的单独 Esc 被输入解析器吞掉问题。
+
+本机生效：四个现有 HUD 已用当前 wrapper 重载到独立 renderer supervisor；四个主 pane 的 PID 与焦点保持不变。`--doctor --json` 的四份快照均新鲜，绑定／采集器正常，积压与未知协议计数为零。真实 HUD 的帮助、Esc 和 coexist 切换已通过 tmux pane 内容验证，随后恢复原布局／偏好；cmux 截图接口未捕获终端图层，因此实机验收依据终端缓冲区和诊断，未声称截图像素验收。未修改其他分支或远端部署；未创建 commit／push。Node 24 已加入 Linux/macOS CI 矩阵，远程 CI 未运行。
+
+性能：同机同 fixture 离线基准，单会话每帧耗时下降约 18%–24%，overview 约 44%–47%；四个长日志读取器的冷读与内存基本持平。方法、原始条件和限制见 [PERFORMANCE.md](./PERFORMANCE.md)。

@@ -26,8 +26,12 @@ function resolveExistingDirectory(candidate?: string): string | null {
 }
 
 export function getCodexHome(): string {
+  if (process.env.CODEX_HOME) {
+    const resolved = resolveExistingDirectory(process.env.CODEX_HOME);
+    if (!resolved) throw new Error(`CODEX_HOME (${process.env.CODEX_HOME}) does not exist or is not a directory.`);
+    return resolved;
+  }
   const candidates = [
-    process.env.CODEX_HOME,
     path.join(os.homedir(), '.codex'),
     path.join(os.homedir(), '.codex_home'),
   ];
