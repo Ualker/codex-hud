@@ -10,6 +10,7 @@ import {
   isInteractiveCodexCommand,
   isManagedDaemonCommand,
   mapConnectionsToClients,
+  mapReconnectedClients,
   parseConnectionSpan,
   reviveLedgerSnapshot,
 } from '../../dist/collectors/codex-daemon.js';
@@ -373,6 +374,41 @@ const asObject = (pairs) => Object.fromEntries([...pairs].sort());
   const expected = { 15107: 29, 16839: 32, 18096: 35 };
   assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, now)), expected);
   assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), now)), expected);
+}
+
+// A restarted daemon renumbers connections in reconnect order, not TUI order.
+{
+  const clients = [{ pid: '44777', startMs: T }, { pid: '48152', startMs: T + 66_000 },
+    { pid: '49427', startMs: T + 73_000 }];
+  const restart = T + 148_000;
+  const old = new DaemonLedger('20501');
+  const rows = [];
+  let rowId = 0;
+  for (const [i, c] of clients.entries()) {
+    rows.push({ id: ++rowId, tsMs: c.startMs + 1_000, threadId: '', processUuid: `pid:${c.pid}:u`, body: 'connected app-server platform' });
+    rows.push({ id: ++rowId, tsMs: c.startMs + 1_100, threadId: `old-${i}`, processUuid: 'pid:20501:u', body: span('thread/start', 43 + i * 3) });
+  }
+  old.ingest(rows);
+  const conns = new Map([2, 0, 1].map((oldIndex, i) => [i + 1, {
+    firstMs: restart + 9_000 + i * 10, lastMs: restart + 10_000,
+    client: 'codex-tui', events: [{ atMs: restart + 9_100, method: 'thread/resume', threadId: `old-${oldIndex}` }],
+  }]));
+  const lifecycle = { daemonStartedAtMs: restart };
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), restart + 15_000, undefined, lifecycle)), {},
+    'missing reconnect evidence must not use original process order');
+  const recovered = mapReconnectedClients(clients, conns, [old], restart);
+  assert.deepEqual(asObject(recovered), { 44777: 2, 48152: 3, 49427: 1 });
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), restart + 15_000, recovered, lifecycle)),
+    asObject(recovered), 'a verified continuity chain restores the reordered connections');
+  assert.deepEqual(asObject(mapReconnectedClients(clients, conns, [], restart)), {}, 'pruned history stays unbound');
+  const duplicate = new Map(conns);
+  duplicate.set(4, structuredClone(conns.get(2)));
+  assert.ok(!mapReconnectedClients(clients, duplicate, [old], restart).has('44777'), 'duplicate readers are ambiguous');
+  const late = new Map([[2, { ...conns.get(2), events: [{ atMs: restart + 90_000, method: 'thread/resume', threadId: 'old-0' }] }]]);
+  assert.deepEqual(asObject(mapReconnectedClients(clients, late, [old], restart)), {}, 'a later manual resume cannot prove connection identity');
+  const fresh = [{ pid: 'new', startMs: restart + 20_000 }];
+  assert.deepEqual(asObject(mapConnectionsToClients(fresh, book({ 9: [restart + 21_000] }), new Map(), restart + 25_000, undefined, lifecycle)),
+    { new: 9 }, 'new processes after daemon startup can still use startup pairing');
 }
 
 // ---------------------------------------------------------------- SessionFinder

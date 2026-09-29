@@ -353,7 +353,8 @@ export function mapConnectionsToClients(
   connections: ReadonlyMap<number, DaemonConnection>,
   connectedAtMs: ReadonlyMap<string, number>,
   nowMs: number,
-  fixed?: ReadonlyMap<string, number>
+  fixed?: ReadonlyMap<string, number>,
+  lifecycle?: { daemonStartedAtMs: number | undefined }
 ): Map<string, number> {
   let candidates = [...connections.entries()]
     .filter(([, connection]) => {
@@ -411,6 +412,12 @@ export function mapConnectionsToClients(
     if (pairs.has(client.pid)) {
       return;
     }
+    // Reconnecting clients race after a daemon restart. Their original
+    // process start order says nothing about the new connection numbering.
+    if (lifecycle && (lifecycle.daemonStartedAtMs === undefined ||
+      client.startMs < lifecycle.daemonStartedAtMs - START_SLACK_MS)) {
+      return;
+    }
     const before = ordered.slice(0, index).map((c) => pairs.get(c.pid)).filter(
       (id): id is number => id !== undefined
     );
@@ -430,6 +437,56 @@ export function mapConnectionsToClients(
       }
     }
   });
+  return pairs;
+}
+
+/**
+ * Recover a reconnect only from a unique continuity chain: an exact old
+ * connect-line pairing, its final thread, and the new connection's initial
+ * thread/resume. Missing/pruned history or duplicate readers stay unpaired.
+ */
+export function mapReconnectedClients(
+  clients: readonly DaemonClient[],
+  connections: ReadonlyMap<number, DaemonConnection>,
+  previousLedgers: readonly DaemonLedger[],
+  daemonStartedAtMs: number
+): Map<string, number> {
+  const priorThreads = new Map<string, Set<string>>();
+  const oldClients = clients.filter((c) => c.startMs < daemonStartedAtMs - START_SLACK_MS);
+  for (const ledger of previousLedgers) {
+    // NaN disables every order-based guess for historical evidence.
+    const exact = mapConnectionsToClients(oldClients.map(c => ({ ...c, startMs: NaN })),
+      ledger.connections, ledger.connectedAtMs, daemonStartedAtMs);
+    for (const [pid, id] of exact) {
+      const threadId = connectionThreads(ledger.connections.get(id)).current;
+      if (!threadId) continue;
+      const threads = priorThreads.get(pid) ?? new Set<string>();
+      threads.add(threadId);
+      priorThreads.set(pid, threads);
+    }
+  }
+  const candidates = new Map<string, number[]>();
+  for (const [pid, threads] of priorThreads) {
+    if (threads.size !== 1) continue;
+    const ids: number[] = [];
+    for (const [id, connection] of connections) {
+      const first = connection.events[0];
+      const client = (connection.client ?? '').toLowerCase();
+      if (client && !client.includes('tui')) continue;
+      if (first?.method === 'thread/resume' && threads.has(first.threadId) &&
+        connection.firstMs >= daemonStartedAtMs - START_SLACK_MS &&
+        first.atMs - connection.firstMs >= 0 && first.atMs - connection.firstMs <= 30_000) {
+        ids.push(id);
+      }
+    }
+    candidates.set(pid, ids);
+  }
+  const pairs = new Map<string, number>();
+  for (const [pid, ids] of candidates) {
+    if (ids.length === 1 && [...candidates.values()].filter(v => v.includes(ids[0])).length === 1) {
+      pairs.set(pid, ids[0]);
+    }
+  }
   return pairs;
 }
 

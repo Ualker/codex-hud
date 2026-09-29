@@ -82,6 +82,15 @@ try {
   await deadCodex.check(true);
   assert.equal(psCalls(), 2, 'a dead Codex pid invalidates the cache');
 
+  // The daemon is outside the pane tree; its death must invalidate the cache
+  // even while the interactive Codex process survives the reconnect.
+  fs.rmSync(counter, { force: true });
+  fs.writeFileSync(treeFile, `${alivePid} 1 node /x/bin/codex\n999999 1 /x/bin/codex app-server --managed-daemon\n`);
+  const replacedDaemon = new SessionFinder(root, () => {});
+  await replacedDaemon.check(true);
+  await replacedDaemon.check(true);
+  assert.equal(psCalls(), 2, 'an exited external daemon invalidates the cached process table');
+
   console.log('test-session-finder-tree-cache: PASS');
 } finally {
   for (const [key, value] of Object.entries(saved)) {

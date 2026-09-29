@@ -22,6 +22,8 @@ import {
   isInteractiveCodexCommand,
   isManagedDaemonCommand,
   mapConnectionsToClients,
+  mapReconnectedClients,
+  pidOfProcessUuid,
   reviveLedgerSnapshot,
   type DaemonClient,
   type LedgerRow,
@@ -88,6 +90,8 @@ const MAX_THREAD_CANDIDATES = 8;
 // re-querying. Kept short so a /new session is promoted quickly once its
 // rollout file / state row lands; noteRolloutAppeared() bypasses it entirely.
 const THREAD_FACTS_NEGATIVE_TTL_MS = 5 * 1000;
+// A resumed thread can move to a new rollout without changing its id.
+const THREAD_FACTS_TTL_MS = 30 * 1000;
 
 export interface SessionFile {
   path: string;
@@ -163,6 +167,7 @@ function readFirstLine(filePath: string, maxBytes: number = 1024 * 1024): string
 
 interface RolloutCwdCacheEntry {
   cwd: string | null;
+  sessionId: string | null;
   size: number;
 }
 
@@ -174,10 +179,10 @@ interface RolloutCwdCacheEntry {
 const rolloutCwdCache = new Map<string, RolloutCwdCacheEntry>();
 const ROLLOUT_CWD_CACHE_LIMIT = 8192;
 
-function peekRolloutCwd(filePath: string): string | null {
+function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
   const cached = rolloutCwdCache.get(filePath);
-  if (cached && cached.cwd !== null) {
-    return cached.cwd;
+  if (cached && cached.cwd !== null && cached.sessionId !== null) {
+    return cached;
   }
 
   let size: number;
@@ -188,16 +193,20 @@ function peekRolloutCwd(filePath: string): string | null {
     return null;
   }
   if (cached && cached.size === size) {
-    return null;
+    return cached;
   }
 
   let cwd: string | null = null;
+  let sessionId: string | null = null;
   try {
     const firstLine = readFirstLine(filePath);
     if (firstLine) {
       const entry = JSON.parse(firstLine.trim());
       if (entry.type === 'session_meta' && entry.payload) {
         cwd = normalizePath(entry.payload.cwd);
+        if (typeof entry.payload.id === 'string' && isThreadId(entry.payload.id)) {
+          sessionId = entry.payload.id;
+        }
       }
     }
   } catch {
@@ -207,8 +216,13 @@ function peekRolloutCwd(filePath: string): string | null {
   if (rolloutCwdCache.size >= ROLLOUT_CWD_CACHE_LIMIT) {
     rolloutCwdCache.clear();
   }
-  rolloutCwdCache.set(filePath, { cwd, size });
-  return cwd;
+  const metadata = { cwd, sessionId, size };
+  rolloutCwdCache.set(filePath, metadata);
+  return metadata;
+}
+
+function peekRolloutCwd(filePath: string): string | null {
+  return peekRolloutMetadata(filePath)?.cwd ?? null;
 }
 
 /**
@@ -218,7 +232,7 @@ function peekRolloutCwd(filePath: string): string | null {
 function parseRolloutFilename(filename: string): { timestamp: Date; sessionId: string } | null {
   // Match pattern: rollout-2026-01-15T17-47-44-019bc10d-c89d-7352-935c-76b351384357.jsonl
   const match = filename.match(
-    /^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-([a-f0-9-]+)\.jsonl$/
+    /^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-([a-f0-9-]+)(?:_[a-f0-9-]+)?\.jsonl$/
   );
 
   if (!match) {
@@ -266,6 +280,7 @@ function findRolloutsInDir(dirPath: string, strict: boolean = false): SessionFil
       try {
         const stats = fs.statSync(fullPath);
         if (!stats.isFile()) continue;
+        if (peekRolloutMetadata(fullPath)?.sessionId !== parsed.sessionId) continue;
         results.push({
           path: fullPath,
           sessionId: parsed.sessionId,
@@ -429,7 +444,9 @@ export function findRolloutBySessionId(
     const dayDir = path.join(sessionsDir, year, month, day);
     const rolloutsInDay = findRolloutsInDir(dayDir);
 
-    const match = rolloutsInDay.find((r) => r.sessionId === sessionId);
+    const match = rolloutsInDay.filter((r) => r.sessionId === sessionId)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime() ||
+        b.modifiedAt.getTime() - a.modifiedAt.getTime())[0];
     if (match) {
       return match;
     }
@@ -562,7 +579,7 @@ function findRolloutPathBySessionIdInRoot(
     return null;
   }
 
-  const expectedSuffix = `-${sessionId}.jsonl`;
+  let newest: SessionFile | null = null;
   const stack: { dir: string; dateParts: number[] }[] = [
     { dir: rootDir, dateParts: [] },
   ];
@@ -603,20 +620,23 @@ function findRolloutPathBySessionIdInRoot(
 
       if (
         entry.isFile() &&
-        entry.name.startsWith('rollout-') &&
-        entry.name.endsWith(expectedSuffix)
+        parseRolloutFilename(entry.name)?.sessionId === sessionId
       ) {
-        return fullPath;
+        const candidate = buildSessionFile(fullPath, sessionId);
+        if (candidate && (!newest || candidate.timestamp > newest.timestamp ||
+          (candidate.timestamp.getTime() === newest.timestamp.getTime() && candidate.modifiedAt > newest.modifiedAt))) {
+          newest = candidate;
+        }
       }
     }
   }
 
-  return null;
+  return newest?.path ?? null;
 }
 
-function buildSessionFile(filePath: string): SessionFile | null {
+function buildSessionFile(filePath: string, expectedThreadId?: string): SessionFile | null {
   const parsed = parseRolloutFilename(path.basename(filePath));
-  if (!parsed) {
+  if (!parsed || peekRolloutMetadata(filePath)?.sessionId !== (expectedThreadId ?? parsed.sessionId)) {
     return null;
   }
 
@@ -624,7 +644,7 @@ function buildSessionFile(filePath: string): SessionFile | null {
     const stats = fs.statSync(filePath);
     return {
       path: filePath,
-      sessionId: parsed.sessionId,
+      sessionId: expectedThreadId ?? parsed.sessionId,
       timestamp: parsed.timestamp,
       size: stats.size,
       modifiedAt: stats.mtime,
@@ -667,11 +687,9 @@ async function findSessionByThreadId(
   targetCwd: string | null,
   knownRolloutPath?: string | null
 ): Promise<SessionFile | null> {
-  if (knownRolloutPath && fs.existsSync(knownRolloutPath)) {
-    const knownSession = buildSessionFile(knownRolloutPath);
-    if (knownSession) {
-      return knownSession;
-    }
+  if (knownRolloutPath) {
+    // An authoritative path must not silently fall back to a superseded file.
+    return buildSessionFile(knownRolloutPath, sessionId);
   }
 
   const rolloutSession = findRolloutByThreadId(sessionId);
@@ -1207,6 +1225,58 @@ LIMIT ${DAEMON_LEDGER_BATCH}
   return ledger;
 }
 
+const reconnectCache = new Map<string, { atMs: number; pairs: Map<string, number> }>();
+
+async function recoverDaemonConnections(
+  daemonPid: string,
+  daemonStartedAtMs: number,
+  clients: DaemonClient[],
+  ledger: DaemonLedger,
+  now: number
+): Promise<Map<string, number>> {
+  const dbPath = getLogDatabaseCandidates()[0];
+  const oldClients = clients.filter(c => c.startMs < daemonStartedAtMs - 2000);
+  if (!dbPath || oldClients.length === 0) return new Map();
+  const key = `${dbPath}\n${ledger.processUuid}\n${oldClients.map(c => `${c.pid}:${c.startMs}`).join(',')}`;
+  const cached = reconnectCache.get(key);
+  if (cached && now - cached.atMs < 60_000) return cached.pairs;
+  const since = Math.floor(Math.max(daemonStartedAtMs - THREAD_CANDIDATE_WINDOW_MS,
+    Math.min(...oldClients.map(c => c.startMs)) - 60_000) / 1000);
+  // Cold reloads can recover after the old daemon disappeared. Bound both
+  // the time range and rows; truncated evidence must never produce a guess.
+  const limit = 10_000;
+  const output = await querySqlite(dbPath, [`SELECT id, ts, ts_nanos, COALESCE(thread_id, ''),
+    COALESCE(process_uuid, ''),
+    substr(replace(replace(replace(COALESCE(feedback_log_body, ''), char(10), ' '), char(13), ' '), char(31), ' '), 1, 1500)
+    FROM logs WHERE ts >= ${since} AND ts <= ${Math.ceil(daemonStartedAtMs / 1000)}
+      AND process_uuid NOT LIKE 'pid:${daemonPid}:%'
+      AND (feedback_log_body LIKE '%app_server.connection_id=%' OR feedback_log_body LIKE 'connected app-server%')
+    ORDER BY id LIMIT ${limit + 1}`]);
+  const rows: LedgerRow[] = [];
+  for (const line of output?.split('\n') ?? []) {
+    if (!line) continue;
+    const [id, ts, nanos, threadId, processUuid, body] = line.split('\x1f');
+    rows.push({ id: Number(id), tsMs: Number(ts) * 1000 + Number(nanos) / 1_000_000,
+      threadId, processUuid, body });
+  }
+  const previous = new Map<string, DaemonLedger>();
+  if (rows.length <= limit) {
+    for (const row of rows) {
+      const pid = pidOfProcessUuid(row.processUuid);
+      if (pid && row.body.includes('app_server.connection_id=')) {
+        if (!previous.has(row.processUuid)) previous.set(row.processUuid, new DaemonLedger(pid));
+      }
+    }
+    for (const [uuid, book] of previous) {
+      book.ingest(rows.filter(row => row.processUuid === uuid || row.body.startsWith('connected app-server')));
+    }
+  }
+  const pairs = mapReconnectedClients(clients, ledger.connections, [...previous.values()], daemonStartedAtMs);
+  if (reconnectCache.size >= 8) reconnectCache.clear();
+  reconnectCache.set(key, { atMs: now, pairs });
+  return pairs;
+}
+
 function extractLogField(body: string, field: string): string | undefined {
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = body.match(new RegExp(`(?:^|[\\s{])${escaped}=([^\\s}]+)`));
@@ -1650,28 +1720,9 @@ export class SessionFinder {
       );
     }
 
-    if (
-      this.currentSession &&
-      this.currentSession.sessionId === threadId &&
-      (fs.existsSync(this.currentSession.path) || isLogBackedSession(this.currentSession))
-    ) {
-      this.currentThreadId = threadId;
-      return this.applyResolveBackoff(this.currentSession, previousPath);
-    }
-
-    const previousThreadId = this.currentThreadId;
-    this.currentThreadId = threadId;
-    const next = await findSessionByThreadId(threadId, this.targetCwd);
-
-    if (!next) {
-      return this.applyResolveBackoff(
-        this.resolveNextSession(null, previousThreadId === threadId && currentExists),
-        previousPath
-      );
-    }
-
+    await this.annotateCandidates([{ threadId, lastTs: now }]);
     return this.applyResolveBackoff(
-      this.resolveNextSession(next, currentExists),
+      await this.bindThread(threadId, currentExists),
       previousPath
     );
   }
@@ -1732,6 +1783,11 @@ export class SessionFinder {
     }
 
     const facts = this.threadFactsCache.get(parsed.sessionId);
+    if (parsed.sessionId === this.currentThreadId) {
+      this.threadFactsCache.delete(parsed.sessionId);
+      await this.check(true);
+      return;
+    }
     if (!facts || facts.rank >= THREAD_RANK_ROLLOUT || facts.isSubagent) {
       // Unknown threads (other panes/instances) stay on the throttled path;
       // established or excluded threads have nothing to upgrade.
@@ -1796,7 +1852,8 @@ export class SessionFinder {
       cached &&
       nowMs - cached.capturedAtMs < PROCESS_TREE_CACHE_MAX_MS &&
       cached.snapshot.codexPids.length > 0 &&
-      cached.snapshot.codexPids.every(isProcessAlive)
+      cached.snapshot.codexPids.every(isProcessAlive) &&
+      cached.snapshot.daemonPids.every(isProcessAlive)
     ) {
       return cached.snapshot;
     }
@@ -1835,19 +1892,20 @@ export class SessionFinder {
     currentExists: boolean
   ): Promise<SessionFile | null> {
     const current = this.currentSession;
+    const facts = this.threadFactsCache.get(threadId);
+    const pathChanged = Boolean(facts?.rolloutPath && facts.rolloutPath !== current?.path);
 
     // Already bound to a real rollout file for this thread: nothing to re-resolve.
     if (
       current &&
       currentExists &&
       current.sessionId === threadId &&
-      !isLogBackedSession(current)
+      !isLogBackedSession(current) && !pathChanged
     ) {
       this.currentThreadId = threadId;
       return current;
     }
 
-    const facts = this.threadFactsCache.get(threadId);
     const previousThreadId = this.currentThreadId;
     this.currentThreadId = threadId;
 
@@ -1857,7 +1915,7 @@ export class SessionFinder {
       // the first user message) without rescanning the whole sessions tree.
       const rollout =
         (facts?.rolloutPath && fs.existsSync(facts.rolloutPath)
-          ? buildSessionFile(facts.rolloutPath)
+          ? buildSessionFile(facts.rolloutPath, threadId)
           : null) ?? findRecentRolloutBySessionId(threadId, 2);
       next = rollout ?? (await buildLogBackedSession(threadId, this.targetCwd)) ?? current;
     } else {
@@ -1865,7 +1923,7 @@ export class SessionFinder {
     }
 
     if (!next) {
-      return this.resolveNextSession(null, previousThreadId === threadId && currentExists);
+      return this.resolveNextSession(null, previousThreadId === threadId && currentExists && !pathChanged);
     }
 
     return this.resolveNextSession(next, currentExists);
@@ -1904,7 +1962,7 @@ export class SessionFinder {
       processTree && processTree.daemonPids.length > 0
         ? await this.resolveDaemonThread(processTree, now)
         : null;
-    if (viaDaemon?.threadId) {
+    if (viaDaemon) {
       return viaDaemon;
     }
 
@@ -1978,6 +2036,7 @@ export class SessionFinder {
         ? this.daemonLink
         : null;
     const starts = await getProcessStartTimesMs([daemonPid, ...tree.tuiPids]);
+    const daemonStartedAtMs = starts.get(daemonPid);
     // Connections cannot predate their daemon: read its rows from its start.
     const ledger = await refreshDaemonLedger(
       daemonPid,
@@ -1985,23 +2044,28 @@ export class SessionFinder {
       now
     );
     if (!ledger) {
-      return { threadId: previous?.threadId ?? null, keepCurrent: true, daemonClient: true };
+      return { threadId: previous?.threadId ?? null, keepCurrent: Boolean(previous), daemonClient: true };
     }
 
     const clients: DaemonClient[] = tree.tuiPids
       .filter((pid) => !inProcess.has(pid))
       .map((pid) => ({ pid, startMs: starts.get(pid) ?? Number.NaN }));
+    const fixed = previous ? new Map([[tuiPid, previous.connectionId]]) :
+      daemonStartedAtMs !== undefined
+        ? await recoverDaemonConnections(daemonPid, daemonStartedAtMs, clients, ledger, now)
+        : new Map<string, number>();
     const pairs = mapConnectionsToClients(
       clients,
       ledger.connections,
       ledger.connectedAtMs,
       now,
-      previous ? new Map([[tuiPid, previous.connectionId]]) : undefined
+      fixed,
+      { daemonStartedAtMs }
     );
     const connectionId = pairs.get(tuiPid);
     if (connectionId === undefined) {
       this.daemonLink = null;
-      return { threadId: null, keepCurrent: this.boundViaProcess, daemonClient: true };
+      return { threadId: null, keepCurrent: false, daemonClient: true };
     }
 
     const { current } = connectionThreads(ledger.connections.get(connectionId));
@@ -2010,7 +2074,7 @@ export class SessionFinder {
       current ?? (previous?.connectionId === connectionId ? previous.threadId : null);
     this.daemonLink = { daemonPid, tuiPid, connectionId, threadId };
     if (!threadId) {
-      return { threadId: null, keepCurrent: this.boundViaProcess, daemonClient: true };
+      return { threadId: null, keepCurrent: false, daemonClient: true };
     }
 
     // Rank it like the per-process path, so noteRolloutAppeared promotes a
@@ -2055,7 +2119,7 @@ export class SessionFinder {
         continue;
       }
       const isFinal = cached.rank >= THREAD_RANK_ROLLOUT || cached.isSubagent;
-      if (!isFinal && now - cached.fetchedAt > THREAD_FACTS_NEGATIVE_TTL_MS) {
+      if (now - cached.fetchedAt > (isFinal ? THREAD_FACTS_TTL_MS : THREAD_FACTS_NEGATIVE_TTL_MS)) {
         needsFetch.push(candidate.threadId);
       }
     }
