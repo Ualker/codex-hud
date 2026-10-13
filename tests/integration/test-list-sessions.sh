@@ -121,8 +121,8 @@ assert_contains "$out" "codex-hud-api-9f3c1a20-20260812151832-33905  /srv/api  [
   "a path outside HOME is left absolute"
 assert_missing "$out" "work" "sessions that are not codex-hud stay out"
 
-# `codex`, --kill and --reload act on the newest session of the current
-# directory; with two open here the listing says which one that is.
+# Recency is informational: automatic attachment chooses detached sessions,
+# and control commands resolve their own explicit/current/unique target.
 hash_cwd() {
   local cwd="$1"
   if command -v md5sum >/dev/null 2>&1; then
@@ -148,6 +148,7 @@ codex-hud-api-9f3c1a20-20260812151832-33905|%5|%6|detached" \
 assert_contains "$out" "$here_new  /x  [attached]  (newest here" "the newest session of this directory is marked"
 assert_missing "$out" "$here_old  /x  [attached]  (newest" "the older one is not"
 assert_missing "$out" "33905  /srv/api  [detached]  (newest" "another directory's session is not"
+assert_missing "$out" "codex attach target" "an attached newest session must not be advertised as the automatic target"
 
 # A HUD pane that exited leaves a dead pane behind (remain-on-exit). That is
 # exactly the state where the pane looks frozen and the fix is one command.

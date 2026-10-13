@@ -129,7 +129,7 @@ codex
 | `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
 | `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
 | `codex-hud --cycle-details` | 不切换焦点，循环切换工具详情级别 |
-| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着——HUD 进程比磁盘上的构建更旧时标注 `HUD: outdated`；当前目录最新的那个会话（启动或 attach 自动选择的对象）标注 `(newest here…)` |
+| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着——HUD 进程比磁盘上的构建更旧时标注 `HUD: outdated`；当前目录最新的会话标注 `(newest here)` |
 | `codex-hud --hud-version` | 显示包版本和 checkout revision |
 
 ## HUD 显示了什么？
@@ -189,8 +189,15 @@ cx                           # codex 的短别名
 codex-resume                 # 恢复上次会话
 ```
 
-不带 Codex CLI 参数运行 `codex` 时，如果同目录已有 HUD tmux 会话，会自动重连到
-最新会话。需要强制新开会话时使用 `codex-hud --new-session`。
+不带 Codex CLI 参数运行 `codex` 时，会按创建时间从旧到新重连**当前目录中已断连**的
+HUD tmux 会话。连续启动会依次复用这些会话，全部连接后才新建；已连接的会话和其他
+目录的会话会被跳过。多个终端同时启动时会分别占用不同会话，并等待正在连接的会话
+完成连接后再新建。启动失败或中断会释放占用；进程意外退出留下的占用也能自动恢复。
+如果其他启动过程持续 30 秒仍未完成，会提示超时，不额外新建会话。
+
+`codex-hud --attach` 遵循同样规则。需要强制新开会话时使用 `codex-hud --new-session`。
+带提示词、`resume` 或其他 Codex CLI 参数时，默认仍新建以确保参数生效；显式设置
+`CODEX_HUD_AUTO_ATTACH=1` 后，带参数也会优先复用断连会话。
 
 安装会把 `codex` 指向本 wrapper，因此它必须区分哪些命令值得托管：提示词、交互式
 参数、`resume`、`fork` 会启动带 HUD 的会话；不开启会话的 Codex 子命令——`exec`、
@@ -206,7 +213,7 @@ codex-resume                 # 恢复上次会话
 ```bash
 codex-hud --kill             # 终止当前/唯一会话（--all：全部）
 codex-hud --list             # 列出所有 HUD 会话
-codex-hud --attach           # 复用已有会话
+codex-hud --attach           # 复用当前目录最旧的断连会话；没有则新建
 codex-hud --new-session      # 强制新建会话
 codex-hud --doctor           # 运行环境诊断（--self-check 的别名）
 codex-hud --reload           # 重启当前/唯一会话的 HUD pane；支持 `--target` 明确指定
