@@ -40,6 +40,8 @@ FORCE_ATTACH="0"
 FORCE_NEW_SESSION="0"
 CONTROL_TARGET=""
 CONTROL_ALL="0"
+ATTACH_OWNER="$$-$RANDOM-$RANDOM"
+CLAIMED_SESSION=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -558,23 +560,67 @@ get_main_pane_id_for_session() {
     get_primary_pane_id "$session_name"
 }
 
-# Find the most recent existing session for this directory
-find_existing_session() {
-    local sessions
-    local current
-    local legacy
+# Compare before clearing: another launcher may already own this session.
+# Session IDs and owner tokens here are validated/generated, never shell text.
+release_session_claim() {
+    local target="$1" owner="$2"
+    [[ -n "$target" ]] || return 0
+    tmux if-shell -F -t "${target}:" "#{==:#{@codex_hud_attach_owner},$owner}" \
+        "set-option -qu -t '$target' @codex_hud_attach_owner" 2>/dev/null || true
+}
 
-    sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null || true)
-    current=$(printf "%s\n" "$sessions" | grep "^${SESSION_PREFIX}-" | sort | tail -n1)
-    if [[ -n "$current" ]]; then
-        echo "$current"
-        return 0
-    fi
+# Claim the oldest detached session in this directory. The synchronous tmux
+# if-shell -F check and set run in one server command queue, closing the race
+# between multiple launchers reading the same list-sessions snapshot.
+claim_detached_session() {
+    local rows created id attached owner name claimed pending
+    local deadline=$((SECONDS + 30))
+    while true; do
+        rows=$(tmux list-sessions -F '#{session_created}|#{session_id}|#{session_attached}|#{@codex_hud_attach_owner}|#{session_name}' 2>/dev/null \
+            | LC_ALL=C sort -t '|' -k1,1n -k2.2,2n) || rows=""
+        pending=0
+        while IFS='|' read -r created id attached owner name; do
+            case "$name" in
+                "$SESSION_PREFIX"-*|"$LEGACY_SESSION_PREFIX"-*) ;;
+                *) continue ;;
+            esac
+            [[ "$id" =~ ^\$[0-9]+$ && "$attached" == "0" ]] || continue
+            pending=1
+            if [[ -n "$owner" ]]; then
+                # A killed launcher cannot strand an old session. Only clear
+                # its exact token so concurrent recovery cannot erase a new claim.
+                if [[ "$owner" =~ ^[1-9][0-9]*-[0-9]+-[0-9]+$ ]] && ! kill -0 "${owner%%-*}" 2>/dev/null; then
+                    release_session_claim "$id" "$owner"
+                else
+                    continue
+                fi
+            fi
+            CLAIMED_SESSION="$id"
+            claimed=$(tmux if-shell -F -t "${id}:" \
+                '#{&&:#{==:#{session_attached},0},#{==:#{@codex_hud_attach_owner},}}' \
+                "set-option -q -t '$id' @codex_hud_attach_owner '$ATTACH_OWNER'; display-message -p claimed" \
+                2>/dev/null) || claimed=""
+            if [[ "$claimed" == "claimed" ]]; then
+                SESSION_NAME="$name"
+                return 0
+            fi
+        done <<< "$rows"
+        [[ "$pending" == "1" ]] || return 1
+        # A reserved session is still detached. Wait for that launch to attach
+        # or fail before creating more sessions; never steal its reservation.
+        if (( SECONDS >= deadline )); then
+            error "Timed out waiting for another codex-hud launch in this directory; retry after it finishes."
+        fi
+        sleep 0.05
+    done
+}
 
-    legacy=$(printf "%s\n" "$sessions" | grep "^${LEGACY_SESSION_PREFIX}-" | sort | tail -n1)
-    if [[ -n "$legacy" ]]; then
-        echo "$legacy"
-    fi
+attach_claimed_session() {
+    # tmux executes the unset immediately after attaching, not when the user
+    # eventually detaches. EXIT cleanup covers failed attaches and signals.
+    tmux attach-session -t "$SESSION_NAME" \; \
+        if-shell -F -t "${CLAIMED_SESSION}:" "#{==:#{@codex_hud_attach_owner},$ATTACH_OWNER}" \
+        "set-option -qu -t '$CLAIMED_SESSION' @codex_hud_attach_owner"
 }
 
 # Control commands must never infer a target from recency. An explicit pane
@@ -746,13 +792,7 @@ check_existing_session() {
         return 1
     fi
 
-    local existing
-    existing=$(find_existing_session)
-    if [[ -n "$existing" ]]; then
-        SESSION_NAME="$existing"
-        return 0
-    fi
-    return 1
+    claim_detached_session
 }
 
 # Cleanup function - only removes incomplete sessions during startup failures.
@@ -760,6 +800,7 @@ cleanup_incomplete_session() {
     local status="$?"
 
     if [[ "$status" -eq 0 ]]; then
+        release_session_claim "$CLAIMED_SESSION" "$ATTACH_OWNER"
         return 0
     fi
 
@@ -773,6 +814,7 @@ cleanup_incomplete_session() {
             session_survives="0"
         fi
     fi
+    release_session_claim "$CLAIMED_SESSION" "$ATTACH_OWNER"
 }
 
 # Resolve HUD height based on terminal size
@@ -936,10 +978,15 @@ create_session() {
     # respawned and before Codex or the HUD starts.
     build_cmux_tmux_environment_args
     local cmux_env_needs_respawn="0"
+    # Publish the reservation in the same command queue as creation, before
+    # any other launcher can see this detached, still-incomplete session.
+    CLAIMED_SESSION="=$SESSION_NAME"
     if [[ "${#CMUX_TMUX_ENV_ARGS[@]}" -gt 0 ]] && tmux_supports_new_session_environment; then
-        tmux new-session -d "${CMUX_TMUX_ENV_ARGS[@]}" -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
+        tmux new-session -d "${CMUX_TMUX_ENV_ARGS[@]}" -s "$SESSION_NAME" -x "$term_width" -y "$term_height" \; \
+            set-option -q -t "$CLAIMED_SESSION" @codex_hud_attach_owner "$ATTACH_OWNER"
     else
-        tmux new-session -d -s "$SESSION_NAME" -x "$term_width" -y "$term_height"
+        tmux new-session -d -s "$SESSION_NAME" -x "$term_width" -y "$term_height" \; \
+            set-option -q -t "$CLAIMED_SESSION" @codex_hud_attach_owner "$ATTACH_OWNER"
         if [[ "${#CMUX_TMUX_ENV_ARGS[@]}" -gt 0 ]]; then
             cmux_env_needs_respawn="1"
         fi
@@ -1165,6 +1212,11 @@ main() {
         has_codex_args="1"
     fi
 
+    trap cleanup_incomplete_session EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     # Check for existing session
     if check_existing_session "$has_codex_args"; then
         info "Attaching to existing session: $SESSION_NAME"
@@ -1179,12 +1231,9 @@ main() {
             resolve_hud_height_for_tmux_target "$hud_pane_id"
             set_fixed_hud_height "$SESSION_NAME" "$hud_pane_id" "$HUD_HEIGHT" "$main_pane_id"
         fi
-        tmux attach-session -t "$SESSION_NAME"
+        attach_claimed_session
         return 0
     fi
-    
-    # Set up cleanup trap
-    trap cleanup_incomplete_session EXIT
     
     # Create new session
     info "Starting Codex with HUD (session: $SESSION_NAME)..."
@@ -1196,7 +1245,7 @@ main() {
     if [[ -n "$main_pane_id" ]]; then
         tmux select-pane -t "$main_pane_id" 2>/dev/null || true
     fi
-    tmux attach-session -t "$SESSION_NAME"
+    attach_claimed_session
 }
 
 # Show help
@@ -1232,7 +1281,7 @@ Options:
   --cycle-details     Cycle tool details (targets -> full -> off) without focusing the HUD pane
   --target NAME|%ID   Select an exact session or pane for a control command
   --hud-version       Show HUD package version and checkout revision
-  --attach            Attach to latest existing session in this directory
+  --attach            Reuse oldest detached session here; create if none remain
   --new-session       Always create a new session for this launch
 
 HUD Pane Mouse and Keys:
@@ -1525,8 +1574,7 @@ list_sessions() {
     fi
 
     panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_pid}|#{pane_current_path}" 2>/dev/null) || panes=""
-    # Launch/attach still prefers the newest session; controls resolve their
-    # current pane or require an explicit target when the directory is shared.
+    # Recency is informational; automatic attachment selects detached sessions.
     local newest_here
     newest_here=$(printf '%s\n' "$rows" | cut -d'|' -f1 | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" | sort | tail -n1)
     process_table=$(ps -axo pid=,ppid=,etime=,comm=,command= 2>/dev/null) || process_table=""
@@ -1555,15 +1603,13 @@ list_sessions() {
         esac
         local newest_marker=""
         if [[ -n "$newest_here" && "$name" == "$newest_here" ]]; then
-            newest_marker="  (newest here: codex attach target)"
+            newest_marker="  (newest here)"
         fi
         printf '  %s  %s  [%s]%s%s\n' "$name" "$cwd" "$attached" "$hud_state" "$newest_marker"
     done <<< "$rows"
 }
 
-# Every codex-hud session for this directory, oldest first (current naming
-# scheme plus the legacy prefix). find_existing_session keeps returning only
-# the newest one.
+# Every codex-hud session for this directory (current and legacy names).
 find_all_hud_sessions() {
     tmux list-sessions -F "#{session_name}" 2>/dev/null \
         | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" \

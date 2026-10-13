@@ -122,8 +122,24 @@ case "$cmd" in
     ;;
   list-sessions)
     append_log "list-sessions $*"
-    if [[ -n "${TMUX_SESSION_LIST:-}" ]]; then
+    if [[ "${@: -1}" == '#{session_created}|#{session_id}|#{session_attached}|#{@codex_hud_attach_owner}|#{session_name}' ]]; then
+      if [[ -n "${TMUX_SESSION_ROWS:-}" ]]; then
+        printf '%s\n' "$TMUX_SESSION_ROWS"
+      elif [[ -n "${TMUX_SESSION_LIST:-}" ]]; then
+        index=0
+        while IFS= read -r name; do
+          printf '%s|$%s|0||%s\n' "$index" "$index" "$name"
+          index=$((index + 1))
+        done < <(printf '%b\n' "$TMUX_SESSION_LIST")
+      fi
+    elif [[ -n "${TMUX_SESSION_LIST:-}" ]]; then
       printf "%b\n" "${TMUX_SESSION_LIST}"
+    fi
+    ;;
+  if-shell)
+    append_log "if-shell $*"
+    if [[ "${@: -1}" == *'display-message -p claimed'* ]]; then
+      echo claimed
     fi
     ;;
   split-window)

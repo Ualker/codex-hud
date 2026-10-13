@@ -138,7 +138,7 @@ After the first install, these are available in your shell:
 | `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
 | `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
 | `codex-hud --cycle-details` | Cycle the tool-detail level without moving focus |
-| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory (the automatic launch/attach target) is marked `(newest here…)` |
+| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory is marked `(newest here)` |
 | `codex-hud --hud-version` | Print the package version and checkout revision |
 
 ## What's on the HUD?
@@ -248,9 +248,19 @@ cx                           # Short alias for codex
 codex-resume                 # Resume last session
 ```
 
-Running `codex` without Codex CLI arguments reconnects to the latest HUD tmux
-session in the same directory when one exists. Use `codex-hud --new-session` to
-force a separate session.
+Running `codex` without Codex CLI arguments reconnects to the oldest **detached**
+HUD tmux session in the current directory. Repeated launches reuse each detached
+session before creating a new one; sessions with a connected client and sessions
+from other directories are skipped. Concurrent launches reserve distinct sessions
+and wait for pending attachments before creating more. Failed or interrupted
+launches release their reservations, and abandoned reservations are recovered.
+If another launch remains pending for 30 seconds, the command reports a timeout
+instead of creating an extra session.
+
+`codex-hud --attach` uses the same policy. Use `codex-hud --new-session` to force
+a separate session. A prompt, `resume`, or other Codex CLI arguments still start
+a new session by default, so those arguments take effect; `CODEX_HUD_AUTO_ATTACH=1`
+explicitly opts into reusing a detached session even with arguments.
 
 The install aliases `codex` to this wrapper, so it has to be careful about what
 it hosts. A prompt, the interactive flags, `resume`, and `fork` start a session
@@ -268,7 +278,7 @@ documents the wrapper.
 ```bash
 codex-hud --kill             # Kill the current/unique session (--all: every session here)
 codex-hud --list             # List all HUD sessions
-codex-hud --attach           # Attach to existing session
+codex-hud --attach           # Reuse oldest detached session here, otherwise create
 codex-hud --new-session      # Force a new session
 codex-hud --doctor           # Run diagnostics (--self-check alias)
 codex-hud --reload           # Restart the current/unique HUD pane
