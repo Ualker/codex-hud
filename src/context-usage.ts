@@ -1,3 +1,4 @@
+import type { TokenUsage, TokenUsageInfo, ContextUsage } from './types.js';
 import { BASELINE_TOKENS } from './types.js';
 
 /**
@@ -57,4 +58,45 @@ export function calculateContextUsage(
   const effectiveWindow = contextWindow - BASELINE_TOKENS;
   const used = clamp(tokensInContext - BASELINE_TOKENS, 0, effectiveWindow);
   return { used, total: effectiveWindow, percent: toPercent(used, effectiveWindow) };
+}
+
+function getNonCachedInputTokens(usage: TokenUsage | undefined): number {
+  if (!usage) {
+    return 0;
+  }
+
+  const input = usage.input_tokens ?? 0;
+  const cached = usage.cached_input_tokens ?? 0;
+  return Math.max(0, input - cached);
+}
+
+export function buildContextUsage(
+  tokenUsage: TokenUsageInfo | undefined,
+  compactCount: number | undefined,
+  lastCompactTime: Date | null | undefined
+): ContextUsage | undefined {
+  if (!tokenUsage) {
+    return undefined;
+  }
+
+  const contextWindow = tokenUsage.model_context_window ?? 0;
+  const lastUsage = tokenUsage.last_token_usage;
+
+  if (contextWindow > 0 && lastUsage) {
+    const tokensInContext = lastUsage.total_tokens ?? 0;
+    const { used, total, percent } = calculateContextUsage(tokensInContext, contextWindow);
+
+    return {
+      used,
+      total,
+      percent,
+      inputTokens: getNonCachedInputTokens(lastUsage),
+      outputTokens: lastUsage.output_tokens ?? 0,
+      cachedTokens: lastUsage.cached_input_tokens ?? 0,
+      compactCount: compactCount ?? 0,
+      lastCompactTime: lastCompactTime ?? undefined,
+    };
+  }
+
+  return undefined;
 }

@@ -87,6 +87,8 @@ export interface JsonlTailBatch<T> {
   /** Newline-terminated lines that failed JSON.parse and were skipped. */
   malformedLines: number;
   pendingBytes?: number;
+  /** More bytes beyond this batch, as distinct from an unfinished last line. */
+  hasMore?: boolean;
 }
 export interface JsonlTailOptions {
   /**
@@ -170,6 +172,7 @@ export async function readCompleteJsonl<T>(filePath: string, fromOffset: number,
         truncated,
         malformedLines: 0,
         pendingBytes: fileSize - startOffset,
+        hasMore: endOffset < fileSize,
       };
     }
     // A tail read starts mid-record; those leading bytes belong to a line
@@ -209,6 +212,7 @@ export async function readCompleteJsonl<T>(filePath: string, fromOffset: number,
       truncated,
       malformedLines,
       pendingBytes: fileSize - (startOffset + finalNewlineIndex + 1),
+      hasMore: endOffset < fileSize,
     };
   }
   finally {

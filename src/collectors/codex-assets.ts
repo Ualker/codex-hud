@@ -19,6 +19,7 @@ export interface CodexAssetCounts {
 
 export interface CodexAssetBreakdown {
   codexSkillsCount: number;
+  installedSkillsCount: number;
   otherAgentSkillsCount: number;
   hooksCount: number;
 }
@@ -168,9 +169,15 @@ async function skillFiles(root: string): Promise<string[]> {
   return files;
 }
 
-async function collectSkillCount(roots: string[]): Promise<number> {
+async function collectSkills(roots: string[], config?: CodexConfig): Promise<{ enabled: number; installed: number }> {
   const seen = new Set<string>();
-  let count = 0;
+  const overrides = new Map<string, boolean>();
+  for (const entry of config?.skills?.config ?? []) {
+    const manifest = path.basename(entry.path) === 'SKILL.md' ? entry.path : path.join(entry.path, 'SKILL.md');
+    overrides.set(await canonicalPath(manifest), entry.enabled);
+  }
+  let enabled = 0;
+  let installed = 0;
   for (const root of roots) {
     if (!(await existingDirectory(root))) continue;
     for (const filePath of await skillFiles(root)) {
@@ -178,10 +185,12 @@ async function collectSkillCount(roots: string[]): Promise<number> {
       if (seen.has(key)) continue;
       seen.add(key);
       const manifest = await parseSkillManifest(filePath);
-      if (manifest?.enabled) count++;
+      if (!manifest) continue;
+      installed++;
+      if (overrides.get(key) ?? manifest.enabled) enabled++;
     }
   }
-  return count;
+  return { enabled, installed };
 }
 
 function hookIdentity(eventName: string, entry: Record<string, unknown>): string {
@@ -332,8 +341,8 @@ export async function collectCodexAssetCounts(
 }
 
 /**
- * Keep Codex-authoritative skills separate from `.agents` copies owned by
- * other Agent runtimes. The legacy aggregate remains available above.
+ * Inventory includes current .agents scopes and legacy .codex installations.
+ * Canonical manifest paths deduplicate symlinks across all scopes.
  */
 export async function collectCodexAssetBreakdown(
   cwd: string,
@@ -347,6 +356,8 @@ export async function collectCodexAssetBreakdown(
   const cacheKey = JSON.stringify({
     cwd: path.resolve(cwd),
     codexHome: env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+    userHome: env.HOME || os.homedir(),
+    skillsConfig: config?.skills?.config,
     systemSkills: env.CODEX_SYSTEM_SKILLS_DIR || null,
     adminSkills: env.CODEX_ADMIN_SKILLS_DIR || null,
     systemHooks: env.CODEX_SYSTEM_HOOKS_FILE || null,
@@ -363,15 +374,17 @@ export async function collectCodexAssetBreakdown(
 
   const ancestors = await ancestorDirectories(cwd);
   const codexSkillsRoots: string[] = [];
-  const otherAgentSkillsRoots: string[] = [];
   const hooksFiles: string[] = [];
 
-  const codexHome = env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const userHome = env.HOME || os.homedir();
+  const codexHome = env.CODEX_HOME || path.join(userHome, '.codex');
   codexSkillsRoots.push(path.join(codexHome, 'skills'));
+  codexSkillsRoots.push(path.join(userHome, '.agents', 'skills'));
+  codexSkillsRoots.push(env.CODEX_ADMIN_SKILLS_DIR || '/etc/codex/skills');
   hooksFiles.push(path.join(codexHome, 'hooks.json'));
 
   for (const directory of ancestors) {
-    otherAgentSkillsRoots.push(path.join(directory, '.agents', 'skills'));
+    codexSkillsRoots.push(path.join(directory, '.agents', 'skills'));
     codexSkillsRoots.push(path.join(directory, '.codex', 'skills'));
     hooksFiles.push(path.join(directory, '.agents', 'hooks.json'));
     hooksFiles.push(path.join(directory, '.codex', 'hooks.json'));
@@ -386,9 +399,11 @@ export async function collectCodexAssetBreakdown(
     if (file) hooksFiles.push(file);
   }
 
+  const skills = await collectSkills(codexSkillsRoots, config);
   const breakdown = {
-    codexSkillsCount: await collectSkillCount(codexSkillsRoots),
-    otherAgentSkillsCount: await collectSkillCount(otherAgentSkillsRoots),
+    codexSkillsCount: skills.enabled,
+    installedSkillsCount: skills.installed,
+    otherAgentSkillsCount: 0,
     hooksCount: await collectHookCount(
       hooksEnabled ? hooksFiles : [],
       hooksEnabled ? runtimeHookOverrides : []

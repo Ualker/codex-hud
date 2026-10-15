@@ -6,7 +6,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-runtime-'));
+// Exercise both the pane command and nested tmux resize hooks in a quoted path.
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "hr'-"));
 const fixture = path.join(root, 'codex-hud');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !/^(TMUX|CMUX_|CODEX_)/.test(key) && !['NO_COLOR', 'FORCE_COLOR'].includes(key)));
@@ -25,6 +26,9 @@ for (const dir of ['home', 'tmux', 'bin', 'codex-hud/src', 'codex-hud/dist', 'co
 }
 fs.cpSync(path.join(repo, 'bin'), path.join(fixture, 'bin'), { recursive: true });
 fs.copyFileSync(path.join(repo, 'package.json'), path.join(fixture, 'package.json'));
+fs.mkdirSync(path.join(fixture, 'dist/utils'), { recursive: true });
+fs.copyFileSync(path.join(repo, 'dist/namespace.js'), path.join(fixture, 'dist/namespace.js'));
+fs.copyFileSync(path.join(repo, 'dist/utils/codex-path.js'), path.join(fixture, 'dist/utils/codex-path.js'));
 const recorder = `import fs from 'node:fs';
 const names = ['CODEX_HOME', 'CODEX_SESSIONS_PATH', 'CODEX_HUD_DETAILS', 'NO_COLOR'];
 fs.writeFileSync(process.env.HUD_TEST_ROOT + '/' + process.env.TMUX_PANE + '.json',

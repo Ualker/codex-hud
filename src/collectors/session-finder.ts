@@ -10,6 +10,8 @@ import { promisify } from 'util';
 import { createRequire } from 'module';
 import { getCodexDataNamespace, getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 import { startProbe } from '../utils/probe-latency.js';
+import { fileWasReplaced, sameFileVersion } from '../utils/file-version.js';
+import { runSqliteStatement } from '../utils/sqlite-probe.js';
 import { readSharedSnapshot, writeSharedSnapshot } from '../utils/shared-snapshot.js';
 import {
   extractCodexRuntimeHookState,
@@ -168,31 +170,26 @@ function readFirstLine(filePath: string, maxBytes: number = 1024 * 1024): string
 interface RolloutCwdCacheEntry {
   cwd: string | null;
   sessionId: string | null;
-  size: number;
+  version: fs.Stats;
 }
 
-// A rollout's first line (session_meta) is written once and never rewritten,
-// so a resolved cwd is cached permanently by path. Unresolved entries are
-// re-read only after the file has grown, which covers a first line that was
-// still being written. Without this cache every fallback scan re-opens every
-// rollout file in the lookback window.
+// Appends cannot change session_meta, but rotation/replacement can. Keep the
+// cheap stat check so a same-path replacement cannot inherit another identity.
 const rolloutCwdCache = new Map<string, RolloutCwdCacheEntry>();
 const ROLLOUT_CWD_CACHE_LIMIT = 8192;
 
 function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
   const cached = rolloutCwdCache.get(filePath);
-  if (cached && cached.cwd !== null && cached.sessionId !== null) {
-    return cached;
-  }
-
-  let size: number;
+  let version: fs.Stats;
   try {
-    size = fs.statSync(filePath).size;
+    version = fs.statSync(filePath);
   } catch {
     rolloutCwdCache.delete(filePath);
     return null;
   }
-  if (cached && cached.size === size) {
+  if (cached && !fileWasReplaced(cached.version, version) &&
+    ((cached.cwd !== null && cached.sessionId !== null) || sameFileVersion(cached.version, version))) {
+    cached.version = version;
     return cached;
   }
 
@@ -216,7 +213,7 @@ function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
   if (rolloutCwdCache.size >= ROLLOUT_CWD_CACHE_LIMIT) {
     rolloutCwdCache.clear();
   }
-  const metadata = { cwd, sessionId, size };
+  const metadata = { cwd, sessionId, version };
   rolloutCwdCache.set(filePath, metadata);
   return metadata;
 }
@@ -790,6 +787,7 @@ async function querySqlite(
   dbPath: string,
   statements: string[]
 ): Promise<string | null> {
+  const finishProbe = startProbe('sqlite');
   if (nodeSqlite) {
     try {
       const db = getReadOnlyDatabase(dbPath);
@@ -798,7 +796,7 @@ async function querySqlite(
       }
       const lines: string[] = [];
       for (const statement of statements) {
-        for (const row of db.prepare(statement).all()) {
+        for (const row of runSqliteStatement(db, statement)) {
           lines.push(
             Object.values(row)
               .map((value) => (value === null || value === undefined ? '' : String(value)))
@@ -810,10 +808,11 @@ async function querySqlite(
     } catch {
       closeReadOnlyDatabase(dbPath);
       return null;
+    } finally {
+      finishProbe();
     }
   }
 
-  const finishProbe = startProbe('sqlite');
   try {
     const { stdout } = await execFileAsync(
       'sqlite3',

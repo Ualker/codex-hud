@@ -7,6 +7,7 @@
 # session creation, and that --reload re-bakes the caller's *current*
 # environment instead of reviving the values frozen at creation.
 set -euo pipefail
+export HUD_TEST_REAL_NODE="$(command -v node)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -28,6 +29,7 @@ FAKE
 # quoting round trip exactly.
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
+if [[ "${1:-}" == */dist/namespace.js ]]; then exec "$HUD_TEST_REAL_NODE" "$@"; fi
 if [[ "${1:-}" == "--version" ]]; then
   echo "v20.19.0"
   exit 0

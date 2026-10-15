@@ -1,3 +1,4 @@
+import { getCodexDataNamespace } from '../../dist/utils/codex-path.js';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -24,7 +25,7 @@ fs.writeFileSync(rollout, [
   { timestamp: now, type: 'event_msg', payload: { type: 'task_complete' } },
 ].map(JSON.stringify).join('\n') + '\n');
 fs.writeFileSync(invalid, '{malformed\n');
-const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64');
+const encode = (value) => Buffer.from(JSON.stringify({namespace: getCodexDataNamespace({HOME: home, CODEX_HOME: codexHome}), ...value})).toString('base64');
 fs.writeFileSync(bindings, [
   `codex-hud-good %2 0 %2 ${encode({ tmuxSession: 'codex-hud-good', sessionId: 'good-session', rolloutPath: rollout })}`,
   `codex-hud-broken %4 0 %4 ${encode({ tmuxSession: 'codex-hud-broken', sessionId: 'bad-session', rolloutPath: invalid, cwd: '/work/broken-project' })}`,

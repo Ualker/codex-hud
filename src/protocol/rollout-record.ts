@@ -4,7 +4,70 @@ export function asRecord(value: unknown): JsonRecord | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as JsonRecord : null;
 }
-/** Shared envelope guard; unknown kinds survive so callers can diagnose drift. */
+function stringFields(record: JsonRecord, keys: string[]): boolean {
+  return keys.every(key => record[key] == null || typeof record[key] === 'string');
+}
+
+function textBlocks(value: unknown): boolean {
+  return Array.isArray(value) && value.every(block => {
+    const record = asRecord(block);
+    return record !== null && stringFields(record, ['type', 'text']);
+  });
+}
+
+function validSettings(value: unknown): boolean {
+  const settings = asRecord(value);
+  if (!settings || !stringFields(settings, [
+    'model', 'model_provider_id', 'reasoning_effort', 'effort',
+    'approval_policy', 'sandbox_mode', 'service_tier',
+  ])) return false;
+  for (const key of ['sandbox_policy', 'permission_profile']) {
+    if (settings[key] != null) {
+      const policy = asRecord(settings[key]);
+      if (!policy || !stringFields(policy, ['type'])) return false;
+    }
+  }
+  if (settings.collaboration_mode != null) {
+    const collaboration = asRecord(settings.collaboration_mode);
+    if (!collaboration || (collaboration.settings != null && !validSettings(collaboration.settings))) return false;
+  }
+  return true;
+}
+
+/** Validate fields we consume; unknown kinds/fields survive for drift diagnostics. */
+function validPayload(type: string, payload: JsonRecord): boolean {
+  if (type === 'session_meta') {
+    return typeof payload.id === 'string' && typeof payload.cwd === 'string' &&
+      stringFields(payload, ['timestamp', 'cli_version', 'model_provider', 'forked_from_id', 'parent_thread_id', 'agent_path']) &&
+      (payload.git == null || (asRecord(payload.git) !== null &&
+        stringFields(payload.git as JsonRecord, ['branch', 'commit_hash'])));
+  }
+  if (type === 'turn_context') return validSettings(payload);
+  if (type === 'response_item') {
+    if (!stringFields(payload, ['name', 'call_id', 'id', 'role', 'status', 'execution'])) return false;
+    if (['message', 'agent_message'].includes(String(payload.type)) && payload.content != null && !textBlocks(payload.content)) return false;
+    if (payload.output != null && typeof payload.output !== 'string') {
+      if (Array.isArray(payload.output)) return textBlocks(payload.output);
+      const output = asRecord(payload.output);
+      if (!output || !stringFields(output, ['content']) ||
+        (output.content_items != null && !textBlocks(output.content_items))) return false;
+    }
+  }
+  if (type === 'event_msg') {
+    if (!stringFields(payload, ['turn_id', 'call_id'])) return false;
+    for (const key of ['started_at', 'completed_at']) {
+      if (payload[key] != null && typeof payload[key] !== 'string' && typeof payload[key] !== 'number') return false;
+    }
+    if (payload.thread_settings != null && !validSettings(payload.thread_settings)) return false;
+    for (const key of ['info', 'rate_limits', 'invocation', 'duration']) {
+      if (payload[key] != null && !asRecord(payload[key])) return false;
+    }
+    if (payload.model_context_window != null && typeof payload.model_context_window !== 'number') return false;
+  }
+  return true;
+}
+
+/** Shared envelope and consumed-field guard. Invalid committed records can be skipped. */
 export function normalizeRolloutRecord(value: unknown): RolloutLine | null {
   const entry = asRecord(value);
   if (!entry || typeof entry.type !== 'string' || !entry.type ||
@@ -17,6 +80,7 @@ export function normalizeRolloutRecord(value: unknown): RolloutLine | null {
     if (['event_msg', 'response_item'].includes(entry.type) &&
       (typeof payload.type !== 'string' || !payload.type))
       return null;
+    if (!validPayload(entry.type, payload)) return null;
   }
   return entry as unknown as RolloutLine;
 }

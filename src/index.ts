@@ -15,11 +15,10 @@ import {
   collectGitStatusAsync,
   emptyGitStatus,
 } from './collectors/git.js';
-import { SessionFinder, findActiveRollouts } from './collectors/session-finder.js';
+import { SessionFinder } from './collectors/session-finder.js';
 import {
   AgentActivityCollector,
   AGENT_INACTIVITY_TIMEOUT_ENV,
-  isSubagentSessionSource,
   parseAgentInactivityTimeoutMs,
 } from './collectors/agent-activity.js';
 import { RolloutParser } from './collectors/rollout.js';
@@ -28,16 +27,14 @@ import {
   type SlowProjectSnapshot,
 } from './collectors/slow-project.js';
 import {
-  listOpenHudBindings,
   publishHudBinding,
-  type OpenHudBinding,
 } from './collectors/open-huds.js';
 import {
   findLatestAccountRateLimits,
   preferFreshestRateLimits,
   type AccountRateLimits,
 } from './collectors/account-limits.js';
-import { compareOverviewSessions } from './collectors/overview-order.js';
+import { OverviewCollector } from './collectors/overview.js';
 import { QuotaTrendTracker } from './collectors/quota-trend.js';
 import { ApprovalDetector } from './collectors/approval-detector.js';
 import { StallDetector } from './collectors/stall-detector.js';
@@ -48,7 +45,8 @@ import { withDetectorPhases } from './utils/detector-phases.js';
 import { createParseQueue } from './utils/parse-queue.js';
 import { AsyncSnapshotCache } from './utils/async-snapshot-cache.js';
 import { HeightFitPolicy } from './utils/height-fit.js';
-import { slowProbes } from './utils/probe-latency.js';
+import { slowProbes, getProbeDiagnostics } from './utils/probe-latency.js';
+import { getSqliteDiagnostics } from './utils/sqlite-probe.js';
 import { createMouseInputParser } from './utils/mouse-input.js';
 import { getCodexDataNamespace } from './utils/codex-path.js';
 import {
@@ -85,17 +83,13 @@ import { HudNotifier, isCompletedTurnNotifiable } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
 import { recordCollectorFailure } from './utils/collector-health.js';
 import { resolveHudStateFile } from './utils/state-dir.js';
-import { calculateContextUsage } from './context-usage.js';
+import { buildContextUsage } from './context-usage.js';
 import type {
   HudData,
-  TokenUsage,
-  ContextUsage,
   CodexConfig,
   GitStatus,
   HudDisplayMode,
   SessionOverview,
-  SessionOverviewItem,
-  TokenUsageInfo,
   CollectorHealth,
   CollectorHealthMap,
   ProjectInfo,
@@ -148,7 +142,6 @@ const ACCOUNT_LIMITS_INTERVAL_MS = 60_000;
 const ACCOUNT_LIMITS_DEEP_IDLE_INTERVAL_MS = 5 * 60_000;
 const PROJECT_CACHE_TTL_MS = 60_000;
 const OVERVIEW_CACHE_TTL_MS = 5000;
-const OVERVIEW_ACTIVE_WINDOW_SECONDS = 30 * 60;
 
 // Current working directory for the HUD
 const HUD_CWD = process.env.CODEX_HUD_CWD || process.cwd();
@@ -243,47 +236,6 @@ function toggleDisplayMode(): void {
       // Keep the previous overview snapshot.
     });
   }
-}
-
-function getNonCachedInputTokens(usage: TokenUsage | undefined): number {
-  if (!usage) {
-    return 0;
-  }
-
-  const input = usage.input_tokens ?? 0;
-  const cached = usage.cached_input_tokens ?? 0;
-  return Math.max(0, input - cached);
-}
-
-function buildContextUsage(
-  tokenUsage: TokenUsageInfo | undefined,
-  compactCount: number | undefined,
-  lastCompactTime: Date | null | undefined
-): ContextUsage | undefined {
-  if (!tokenUsage) {
-    return undefined;
-  }
-
-  const contextWindow = tokenUsage.model_context_window ?? 0;
-  const lastUsage = tokenUsage.last_token_usage;
-
-  if (contextWindow > 0 && lastUsage) {
-    const tokensInContext = lastUsage.total_tokens ?? 0;
-    const { used, total, percent } = calculateContextUsage(tokensInContext, contextWindow);
-
-    return {
-      used,
-      total,
-      percent,
-      inputTokens: getNonCachedInputTokens(lastUsage),
-      outputTokens: lastUsage.output_tokens ?? 0,
-      cachedTokens: lastUsage.cached_input_tokens ?? 0,
-      compactCount: compactCount ?? 0,
-      lastCompactTime: lastCompactTime ?? undefined,
-    };
-  }
-
-  return undefined;
 }
 
 // Phase 2: Session and rollout tracking
@@ -528,184 +480,13 @@ const gitCache = new AsyncSnapshotCache(
   }
 );
 
-interface OverviewParserEntry {
-  size: number;
-  parser: RolloutParser;
-}
-
-function statSafely(filePath: string): fs.Stats | null {
-  try {
-    return fs.statSync(filePath);
-  } catch {
-    return null;
-  }
-}
-
-// Sessions drop out of the 60s active window and come back (long tool runs,
-// brief idles). Parsers are kept in a bounded LRU instead of being evicted
-// immediately, so re-entry resumes incrementally rather than re-reading the
-// whole rollout from offset 0.
-const OVERVIEW_PARSER_LIMIT = 20;
-const overviewParsers = new Map<string, OverviewParserEntry>();
-
+const overviewCollector = new OverviewCollector();
 async function refreshOverviewData(): Promise<SessionOverview> {
-  // Two sources, because neither is sufficient alone.
-  //
-  // The rollout scan finds sessions being worked right now, including ones
-  // this machine's HUDs are not bound to. But it defines "active" as "file
-  // written recently", and measured live that surfaced neither of two open
-  // Codex sessions: one had not written since a resume five days earlier, the
-  // other had no rollout at all because Codex creates one lazily on the first
-  // turn. Every window from one minute to twelve hours returned zero rows.
-  //
-  // The tmux scan finds sessions that are genuinely open, which is what the
-  // dashboard is for, but only those running under a codex-hud pane.
-  const [scanned, openBindings] = await Promise.all([
-    Promise.resolve(
-      findActiveRollouts(OVERVIEW_ACTIVE_WINDOW_SECONDS, undefined, 1, { strict: true })
-    ),
-    listOpenHudBindings({ strict: true }),
-  ]);
-
-  const activeSessions = [...scanned];
-  const scannedIds = new Set(scanned.map((session) => session.sessionId));
-  // The tmux session name is where the user goes to reach a row; carry it
-  // across from the binding scan for every session it covers, including the
-  // ones the rollout scan already found.
-  const bindingById = new Map(
-    openBindings.map((binding) => [binding.sessionId, binding])
-  );
-  const boundWithoutRollout: OpenHudBinding[] = [];
-  for (const binding of openBindings) {
-    if (scannedIds.has(binding.sessionId)) {
-      continue;
-    }
-    const stats = binding.rolloutPath
-      ? statSafely(binding.rolloutPath)
-      : null;
-    if (!binding.rolloutPath || !stats) {
-      boundWithoutRollout.push(binding);
-      continue;
-    }
-    activeSessions.push({
-      path: binding.rolloutPath,
-      sessionId: binding.sessionId,
-      timestamp: stats.mtime,
-      size: stats.size,
-      modifiedAt: stats.mtime,
-    });
-  }
-
-  const activePaths = new Set(activeSessions.map((session) => session.path));
-  const sessions: SessionOverviewItem[] = [];
-
-  for (const sessionFile of activeSessions) {
-    let cached = overviewParsers.get(sessionFile.path);
-    if (cached) {
-      // Move to the tail so LRU eviction removes the least recently active.
-      overviewParsers.delete(sessionFile.path);
-      overviewParsers.set(sessionFile.path, cached);
-    } else {
-      const parser = new RolloutParser(3);
-      parser.setRolloutPath(sessionFile.path);
-      cached = { size: -1, parser };
-      overviewParsers.set(sessionFile.path, cached);
-    }
-
-    let unavailable = false;
-    try {
-      if (cached.size !== sessionFile.size || !cached.parser.getCached() || (cached.parser.getCached()?.pendingBytes ?? 0) >= 1024 * 1024) {
-        await cached.parser.parse();
-        cached.size = sessionFile.size;
-      }
-    } catch {
-      unavailable = true;
-    }
-
-    const result = cached.parser.getCached();
-    if (!result?.session) {
-      const binding = bindingById.get(sessionFile.sessionId);
-      const previous = overviewCache.get().sessions.find((item) => item.id === sessionFile.sessionId);
-      sessions.push({
-        ...previous,
-        id: sessionFile.sessionId,
-        cwd: previous?.cwd ?? binding?.cwd,
-        projectName: previous?.projectName ?? (binding?.cwd ? path.basename(binding.cwd) : undefined),
-        tmuxSession: binding?.tmuxSession ?? previous?.tmuxSession,
-        unavailable: true,
-      });
-      continue;
-    }
-    if (isSubagentSessionSource(result.session?.source)) {
-      continue;
-    }
-    const contextUsage = buildContextUsage(
-      result.tokenUsage ?? undefined,
-      result.compactCount,
-      result.lastCompactTime
-    );
-    const cwd = result.session?.cwd;
-    const id = result.session?.id ?? sessionFile.sessionId;
-    const binding =
-      bindingById.get(id) ?? bindingById.get(sessionFile.sessionId);
-    // Both pane-detector findings travel through the binding: without the
-    // interrupted flag a confirmed-dead turn kept reading as "Thinking" on
-    // every dashboard — including this HUD's own, which contradicted the
-    // single view one keypress away.
-    const turnActivity = withDetectorPhases(
-      result.turnActivity,
-      binding?.approvalNeeded === true,
-      binding?.likelyInterrupted === true,
-      binding?.codexExited === true,
-      result.lastEventTime ?? undefined
-    );
-    sessions.push({
-      id,
-      cwd,
-      projectName: cwd ? path.basename(cwd) : undefined,
-      tmuxSession: binding?.tmuxSession,
-      title: binding?.label || result.session?.title,
-      model: result.session?.model,
-      turnActivity,
-      lastActivityAt:
-        result.lastEventTime ?? result.turnActivity?.lastActivityAt,
-      contextUsage,
-      ...(unavailable ? { unavailable: true } : {}),
-      // The owning HUD saw a fresh `/new` prompt over this binding: the
-      // row's state describes the previous session until the first message.
-      ...(binding?.freshPrompt === true ? { freshPrompt: true } : {}),
-    });
-  }
-
-  // Sessions that are open but have never written a rollout. There is nothing
-  // to parse, so the row carries identity only; the phase column renders these
-  // as "Unknown" and the sort keeps them below sessions doing real work.
-  for (const binding of boundWithoutRollout) {
-    sessions.push({
-      id: binding.sessionId,
-      cwd: binding.cwd,
-      projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
-      tmuxSession: binding.tmuxSession,
-      title: binding.label,
-      neverStarted: !binding.rolloutPath,
-      ...(binding.rolloutPath ? { unavailable: true } : {}),
-    });
-  }
-
-  if (overviewParsers.size > OVERVIEW_PARSER_LIMIT) {
-    for (const cachedPath of overviewParsers.keys()) {
-      if (overviewParsers.size <= OVERVIEW_PARSER_LIMIT) {
-        break;
-      }
-      if (!activePaths.has(cachedPath)) {
-        overviewParsers.delete(cachedPath);
-      }
-    }
-  }
-
-  sessions.sort(compareOverviewSessions);
-
-  return { sessions, updatedAt: new Date() };
+  return overviewCollector.refresh([
+    overviewSelectionId,
+    sessionFinder.getCurrentSession()?.sessionId,
+    ...overviewCache.get().sessions.slice(0, 8).map(row => row.id),
+  ].filter((id): id is string => Boolean(id)));
 }
 
 const overviewCache = new AsyncSnapshotCache<SessionOverview>(
@@ -751,19 +532,13 @@ async function refreshPaneDetectors(): Promise<void> {
   const cliApprovalPolicy = codexCommand
     ? extractCodexCliPolicy(codexCommand).approvalPolicy
     : undefined;
-  // A complete state scan makes the config fallback safe even on a bounded
-  // history: absence of a runtime policy record is then a fact, not a gap.
-  const staticPolicy =
-    rolloutData?.partialHistory && !rolloutData.runtimeStateComplete
-      ? undefined
-      : slowProjectCache.get().config.approval_policy;
   const [approvalChanged, stallChanged, livenessChanged, freshChanged] =
     await Promise.all([
       approvalDetector.refresh({
         turnActivity: rolloutData?.turnActivity,
         toolActivity: rolloutData?.toolActivity,
         lastEventAt: rolloutData?.lastEventTime,
-        approvalPolicy: runtimePolicy ?? cliApprovalPolicy ?? staticPolicy,
+        approvalPolicy: runtimePolicy ?? cliApprovalPolicy,
       }),
       stallDetector.refresh({
         turnActivity: rolloutData?.turnActivity,
@@ -1013,8 +788,7 @@ function collectData(): HudData {
     cliPolicy &&
     (cliPolicy.approvalPolicy ||
       cliPolicy.sandboxMode ||
-      // An exhaustive walk that found nothing is itself information: it
-      // certifies the config un-overridden for the no-rollout display.
+      // Retain argv provenance for diagnostics; it does not certify config.
       cliPolicy.exhaustive)
       ? cliPolicy
       : undefined;
@@ -1199,7 +973,8 @@ async function mainLoop(): Promise<void> {
         lastTurnError: data.turnActivity?.lastTurnError,
       }
     );
-    publishDiagnostics(HUD_TMUX_SESSION, {binding:sessionFinder.getDiagnostics(),
+    publishDiagnostics(HUD_TMUX_SESSION, {namespace:getCodexDataNamespace(),binding:sessionFinder.getDiagnostics(),
+      probes:getProbeDiagnostics(),sqlite:getSqliteDiagnostics(),overview:overviewCollector.getDiagnostics(),
       rollout:rolloutParser.getDiagnostics(),cliVersion:data.session?.cliVersion,
       collectors:data.collectorHealth,protocol:data.protocolHealth,
       quota:{source:data.rateLimitsSource,observedAt:data.rateLimitsObservedAt},
@@ -1410,7 +1185,7 @@ function setupKeyListener(): void {
         renderNow();return;
       }
       if (input === '\r' || input === '\n') {
-        const selected=rows.find(row=>row.id===(overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId)) ?? rows[0];
+        const selected=rows.find(row=>row.tmuxSession && row.id===(overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId)) ?? rows.find(row=>row.tmuxSession);
         void focusSession(selected?.tmuxSession,selected?.id).then(ok=>{if(!ok){showUiNotice('Session unavailable; refreshing overview');void overviewCache.refresh(true).catch(()=>undefined);}});
         return;
       }

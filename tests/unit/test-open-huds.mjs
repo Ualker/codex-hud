@@ -1,3 +1,4 @@
+import { getCodexDataNamespace } from '../../dist/utils/codex-path.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -48,7 +49,7 @@ function emitStub(lines) {
 }
 
 const encode = (payload) =>
-  Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+  Buffer.from(JSON.stringify({ namespace: getCodexDataNamespace(), ...payload }), 'utf8').toString('base64');
 
 const listBody = `
   const { listOpenHudBindings } = await import(${JSON.stringify(modulePath)});
@@ -242,6 +243,8 @@ try {
     const published = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
     assert.ok(Number.isInteger(published.ownerPid) && published.ownerPid > 0);
     delete published.ownerPid;
+    assert.equal(published.namespace, getCodexDataNamespace());
+    delete published.namespace;
     assert.deepEqual(
       published,
       {

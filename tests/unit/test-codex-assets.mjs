@@ -59,6 +59,7 @@ try {
   ]);
 
   const env = {
+    HOME: path.join(root, "user-home"),
     CODEX_HOME: codexHome,
     CODEX_SYSTEM_SKILLS_DIR: systemSkills,
     CODEX_SYSTEM_HOOKS_FILE: path.join(root, 'system', 'hooks.json'),

@@ -271,14 +271,13 @@ assert.doesNotMatch(
   /Fast:/,
   'a complete scan resolves the hedge to the default, which is omitted'
 );
-assert.doesNotMatch(resolved, /\?/, 'no hedge markers remain');
+assert.match(resolved, /Approval: \?.*Sandbox: \?/, 'complete logs do not establish absent runtime permissions');
 
-// The permission state resolves on the same evidence rather than reading
-// "?" for the rest of the session.
+// Global defaults remain separate from observed permission state.
 assert.match(
   resolved,
-  /\[FULL ACCESS\]/,
-  'a complete scan resolves the sandbox badge from config'
+  /Sandbox: \?/,
+  'a complete scan cannot certify global defaults'
 );
 const rows = renderHud(
   baseData({
@@ -289,8 +288,8 @@ const rows = renderHud(
   { width: 146, showDetails: true, layout, maxLines: 7 }
 ).map(stripAnsi);
 assert.ok(
-  !rows.some((row) => row.includes('?')),
-  'no row is left hedging once the scan is known complete'
+  rows.some((row) => row.includes('Sandbox: ?')),
+  'unobserved permissions remain unknown after a complete scan'
 );
 
 // Without the completeness signal the permission state must stay hedged: a
@@ -321,8 +320,8 @@ const narrowResolved = renderHud(
   { width: 60, showDetails: true, layout, maxLines: 2 }
 ).map(stripAnsi);
 assert.ok(
-  narrowResolved.some((row) => row.includes('[FULL ACCESS]')),
-  'a complete scan resolves that badge too'
+  narrowResolved.some((row) => /\[ACCESS \?\]|Sandbox: \?/.test(row)),
+  'the compressed badge follows the same runtime-only evidence'
 );
 
 // ---- codex 0.150+: the 5h window spent, its windows retained ---------------

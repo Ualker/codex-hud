@@ -1,3 +1,4 @@
+import { getCodexDataNamespace } from '../../dist/utils/codex-path.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +11,7 @@ try{
  process.env.PATH=dir+path.delimiter+process.env.PATH;
  process.env.HUD_TEST_UI=state;process.env.HUD_TEST_ACTIONS=log;
  for(const key of Object.keys(process.env))if(key.startsWith('CODEX_HUD_'))delete process.env[key];
- process.env.HUD_TEST_BOUND=Buffer.from(JSON.stringify({sessionId:'thread',tmuxSession:'target'})).toString('base64');
+ process.env.HUD_TEST_BOUND=Buffer.from(JSON.stringify({namespace:getCodexDataNamespace(),sessionId:'thread',tmuxSession:'target'})).toString('base64');
  fs.writeFileSync(path.join(dir,'tmux'),`#!/bin/sh
 case "$1" in
  show-option) case "$5" in

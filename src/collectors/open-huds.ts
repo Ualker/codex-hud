@@ -16,6 +16,7 @@
 import { execFile } from 'child_process';
 
 import { startProbe } from '../utils/probe-latency.js';
+import { getCodexDataNamespace } from '../utils/codex-path.js';
 
 /**
  * Matches the pane-probe timeout in session-finder, for the same measured
@@ -47,6 +48,7 @@ const TMUX_MAX_BUFFER = 1024 * 1024;
 const BOUND_OPTION = '@codex_hud_bound';
 
 interface BoundPayload {
+  namespace: string;
   label?: string;
   tmuxSession: string;
   sessionId: string;
@@ -139,6 +141,7 @@ export function publishHudBinding(
   const payload: BoundPayload | null = sessionId
     ? {
         tmuxSession,
+        namespace: getCodexDataNamespace(),
         sessionId,
         ownerPid: process.pid,
         ...(label ? { label } : {}),
@@ -172,7 +175,7 @@ export function publishHudBinding(
   return next.then(() => undefined);
 }
 
-function decodeBinding(encoded: string): OpenHudBinding | null {
+function decodeBinding(encoded: string): (OpenHudBinding & { namespace?: string }) | null {
   try {
     const parsed: unknown = JSON.parse(
       Buffer.from(encoded, 'base64').toString('utf8')
@@ -190,6 +193,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
       codexExited,
       freshPrompt,
       label,
+      namespace,
     } = parsed as Record<string, unknown>;
     if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
       return null;
@@ -200,6 +204,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
     return {
       tmuxSession,
       sessionId,
+      ...(typeof namespace === 'string' ? { namespace } : {}),
       ...(typeof label === 'string' ? {label} : {}),
       ...(typeof rolloutPath === 'string' && rolloutPath
         ? { rolloutPath }
@@ -221,7 +226,7 @@ function decodeBinding(encoded: string): OpenHudBinding | null {
  * Returns an empty list when tmux is unavailable, so callers degrade to
  * whatever else they know rather than showing an error.
  */
-export async function listOpenHudBindings(options: { strict?: boolean } = {}): Promise<OpenHudBinding[]> {
+export async function listOpenHudBindings(options: { strict?: boolean; namespace?: string } = {}): Promise<OpenHudBinding[]> {
   // A retained session option is not evidence that the owning HUD still
   // runs. Query identity and pane liveness in the same tmux snapshot.
   const stdout = await tmux(['list-panes', '-a', '-F', `#{session_name} #{pane_id} #{pane_dead} #{@codex_hud_pane} #{${BOUND_OPTION}}`]);
@@ -231,6 +236,7 @@ export async function listOpenHudBindings(options: { strict?: boolean } = {}): P
   }
 
   const bindings: OpenHudBinding[] = [];
+  const expectedNamespace = options.namespace ?? getCodexDataNamespace();
   const seen = new Set<string>();
   for (const line of stdout.split('\n')) {
     const match = /^(\S+) (%\d+) ([01]) (%\d+) (\S+)$/.exec(line.trim());
@@ -240,10 +246,11 @@ export async function listOpenHudBindings(options: { strict?: boolean } = {}): P
     if (!encoded) {
       continue;
     }
-    const binding = decodeBinding(encoded);
-    if (!binding) {
+    const decoded = decodeBinding(encoded);
+    if (!decoded || decoded.namespace !== expectedNamespace) {
       continue;
     }
+    const { namespace: _namespace, ...binding } = decoded;
     if (binding.tmuxSession !== match[1]) continue;
     // The same Codex session can be bound by more than one pane; the dashboard
     // shows a session once.

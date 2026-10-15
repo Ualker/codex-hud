@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export HUD_TEST_REAL_NODE="$(command -v node)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -18,6 +19,7 @@ FAKE
 
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
+if [[ "${1:-}" == */dist/namespace.js ]]; then exec "$HUD_TEST_REAL_NODE" "$@"; fi
 if [[ "${1:-}" == "--version" ]]; then
   echo "v20.19.0"
   exit 0
@@ -74,13 +76,13 @@ if ! grep -q '^split-window ' "$log_file"; then
   exit 1
 fi
 
-if ! grep -q "CODEX_HUD_MAIN_PANE='%1'" "$log_file"; then
+if ! grep -q "CODEX_HUD_MAIN_PANE=%1" "$log_file"; then
   echo "expected HUD command to include CODEX_HUD_MAIN_PANE for pane-bound session resolution" >&2
   cat "$log_file" >&2
   exit 1
 fi
 
-if ! grep -q "CHOKIDAR_USEPOLLING='1'" "$log_file"; then
+if ! grep -q "CHOKIDAR_USEPOLLING=1" "$log_file"; then
   echo "expected HUD command to default CHOKIDAR_USEPOLLING=1 for tmux pane startup" >&2
   cat "$log_file" >&2
   exit 1

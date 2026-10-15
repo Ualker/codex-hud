@@ -25,8 +25,15 @@ interface Sample {
   ms: number;
   atMs: number;
 }
+interface ProbeTotals {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+  lastMs: number;
+}
 
 const latest = new Map<ProbeName, Sample>();
+const totals = new Map<ProbeName, ProbeTotals>();
 
 /**
  * Start timing one probe; call the returned function when it finishes
@@ -44,7 +51,11 @@ export function startProbe(
     }
     done = true;
     const finishedAt = now();
-    latest.set(name, { ms: finishedAt - startedAt, atMs: finishedAt });
+    const ms = Math.max(0, finishedAt - startedAt);
+    latest.set(name, { ms, atMs: finishedAt });
+    const previous = totals.get(name);
+    totals.set(name, { count: (previous?.count ?? 0) + 1, totalMs: (previous?.totalMs ?? 0) + ms,
+      maxMs: Math.max(previous?.maxMs ?? 0, ms), lastMs: ms });
   };
 }
 
@@ -66,4 +77,9 @@ export function slowProbes(
 /** Test hook. */
 export function resetProbeLatency(): void {
   latest.clear();
+  totals.clear();
+}
+
+export function getProbeDiagnostics(): Partial<Record<ProbeName, ProbeTotals>> {
+  return Object.fromEntries([...totals].map(([name, sample]) => [name, { ...sample }]));
 }

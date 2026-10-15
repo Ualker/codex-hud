@@ -101,7 +101,7 @@ assert.ok(environmentLine, 'expanded layout must render an environment line');
 assert.doesNotMatch(environmentLine, /mode:/, 'environment line must not expose mode');
 assert.match(environmentLine, /Approval: ask for approval/);
 assert.match(environmentLine, /Fast: on/);
-assert.match(environmentLine, /MCP configured: 2.*Codex skills: 3.*Hooks: 2/);
+assert.match(environmentLine, /MCP configured: 2.*Skills enabled: 3.*Hooks: 2/);
 
 const runtimePermissionLines = renderHud({
   ...baseData,
@@ -267,9 +267,7 @@ const blindCompressed = renderHud({
 }).map(stripAnsi);
 assert.match(blindCompressed[0], /\[ACCESS \?\]|Sandbox: \?/);
 
-// A captured argv walked to its end with no policy flag and no profile
-// certifies the config un-overridden: a plain `codex-hud` launch no longer
-// sits on `?` until its first message.
+// A plain argv cannot rule out project/profile/system configuration.
 const certifiedNoRolloutLines = renderHud({
   ...baseData,
   config: flaggedConfig,
@@ -285,15 +283,11 @@ const certifiedEnvironmentLine = certifiedNoRolloutLines.find((line) =>
   line.includes('Approval:')
 );
 assert.ok(certifiedEnvironmentLine);
-assert.match(certifiedEnvironmentLine, /Approval: ask for approval/);
-assert.match(certifiedEnvironmentLine, /Sandbox: workspace-write/);
-assert.ok(
-  !certifiedNoRolloutLines.some((line) => /\[ACCESS \?\]/.test(line)),
-  'a certified argv lifts the unknown-access badge'
-);
+assert.match(certifiedEnvironmentLine, /Approval: \?/);
+assert.match(certifiedEnvironmentLine, /Sandbox: \?/);
+assert.doesNotMatch(certifiedEnvironmentLine, /workspace-write|ask for approval/);
 
-// Codex's own exit reopens the config fallback: nothing is running for the
-// flags to describe.
+// Exiting does not turn static defaults into observed runtime state.
 const exitedNoRolloutLines = renderHud({
   ...baseData,
   config: flaggedConfig,
@@ -309,8 +303,8 @@ const exitedEnvironmentLine = exitedNoRolloutLines.find((line) =>
   line.includes('Approval:')
 );
 assert.ok(exitedEnvironmentLine);
-assert.match(exitedEnvironmentLine, /Approval: ask for approval/);
-assert.match(exitedEnvironmentLine, /Sandbox: workspace-write/);
+assert.match(exitedEnvironmentLine, /Approval: \?/);
+assert.match(exitedEnvironmentLine, /Sandbox: \?/);
 
 // A fresh session at the prompt runs the flags; the bound records describe
 // the previous session there. Without the fresh mark, records still win.

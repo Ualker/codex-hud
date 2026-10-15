@@ -18,7 +18,8 @@
     "test:e2e:agent": "npm run build && node tests/e2e/test-agent-status-hud.mjs",
     "test:render": "npm run build && node dist/test-render.js",
     "docs:previews": "npm run build && node scripts/render-previews.mjs",
-    "bench": "npm run build && node scripts/benchmark-hud.mjs"
+    "bench": "npm run build && node scripts/benchmark-hud.mjs",
+    "bench:runtime": "npm run build && node scripts/benchmark-runtime.mjs"
   },
   "keywords": [
     "codex",

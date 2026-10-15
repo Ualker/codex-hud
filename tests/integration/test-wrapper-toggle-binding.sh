@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export HUD_TEST_REAL_NODE="$(command -v node)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -17,6 +18,7 @@ mkdir -p "$FAKE_BIN_DIR"
 for command_name in codex node npm; do
   cat > "$FAKE_BIN_DIR/$command_name" <<'FAKE'
 #!/usr/bin/env bash
+if [[ "${1:-}" == */dist/namespace.js ]]; then exec "$HUD_TEST_REAL_NODE" "$@"; fi
 if [[ "${1:-}" == "--version" ]]; then
   echo "v20.19.0"
 fi
@@ -94,7 +96,7 @@ if ! grep -q '^bind-key -T prefix H ' "$default_log"; then
   cat "$default_log" >&2
   exit 1
 fi
-if ! grep -q "CODEX_HUD_TOGGLE_KEY='Prefix+H'" "$default_log"; then
+if ! grep -q "CODEX_HUD_TOGGLE_KEY=Prefix+H" "$default_log"; then
   echo "the HUD must learn the installed key" >&2
   cat "$default_log" >&2
   exit 1
@@ -133,7 +135,7 @@ if ! grep -q '^bind-key -T prefix H ' "$enabled_log"; then
 fi
 
 invalid_log="$(run_case invalid sometimes failure)"
-if grep -q '^new-session ' "$invalid_log"; then
+if [[ -f "$invalid_log" ]] && grep -q '^new-session ' "$invalid_log"; then
   echo "an invalid toggle value must fail before creating a tmux session" >&2
   cat "$invalid_log" >&2
   exit 1
