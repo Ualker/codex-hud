@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import { KNOWN_TOP_LEVEL_TYPES, KNOWN_RESPONSE_TYPES, KNOWN_EVENT_TYPES, normalizeRolloutRecord } from '../protocol/rollout-record.js';
+import { fileWasReplaced, sameFile, sameFileVersion, type FileVersion } from '../utils/file-version.js';
 import type {
   RolloutLine,
   ResponseItemPayload,
@@ -66,6 +67,7 @@ export interface RolloutParseResult {
   partialHistory: boolean;
   /** Bytes after the committed cursor; large backlogs are replayed in bounded passes. */
   pendingBytes?: number;
+  hasMore?: boolean;
   /**
    * No runtime-state record can have been missed: the bounded first read
    * scans the skipped middle for state markers, so with zero malformed lines
@@ -138,8 +140,10 @@ function redactSensitiveText(value: string): string {
     '$1 ***'
   );
   redacted = redacted.replace(
-    /\b((?:[A-Za-z_][A-Za-z0-9_]*)(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|credential|authorization|cookie)(?:[A-Za-z0-9_]*))(\s*=\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s;&|]+)/gi,
-    '$1$2***'
+    /\b([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s;&|]+)/g,
+    (assignment, key: string, separator: string) =>
+      /token|secret|password|passwd|api_?key|access_?key|private_?key|credential|authorization|cookie/i.test(key)
+        ? `${key}${separator}***` : assignment
   );
   redacted = redacted.replace(
     /(--(?:api[-_]?key|token|access[-_]?token|password|passwd|secret|client[-_]?secret|authorization|cookie|credential)(?:\s*=\s*|\s+))(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s;&|]+)/gi,
@@ -1189,6 +1193,7 @@ const HISTORY_MARKER_OVERLAP = Math.max(
 
 interface RolloutBatch {
   pendingBytes?: number;
+  hasMore?: boolean;
   records: RolloutLine[];
   nextOffset: number;
   truncated: boolean;
@@ -1476,6 +1481,8 @@ async function readRolloutBatch(
       ...tail.records,
     ],
     nextOffset: tail.nextOffset,
+    pendingBytes: tail.pendingBytes,
+    hasMore: tail.hasMore,
     // The file did not shrink; this span was bounded deliberately.
     truncated: false,
     malformedLines:
@@ -1530,6 +1537,7 @@ export async function parseRolloutFile(
   let lastEventTime: Date | null = null;
   let partialHistory = false;
   let pendingBytes = 0;
+  let hasMore = false;
   let batchWasTruncated = false;
   const protocolHealth: ProtocolHealth = {
     unknownTopLevelTypes: {},
@@ -1556,6 +1564,7 @@ export async function parseRolloutFile(
     lastEventTime,
     partialHistory,
     pendingBytes,
+    hasMore,
     runtimeStateComplete:
       protocolHealth.malformedLines === 0 && !batchWasTruncated,
   });
@@ -1576,6 +1585,7 @@ export async function parseRolloutFile(
   const batch = await readRolloutBatch(rolloutPath, fromOffset);
   partialHistory = batch.partialHistory;
   pendingBytes = batch.pendingBytes ?? 0;
+  hasMore = batch.hasMore ?? false;
   batchWasTruncated = batch.truncated;
   protocolHealth.malformedLines += batch.malformedLines;
   if (batch.truncated) {
@@ -1748,9 +1758,12 @@ export async function parseRolloutFile(
     }
   };
 
-  const abortRunningCalls = (timestamp: Date): void => {
+  const finishRunningCalls = (timestamp: Date, status: 'completed' | 'error'): void => {
     for (const [callId, runningCall] of runningCalls) {
-      runningCall.status = 'error';
+      runningCall.status = status;
+      // A terminal turn proves the call is no longer live, but cannot supply
+      // an exit code when its output was missing or malformed.
+      runningCall.result ??= { kind: 'unknown' };
       runningCall.duration = Math.max(
         0,
         timestamp.getTime() - runningCall.timestamp.getTime()
@@ -2025,6 +2038,7 @@ export async function parseRolloutFile(
           error: turnError,
         }
       );
+      finishRunningCalls(completedAt, turnError ? 'error' : 'completed');
     } else if (payload.type === 'turn_aborted') {
       if (!matchesActiveTurn(turnActivity, payload.turn_id, true)) {
         continue;
@@ -2037,7 +2051,7 @@ export async function parseRolloutFile(
       );
       // Tools do not survive an aborted turn: without this, interrupted
       // calls would spin as "running" forever and hold the current-tool slot.
-      abortRunningCalls(timestamp);
+      finishRunningCalls(timestamp, 'error');
     } else if (payload.type === 'agent_reasoning') {
       turnActivity = transitionTurn(
         turnActivity,
@@ -2202,6 +2216,7 @@ export class RolloutParser {
   private lastOffset: number = 0;
   private cachedResult: RolloutParseResult | null = null;
   private runningCalls: Map<string, ToolCall> = new Map();
+  private fileVersion: FileVersion | null = null;
 
   constructor(private maxRecentCalls: number = 10) {}
 
@@ -2218,6 +2233,7 @@ export class RolloutParser {
     this.lastOffset = 0;
     this.cachedResult = null;
     this.runningCalls = new Map();
+    this.fileVersion = null;
   }
 
   /**
@@ -2231,20 +2247,16 @@ export class RolloutParser {
     const generation = this.generation;
     const rolloutPath = this.rolloutPath;
 
-    // Fallback polling calls parse every couple of seconds; when the file has
-    // not grown past the committed offset there is nothing to read and the
-    // merge below would only churn allocations. A size below the offset means
-    // truncation and must take the full path.
-    if (this.cachedResult) {
-      try {
-        const { size } = await fs.promises.stat(rolloutPath);
-        if (generation !== this.generation) return this.cachedResult;
-        if (size === this.lastOffset) {
-          return this.cachedResult;
-        }
-      } catch {
-        // Missing file and other stat errors follow the full parse path.
-      }
+    const version = await fs.promises.stat(rolloutPath);
+    if (generation !== this.generation) return this.cachedResult;
+    if (this.fileVersion && fileWasReplaced(this.fileVersion, version)) {
+      this.lastOffset = 0;
+      this.cachedResult = null;
+      this.runningCalls = new Map();
+    } else if (this.cachedResult && this.fileVersion &&
+      sameFileVersion(this.fileVersion, version) && !this.cachedResult.hasMore) {
+      // This also caches an unfinished last line: retry only when it changes.
+      return this.cachedResult;
     }
 
     if (generation !== this.generation) return this.cachedResult;
@@ -2266,6 +2278,16 @@ export class RolloutParser {
     );
 
     if (generation !== this.generation) return this.cachedResult;
+
+    const afterRead = await fs.promises.stat(rolloutPath);
+    if (generation !== this.generation) return this.cachedResult;
+    if (!sameFile(version, afterRead) || afterRead.size < version.size ||
+      (afterRead.size === version.size && !sameFileVersion(version, afterRead))) {
+      // A rotation during an asynchronous read must never publish mixed state.
+      this.fileVersion = version;
+      throw new Error('Rollout changed identity while being read; retrying.');
+    }
+    this.fileVersion = version;
 
     // Some rollouts first emit a generic function_call and later enrich that
     // same call_id with mcp_tool_call_end. The running ToolCall object is
@@ -2450,6 +2472,7 @@ export class RolloutParser {
     this.lastOffset = 0;
     this.cachedResult = null;
     this.runningCalls = new Map();
+    this.fileVersion = null;
     return this.parse();
   }
 

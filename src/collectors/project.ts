@@ -182,6 +182,7 @@ export async function collectProjectInfo(
     configsCount,
     extensionsCount: mcpCount,  // Legacy alias; rendered as "MCP configured".
     skillsCount: assetCounts.codexSkillsCount,
+    installedSkillsCount: assetCounts.installedSkillsCount,
     otherAgentSkillsCount: assetCounts.otherAgentSkillsCount,
     hooksCount: assetCounts.hooksCount,
     globalConfigActive: await pathExists(getConfigPath()),

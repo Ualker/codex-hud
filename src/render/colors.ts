@@ -463,6 +463,7 @@ let spinnerTick = 0;
 
 /** Called once per painted frame (render/index.ts). */
 export function advanceSpinnerFrame(): void {
+  if (process.env.CODEX_HUD_ANIMATION === '0') return;
   spinnerTick = (spinnerTick + 1) % 1_000_000;
 }
 
@@ -471,6 +472,7 @@ export function advanceSpinnerFrame(): void {
  */
 export function getSpinnerFrame(frameIndex?: number): string {
   const frames = icons.spinner;
+  if (process.env.CODEX_HUD_ANIMATION === '0') return frames[0];
   const idx =
     frameIndex === undefined
       ? spinnerTick % frames.length

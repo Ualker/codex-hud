@@ -10,7 +10,7 @@ const data = {
   config: { model: 'gpt-6-astra', sandbox_mode: 'danger-full-access', approval_policy: 'never' },
   git: { isGitRepo: false },
   project: { cwd: '/work/project', projectName: 'project', mcpCount: 6, skillsCount: 20, hooksCount: 4 },
-  session: { id: 'session-1234', model: 'gpt-6-astra', reasoningEffort: 'max', startTime: new Date(now),
+  session: { sandboxMode: 'danger-full-access', approvalPolicy: 'never', id: 'session-1234', model: 'gpt-6-astra', reasoningEffort: 'max', startTime: new Date(now),
     title: '修复布局并检查窄窗口下的操作按钮' },
   partialHistory: true,
   runtimeStateComplete: true,
@@ -41,7 +41,7 @@ for (const width of [40, 48, 60, 80, 100, 140]) {
 }
 
 const frame = () => renderHud(data, { width: 180, maxLines: 12, showDetails: true, layout }).map(stripAnsi).join('\n');
-assert.doesNotMatch(frame(), /MCP:|MCP configured:|Skills:|Codex skills:|Hooks:/,
+assert.doesNotMatch(frame(), /MCP:|MCP configured:|Skills:|Skills enabled:|Hooks:/,
   'the default view keeps effective permissions without installed inventory');
 data.tokenUsage = { last_token_usage: { total_tokens: 70000, input_tokens: 60000 },
   total_token_usage: { total_tokens: 300000 } };
@@ -51,11 +51,11 @@ data.toolActivity = { runningCalls: [], recentCalls: [{ id: 'old', name: 'exec_c
 assert.doesNotMatch(frame(), /Last call:|Total:|Session:|old-command/);
 cycleToolDetailsMode(now); // targets -> full
 assert.equal(hudDetailsExpanded(), false);
-assert.doesNotMatch(frame(), /MCP configured:|Codex skills:|Last call:|Total:|Session:/,
+assert.doesNotMatch(frame(), /MCP configured:|Skills enabled:|Last call:|Total:|Session:/,
   'tool details never change overall HUD density');
 assert.equal(toggleHudDetails(), true);
 assert.equal(toolDetailsMode(), 'full');
-assert.match(frame(), /MCP configured: 6.*Codex skills: 20.*Hooks: 4/);
+assert.match(frame(), /MCP configured: 6.*Skills enabled: 20.*Hooks: 4/);
 assert.match(frame(), /Last call:.*in:/);
 assert.match(frame(), /Total:.*300/);
 assert.match(frame(), /Session:.*session-1234/);

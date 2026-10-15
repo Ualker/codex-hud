@@ -32,7 +32,7 @@ try {
   writeSkill('first');
   writeHooks([{ command: 'first-hook', enabled: true }]);
 
-  const env = { CODEX_HOME: codexHome };
+  const env = { HOME: root, CODEX_HOME: codexHome };
   const refresh = { forceRefresh: true };
   const initial = await collectCodexAssetCounts(cwd, env, undefined, refresh);
   assert.deepEqual(initial, { skillsCount: 1, hooksCount: 1 });
@@ -62,6 +62,8 @@ try {
   });
   assert.deepEqual(runtimeAdded, { skillsCount: 1, hooksCount: 2 });
 
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
   const previousCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHome;
   try {
@@ -69,6 +71,7 @@ try {
     assert.equal(projectInfo.skillsCount, 1);
     assert.equal(projectInfo.hooksCount, 2);
   } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
   }

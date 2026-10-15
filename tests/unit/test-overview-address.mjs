@@ -144,7 +144,7 @@ const view = (sessions, selfSessionId) =>
   ]);
   assert.ok(titled[0].includes('把视频转成 1080p'), 'the title is on the row');
   assert.ok(titled[1].includes('review the render ladder'));
-  assert.ok(titled[0].includes('135511-57225'), 'and the address is kept beside it');
+  assert.ok(titled[0].includes('57225'), 'a compact destination remains beside the title');
   const phaseColumn = (line) => visualLength(line.slice(0, line.indexOf('Idle')));
   assert.equal(
     phaseColumn(titled[0]),

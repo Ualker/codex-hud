@@ -26,6 +26,7 @@ export interface CodexConfig {
   approval_policy?: string;
   sandbox_mode?: string;
   mcp_servers?: Record<string, McpServerConfig>;
+  skills?: { config: { path: string; enabled: boolean }[] };
 }
 
 export interface PermissionState {
@@ -75,8 +76,9 @@ export interface ProjectInfo {
   // Codex-specific module status
   configsCount: number;         // Active configuration files
   extensionsCount: number;      // Loaded extensions/plugins
-  skillsCount: number;          // Codex-authoritative enabled skills
-  otherAgentSkillsCount?: number; // Non-Codex .agents copies, diagnostic only
+  skillsCount: number;          // Discovered skills enabled by the inspected config
+  installedSkillsCount?: number; // Discovered manifests, not a runtime loaded count
+  otherAgentSkillsCount?: number; // Legacy compatibility; .agents is now a Codex source
   hooksCount: number;           // Effective enabled hooks
   globalConfigActive?: boolean;
 }
@@ -144,11 +146,14 @@ export interface SessionOverviewItem {
   freshPrompt?: boolean;
   /** Identity is retained while this session's rollout cannot be read. */
   unavailable?: boolean;
+  /** Collection is queued or catching up; cached state is not current yet. */
+  refreshing?: boolean;
 }
 
 export interface SessionOverview {
   sessions: SessionOverviewItem[];
   updatedAt: Date;
+  namespace?: string;
 }
 
 // ============================================================================

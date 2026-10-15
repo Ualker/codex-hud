@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getCodexHome, getSessionsDir } from './utils/codex-path.js';
+import { getCodexDataNamespace, getCodexHome, getSessionsDir } from './utils/codex-path.js';
 import { DIAGNOSTICS_OPTION } from './utils/diagnostics.js';
 const exec = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -15,7 +15,8 @@ catch (error) {
   errors.push(error instanceof Error ? error.message : String(error));
   return null;
 } }
-const report = { schemaVersion: 1, generatedAt: new Date().toISOString(), node: process.version,
+const namespace = getCodexDataNamespace();
+const report = { schemaVersion: 1, generatedAt: new Date().toISOString(), node: process.version, namespace,
   hud: { root, version: attempt(() => JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version),
     buildModifiedAt: attempt(() => fs.statSync(path.join(root, 'dist/index.js')).mtime.toISOString()) },
   codexHome: attempt(getCodexHome), sessionsDir: attempt(getSessionsDir),
@@ -34,6 +35,8 @@ try {
         runtime = value;
     }
     catch { /* Older HUD. */ }
+    if (runtime?.namespace && runtime.namespace !== namespace) continue;
+    const scopeVerified = runtime?.namespace === namespace;
     let alive = false;
     if (typeof runtime?.pid === 'number')
       try {
@@ -42,8 +45,9 @@ try {
       }
       catch { /* Exited owner. */ }
     const age = typeof runtime?.updatedAt === 'string' ? Date.now() - Date.parse(runtime.updatedAt) : Infinity;
-    report.panes.push({ tmuxSession: match[1], pane: match[2], dead: match[3] === '1',
-      diagnosticsFresh: alive && match[3] === '0' && age >= 0 && age < 30000, runtime });
+    report.panes.push({ tmuxSession: match[1], pane: match[2], dead: match[3] === '1', scopeVerified,
+      diagnosticsFresh: scopeVerified && alive && match[3] === '0' && age >= 0 && age < 30000,
+      runtime: scopeVerified ? runtime : null });
   }
 }
 catch (error) {

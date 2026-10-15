@@ -42,6 +42,7 @@ CONTROL_TARGET=""
 CONTROL_ALL="0"
 ATTACH_OWNER="$$-$RANDOM-$RANDOM"
 CLAIMED_SESSION=""
+DATA_NAMESPACE=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -500,7 +501,7 @@ build_hud() {
     fi
     
     # Check if we need to build
-    if [[ ! -f "$dist_file" ]]; then
+    if [[ ! -f "$dist_file" || ! -f "$HUD_DIR/dist/namespace.js" ]]; then
         needs_build="1"
     elif find "$HUD_DIR/src" -type f \( -name '*.ts' -o -name '*.tsx' \) -newer "$dist_file" -print -quit | grep -q .; then
         needs_build="1"
@@ -569,7 +570,35 @@ release_session_claim() {
         "set-option -qu -t '$target' @codex_hud_attach_owner" 2>/dev/null || true
 }
 
-# Claim the oldest detached session in this directory. The synchronous tmux
+session_data_namespace() {
+    local target="$1" marker var line home="" sessions="" user_home="$HOME" cwd="$PWD"
+    marker=$(tmux show-option -qv -t "$target" @codex_hud_namespace 2>/dev/null || true)
+    if [[ "$marker" =~ ^[a-f0-9]{16}$ ]]; then
+        printf '%s' "$marker"
+        return
+    fi
+    # Legacy sessions lack the marker. Resolve their saved environment, never
+    # fill a missing CODEX_HOME from the new launcher's account overrides.
+    for var in CODEX_HOME CODEX_SESSIONS_PATH HOME; do
+        line=$(tmux show-environment -t "$target" "$var" 2>/dev/null || true)
+        if [[ -z "$line" ]]; then
+            line=$(tmux show-environment -g "$var" 2>/dev/null || true)
+        fi
+        case "$line" in
+            "$var="*)
+                case "$var" in
+                    CODEX_HOME) home="${line#*=}" ;;
+                    CODEX_SESSIONS_PATH) sessions="${line#*=}" ;;
+                    HOME) user_home="${line#*=}" ;;
+                esac ;;
+        esac
+    done
+    line=$(tmux show-option -qv -t "$target" @codex_hud_cwd 2>/dev/null || true)
+    [[ -z "$line" ]] || cwd="$line"
+    node "$HUD_DIR/dist/namespace.js" "$home" "$sessions" "$user_home" "$cwd"
+}
+
+# Claim the oldest detached session in this directory and data namespace. The synchronous tmux
 # if-shell -F check and set run in one server command queue, closing the race
 # between multiple launchers reading the same list-sessions snapshot.
 claim_detached_session() {
@@ -585,6 +614,7 @@ claim_detached_session() {
                 *) continue ;;
             esac
             [[ "$id" =~ ^\$[0-9]+$ && "$attached" == "0" ]] || continue
+            [[ "$(session_data_namespace "$id")" == "$DATA_NAMESPACE" ]] || continue
             pending=1
             if [[ -n "$owner" ]]; then
                 # A killed launcher cannot strand an old session. Only clear
@@ -774,12 +804,19 @@ set_fixed_hud_height() {
         tmux resize-pane -t "$hud_pane_id" -y "$height" 2>/dev/null || true
     fi
 
-    local hook_cmd
+    local hook_cmd shell_cmd reason hook
     if [[ -x "$resize_helper" ]]; then
-        hook_cmd="run-shell \"$resize_helper #{session_name} client-resized\""
-        tmux set-hook -t "$session_name" client-resized "$hook_cmd" || true
-        hook_cmd="run-shell \"$resize_helper #{session_name} pane-resized\""
-        tmux set-hook -t "$session_name" after-resize-pane "$hook_cmd" || true
+        for reason in client-resized pane-resized; do
+            hook="$reason"
+            [[ "$reason" != pane-resized ]] || hook=after-resize-pane
+            printf -v shell_cmd '%q ' "$resize_helper" "$session_name" "$reason"
+            # Two parsers: first tmux's quoted command, then the shell command.
+            shell_cmd="${shell_cmd//\\/\\\\}"
+            shell_cmd="${shell_cmd//\"/\\\"}"
+            shell_cmd="${shell_cmd//\$/\\\$}"
+            hook_cmd="run-shell \"$shell_cmd\""
+            tmux set-hook -t "$session_name" "$hook" "$hook_cmd" || true
+        done
     fi
 }
 
@@ -879,6 +916,10 @@ resolve_hud_height_for_tmux_target() {
 HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HOME
     CODEX_SESSIONS_PATH
+    CODEX_SYSTEM_SKILLS_DIR
+    CODEX_ADMIN_SKILLS_DIR
+    CODEX_SYSTEM_HOOKS_FILE
+    CODEX_ADMIN_HOOKS_FILE
     CODEX_HUD_MODE
     CODEX_HUD_LAYOUT
     CODEX_HUD_LABEL
@@ -886,6 +927,7 @@ HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HUD_TOOL_DETAILS
     CODEX_HUD_DETAILS
     CODEX_HUD_ASCII
+    CODEX_HUD_ANIMATION
     CODEX_HUD_LOG_FILE
     CODEX_HUD_NOTIFY_CMD
     CODEX_HUD_SHOW_OTHER_AGENT_SKILLS
@@ -932,7 +974,13 @@ build_hud_pane_command() {
             env_unsets+=" -u ${var}"
         fi
     done
-    printf '%s' "cd ${cwd_escaped} && exec env${env_unsets} LINES='$height' COLUMNS='$width' NODE_COMPILE_CACHE='$HUD_DIR/.cache/node-compile' CODEX_HUD_CWD=${cwd_escaped} CODEX_HUD_MAIN_PANE='$main_pane_id' CODEX_HUD_SESSION_START='$session_start' CODEX_HUD_TMUX_SESSION='$session_name' CODEX_HUD_TOGGLE_KEY='$toggle_key'${env_parts} bash '$HUD_DIR/bin/codex-hud-renderer'"
+    local fixed_env renderer
+    printf -v fixed_env ' %q' "LINES=$height" "COLUMNS=$width" \
+        "NODE_COMPILE_CACHE=$HUD_DIR/.cache/node-compile" "CODEX_HUD_CWD=$cwd" \
+        "CODEX_HUD_MAIN_PANE=$main_pane_id" "CODEX_HUD_SESSION_START=$session_start" \
+        "CODEX_HUD_TMUX_SESSION=$session_name" "CODEX_HUD_TOGGLE_KEY=$toggle_key"
+    printf -v renderer '%q' "$HUD_DIR/bin/codex-hud-renderer"
+    printf '%s' "cd ${cwd_escaped} && exec env${env_unsets}${fixed_env}${env_parts} bash ${renderer}"
 }
 
 # Create new tmux session with HUD
@@ -992,6 +1040,7 @@ create_session() {
         fi
     fi
     SESSION_CREATED="true"
+    tmux set-option -q -t "$SESSION_NAME" @codex_hud_namespace "$DATA_NAMESPACE"
     local data_var
     for data_var in "${CODEX_DATA_ENV_VARS[@]}"; do
         if [[ -z "${!data_var:-}" ]]; then
@@ -1202,6 +1251,8 @@ main() {
     
     # Build HUD if needed
     build_hud
+    DATA_NAMESPACE=$(node "$HUD_DIR/dist/namespace.js" "${CODEX_HOME:-}" "${CODEX_SESSIONS_PATH:-}" "$HOME" "$PWD")
+    [[ "$DATA_NAMESPACE" =~ ^[a-f0-9]{16}$ ]] || error "Unable to resolve Codex data namespace."
     
     # Get current working directory
     local cwd

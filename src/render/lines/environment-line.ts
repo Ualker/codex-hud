@@ -5,6 +5,7 @@
  */
 
 import type { HudData } from '../../types.js';
+import { runtimePermissions } from '../../utils/runtime-permissions.js';
 import {
   theme,
   colors,
@@ -30,48 +31,11 @@ export function renderEnvironmentLine(
 ): string | null {
   const details: string[] = [];
 
-  // Runtime turn_context state takes precedence over static config. A bounded
-  // history with no recovered runtime value is unknown: falling back to the
-  // current config can make an older full-access session look sandboxed.
-  // Unless the state scan completed cleanly — then every runtime record in
-  // the file was seen, "not found" is definitive, and the config fallback is
-  // the truth. Without this, "Fast: ?" stood for 21 hours on an idle session
-  // whose file provably contained no thread_settings record.
-  const partialRuntime =
-    data.partialHistory === true && data.runtimeStateComplete !== true;
-  // The pane's live launch flags are the second-best witness: they override
-  // the config file, so once the session's own records exist those win, but
-  // with no records at all the flags are the truth and the config is exactly
-  // what they replaced. A fresh session at the prompt runs the flags too —
-  // the bound records describe the previous session there.
-  const cliPolicy = data.paneCliPolicy;
-  const sessionSandbox = data.session?.sandboxMode;
-  const sessionApprovalPolicy = data.session?.approvalPolicy;
-  const runtimeSandbox =
-    data.paneFreshSession === true
-      ? cliPolicy?.sandboxMode ?? sessionSandbox
-      : sessionSandbox ?? cliPolicy?.sandboxMode;
-  const runtimeApprovalPolicy =
-    data.paneFreshSession === true
-      ? cliPolicy?.approvalPolicy ?? sessionApprovalPolicy
-      : sessionApprovalPolicy ?? cliPolicy?.approvalPolicy;
-  // A bound session with no rollout yet (0.149 defers it to the first
-  // message) has no records for flags to have reached; trusting config there
-  // showed `Approval: ask for approval | Sandbox: workspace-write` under a
-  // live `--yolo` process. Codex's own exit reopens the config fallback —
-  // and so does a captured command line walked to its end with no policy
-  // flag and no profile: that argv provably overrides nothing, so a plain
-  // launch no longer sits on `?` until its first message.
-  const configBlind =
-    partialRuntime ||
-    (data.boundWithoutRollout === true &&
-      data.codexExited !== true &&
-      cliPolicy?.exhaustive !== true);
-  const sandbox =
-    runtimeSandbox ?? (configBlind ? undefined : data.config.sandbox_mode);
-  const approvalPolicy =
-    runtimeApprovalPolicy ??
-    (configBlind ? undefined : data.config.approval_policy);
+  // Only rollout state or explicit launch flags establish effective permissions.
+  // A complete argv with no overrides says nothing about project trust,
+  // profiles, managed defaults or system config. Global config is inventory.
+  const partialRuntime = data.partialHistory === true && data.runtimeStateComplete !== true;
+  const { sandboxMode: sandbox, approvalPolicy } = runtimePermissions(data);
   const fullAccess = sandbox === 'danger-full-access';
   const badgePart = fullAccess ? theme.info('[FULL ACCESS]') : null;
 
@@ -82,12 +46,10 @@ export function renderEnvironmentLine(
   // badge implies are dropped and only a diverging approval policy remains
   // visible.
   const approvalUncertain =
-    configBlind &&
-    (runtimeApprovalPolicy === undefined ||
-      (runtimeApprovalPolicy === 'never' && runtimeSandbox === undefined));
+    approvalPolicy === undefined || (approvalPolicy === 'never' && sandbox === undefined);
   const approvalDisplay = approvalUncertain
     ? '?'
-    : getApprovalPolicyDisplay(data.config, {
+    : getApprovalPolicyDisplay({}, {
         approvalPolicy,
         sandboxMode: sandbox,
       });
@@ -96,7 +58,7 @@ export function renderEnvironmentLine(
       ? colors.dim('Approval: ') + theme.value(approvalDisplay)
       : null;
 
-  const sandboxPart = !fullAccess && (sandbox || configBlind)
+  const sandboxPart = !fullAccess
     ? colors.dim('Sandbox: ') +
       (sandbox === undefined
         ? colors.dim('?')
@@ -128,10 +90,10 @@ export function renderEnvironmentLine(
       colors.dim(options.compact ? 'MCP: ' : 'MCP configured: ') + theme.value(`${mcpCount}`)
     );
   }
-  if (data.project.skillsCount > 0) {
+  if (data.project.skillsCount > 0 || (data.project.installedSkillsCount ?? 0) > 0) {
     details.push(
-      colors.dim(options.compact ? 'Skills: ' : 'Codex skills: ') +
-        theme.value(`${data.project.skillsCount}`)
+      colors.dim(options.compact ? 'Skills: ' : 'Skills enabled: ') +
+        theme.value(data.project.installedSkillsCount === undefined ? `${data.project.skillsCount}` : `${data.project.skillsCount}/${data.project.installedSkillsCount}`)
     );
   }
   if (

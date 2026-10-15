@@ -1,0 +1,74 @@
+{
+  "node": "v24.21.0",
+  "platform": "darwin/arm64",
+  "seconds": 12,
+  "historyMiB": 8,
+  "journalMode": "wal",
+  "note": "RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.",
+  "runs": [
+    {
+      "instances": 1,
+      "appendBatches": 59,
+      "cpuMs": 303.55,
+      "rssSumMiB": 72.98,
+      "peakRssSumMiB": 89.89,
+      "stdoutWrites": 18,
+      "worstEventLoopP95Ms": 11.124735,
+      "worstEventLoopMaxMs": 35.094527,
+      "subprocesses": {
+        "tmux": 10,
+        "git": 1,
+        "ps": 1
+      },
+      "sqlite": {
+        "statements": 180,
+        "failures": 0,
+        "overBudget": 0,
+        "maxMs": 0.424
+      }
+    },
+    {
+      "instances": 5,
+      "appendBatches": 59,
+      "cpuMs": 2783.46,
+      "rssSumMiB": 524.78,
+      "peakRssSumMiB": 585.13,
+      "stdoutWrites": 100,
+      "worstEventLoopP95Ms": 11.329535,
+      "worstEventLoopMaxMs": 42.139647,
+      "subprocesses": {
+        "tmux": 45,
+        "git": 5,
+        "ps": 5
+      },
+      "sqlite": {
+        "statements": 900,
+        "failures": 0,
+        "overBudget": 0,
+        "maxMs": 0.387
+      }
+    },
+    {
+      "instances": 20,
+      "appendBatches": 59,
+      "cpuMs": 13590.21,
+      "rssSumMiB": 1896.03,
+      "peakRssSumMiB": 1998.5,
+      "stdoutWrites": 460,
+      "worstEventLoopP95Ms": 11.542527,
+      "worstEventLoopMaxMs": 81.264639,
+      "subprocesses": {
+        "tmux": 153,
+        "git": 20,
+        "ps": 20
+      },
+      "sqlite": {
+        "statements": 3600,
+        "failures": 0,
+        "overBudget": 0,
+        "maxMs": 5.643
+      }
+    }
+  ],
+  "measuredAt": "2026-10-15"
+}

@@ -66,7 +66,19 @@ function parseCodexConfig(content: string): CodexConfig {
     approval_policy: optionalString(parsed, 'approval_policy'),
     sandbox_mode: optionalString(parsed, 'sandbox_mode'),
     mcp_servers: parseMcpServers(parsed.mcp_servers),
+    skills: parseSkillsConfig(parsed.skills),
   };
+}
+
+function parseSkillsConfig(raw: unknown): CodexConfig['skills'] {
+  if (raw === undefined) return undefined;
+  const entries = (raw as { config?: unknown })?.config;
+  if (entries === undefined) return undefined;
+  if (!Array.isArray(entries) || entries.some(entry =>
+    !entry || typeof entry.path !== 'string' || typeof entry.enabled !== 'boolean')) {
+    throw new TypeError('Codex skills.config must contain path and enabled entries.');
+  }
+  return { config: entries.map(({ path, enabled }) => ({ path, enabled })) };
 }
 
 /** Async twin of readCodexConfigStrict for the in-process slow collector. */

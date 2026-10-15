@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SessionOverviewItem, HudDisplayMode } from '../types.js';
 import { sanitizeTerminalText } from '../render/colors.js';
+import { getCodexDataNamespace } from '../utils/codex-path.js';
 const exec = promisify(execFile);
 export type OverviewFilter = 'all' | 'attention';
 export interface UiPreferences {
@@ -70,10 +71,12 @@ export function filteredSessions(rows: SessionOverviewItem[], filter: OverviewFi
   return filter === 'attention' ? rows.filter(needsAttention) : rows;
 }
 export function moveSelection(rows: SessionOverviewItem[], selected: string | undefined, delta: number): string | undefined {
+  rows = rows.filter(row => Boolean(row.tmuxSession));
   if (!rows.length)
     return undefined;
   const index = rows.findIndex(r => r.id === selected);
-  return rows[(Math.max(0, index) + delta + rows.length) % rows.length]?.id;
+  if (index < 0) return rows[delta < 0 ? rows.length - 1 : 0]?.id;
+  return rows[(index + delta + rows.length) % rows.length]?.id;
 }
 /** Validate the advertised binding again at activation time; never jump on a stale row. */
 export async function focusSession(tmuxSession: string | undefined, expectedSessionId?: string): Promise<boolean> {
@@ -87,7 +90,8 @@ export async function focusSession(tmuxSession: string | undefined, expectedSess
     if (expectedSessionId) {
       const bound = await exec('tmux', ['show-option', '-qv', '-t', tmuxSession, '@codex_hud_bound'], { timeout: 1500 });
       const value = JSON.parse(Buffer.from(bound.stdout.trim(), 'base64').toString('utf8'));
-      if (value.sessionId !== expectedSessionId || value.tmuxSession !== tmuxSession)
+      if (value.sessionId !== expectedSessionId || value.tmuxSession !== tmuxSession ||
+        value.namespace !== getCodexDataNamespace())
         return false;
     }
     const target = await exec('tmux', ['display-message', '-p', '-t', pane, '#{session_name}|#{pane_dead}'], { timeout: 1500 });

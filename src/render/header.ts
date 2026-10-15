@@ -1,3 +1,4 @@
+import { runtimePermissions } from '../utils/runtime-permissions.js';
 import { filteredSessions } from '../ui/state.js';
 /**
  * Header line renderer
@@ -427,33 +428,9 @@ function renderExpandedLayout(
   // mode removes, which is the case with no other on-screen evidence.
   const toolDetailsNotice = toolsLine ? null : renderToolDetailsNotice(width);
 
-  // Same source order as the environment row: session records, then the
-  // pane's live launch flags (which override the config file), then config —
-  // except where config is blind: a partial history, or a bound session with
-  // no rollout at all (0.149 defers the file to the first message), where the
-  // overriding flags are exactly what no persisted source can see. A fresh
-  // session at the prompt runs the flags, not the previous session's records.
-  const sessionSandbox = data.session?.sandboxMode;
-  const cliSandbox = data.paneCliPolicy?.sandboxMode;
-  const runtimeSandbox =
-    data.paneFreshSession === true
-      ? cliSandbox ?? sessionSandbox
-      : sessionSandbox ?? cliSandbox;
-  const runtimeFactsPartial =
-    data.partialHistory === true && data.runtimeStateComplete !== true;
-  const accessUnknown =
-    runtimeSandbox === undefined &&
-    (runtimeFactsPartial ||
-      (data.boundWithoutRollout === true &&
-        data.codexExited !== true &&
-        // An exhaustively walked argv with no policy flag proves the config
-        // un-overridden; the badge may then trust it again.
-        data.paneCliPolicy?.exhaustive !== true));
-  const fullAccess =
-    runtimeSandbox === 'danger-full-access' ||
-    (!accessUnknown &&
-      runtimeSandbox === undefined &&
-      data.config.sandbox_mode === 'danger-full-access');
+  const { sandboxMode: runtimeSandbox } = runtimePermissions(data);
+  const accessUnknown = runtimeSandbox === undefined;
+  const fullAccess = runtimeSandbox === 'danger-full-access';
 
   /**
    * The rows the budget can hand out, each independent of the others. The
@@ -693,6 +670,9 @@ function renderOverviewLayout(
   maxLines: number
 ): string[] {
   const scanned = (data.overview?.updatedAt?.getTime() ?? 0) > 0;
+  const scopeLine = data.overview?.namespace
+    ? colors.dim(`${data.overviewFilter === 'attention' ? 'Attention' : 'All'} · scope ${data.overview.namespace.slice(0, 6)} · j/k select · Enter open · f filter`)
+    : null;
   const healthLine = renderHealthLine({
     ...data,
     protocolHealth: undefined,
@@ -711,13 +691,17 @@ function renderOverviewLayout(
       scanning = true;
     } else {
       return [
+        ...(scopeLine ? [truncateAnsi(scopeLine, width)] : []),
         healthLine ?? colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
       ];
     }
   }
 
   allSessions = filteredSessions(allSessions, data.overviewFilter ?? 'all');
-  if (!allSessions.length) return [colors.dim('No sessions need attention · f: show all')];
+  if (!allSessions.length) return [
+    ...(scopeLine ? [truncateAnsi(scopeLine, width)] : []),
+    colors.dim('No sessions need attention · f: show all'),
+  ];
 
   // The weekly quota is the one number that describes the whole fleet rather
   // than any single row, and the overview is where the fleet is. Pressure
@@ -738,7 +722,7 @@ function renderOverviewLayout(
   // The rows are clipped by the viewport, not here, so that its "+N hidden"
   // stamp keeps counting what it actually dropped. Reserving a line therefore
   // means telling orderForViewport that the budget is one smaller.
-  const reserved = (quotaAlert ? 1 : 0) + (scanningNote ? 1 : 0) + (overviewWarning ? 1 : 0);
+  const reserved = (quotaAlert ? 1 : 0) + (scanningNote ? 1 : 0) + (overviewWarning ? 1 : 0) + (scopeLine ? 1 : 0);
   const overview = {
     sessions: orderForViewport(
       allSessions,
@@ -755,6 +739,7 @@ function renderOverviewLayout(
     if (session.unavailable) {
       return theme.warning('Unknown');
     }
+    if (session.refreshing) return colors.dim('Updating');
     // An open session that has never run a turn is not unknown; Codex simply
     // has not written a rollout for it yet.
     if (session.neverStarted) {
@@ -861,10 +846,11 @@ function renderOverviewLayout(
   const markerWidth = 2;
   // Identity, phase and remaining context get a budget before decoration.
   // A narrow table must still tell two sessions in the same project apart.
-  const addressMinimum = Math.min(OVERVIEW_ADDRESS_MIN_WIDTH,
+  const addressMinimum = Math.min(desiredTitleWidth > 0 && !hudDetailsExpanded() ? 6 : OVERVIEW_ADDRESS_MIN_WIDTH,
     Math.max(...overview.sessions.map((session) => visualLength(overviewAddress(session)))));
+  const titleReserve = desiredTitleWidth > 0 ? Math.min(12, desiredTitleWidth) + separatorWidth : 0;
   const projectColumnWidth = Math.max(1, Math.min(desiredProjectWidth,
-    width - markerWidth - phaseColumnWidth - ctxColumnWidth - addressMinimum - separatorWidth * 3));
+    width - markerWidth - phaseColumnWidth - ctxColumnWidth - addressMinimum - separatorWidth * 3 - titleReserve));
   let addressBudget = Math.max(0, Math.min(addressMinimum,
     width - markerWidth - projectColumnWidth - phaseColumnWidth - ctxColumnWidth - separatorWidth * 3));
   const showAddress = addressBudget > 0;
@@ -892,7 +878,7 @@ function renderOverviewLayout(
   }
   const showAge = spare >= separatorWidth + ageColumnWidth;
   if (showAge) spare -= separatorWidth + ageColumnWidth;
-  if (showAddress) addressBudget += Math.min(spare, OVERVIEW_ADDRESS_WIDTH - addressBudget);
+  if (showAddress && (hudDetailsExpanded() || desiredTitleWidth === 0)) addressBudget += Math.min(spare, OVERVIEW_ADDRESS_WIDTH - addressBudget);
 
   const rows = overview.sessions.map((session, index) => {
     const parts = [
@@ -910,18 +896,21 @@ function renderOverviewLayout(
     ];
     // Mark the row this HUD is bound to; the address column tells the rows
     // apart, but not which one you are already looking at.
-    const marker = session.id === data.overviewSelectionId ? theme.info('> ') :
+    const selected = session.id === data.overviewSelectionId && Boolean(session.tmuxSession);
+    const marker = selected ? theme.info('> ') :
       data.overviewSelfSessionId !== undefined &&
       session.id === data.overviewSelfSessionId
         ? theme.info(`${icons.bullet} `)
-        : '  ';
-    return truncateAnsi(marker + parts.join(columnSeparator), width);
+        : session.tmuxSession ? colors.dim(process.env.CODEX_HUD_ASCII === '1' ? ': ' : '› ') : '  ';
+    const row = truncateAnsi(marker + parts.join(columnSeparator), width);
+    return selected ? colors.underline(row.replace(/\x1b\[0m/g, '\x1b[0m\x1b[4m')) : row;
   });
 
   if (scanningNote) {
     rows.push(scanningNote);
   }
   if (overviewWarning) rows.unshift(truncateAnsi(overviewWarning, width));
+  if (scopeLine) rows.unshift(truncateAnsi(scopeLine, width));
   if (quotaAlert) {
     // A quota this high outlives the sessions it would be listed under, and
     // the bottom of an overflowing list is exactly where the viewport clips.
@@ -964,20 +953,37 @@ function boundSessionAsOverviewItem(
  * Render the full HUD output (all lines)
  */
 /** A companion to Codex's native status line: activity first, calm capacity in details. */
-function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number): string[] {
+function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number, maxLines: number, reservedRow1Width: number): string[] {
   const title = sanitizeTerminalText(data.sessionLabel || data.session?.title || data.project.projectName);
-  const identity = `${theme.value(truncate(title, Math.max(8, Math.floor(width * .5))))}  ${renderEnvironmentLine(data,width,{compact:true}) ?? ''}`;
+  const headingWidth = Math.max(1, width - Math.min(7, reservedRow1Width));
+  let label = theme.value(truncate(title, Math.max(1, Math.min(headingWidth, Math.floor(width * .5)))));
+  let environment = renderEnvironmentLine(data, Math.max(0, headingWidth - visualLength(label) - 2), { compact: true });
+  if (!environment) {
+    const sandbox = runtimePermissions(data).sandboxMode;
+    const badge = sandbox === 'danger-full-access' ? '[FULL ACCESS]' : sandbox === undefined ? '[ACCESS ?]' : null;
+    if (badge && headingWidth >= badge.length) {
+      environment = theme.info(badge);
+      label = truncate(title, Math.max(0, headingWidth - badge.length - 2));
+    }
+  }
+  const identity = [label, environment].filter(Boolean).join('  ');
   const suppressTools = data.paneFreshSession || data.turnActivity?.phase === 'exited';
   const liveTools = data.toolActivity && !suppressTools ? {...data.toolActivity,
     recentCalls: data.toolActivity.recentCalls.filter(c=>c.status==='running'||
       (c.status==='error' && data.turnActivity?.phase !== 'idle' &&
         (data.turnActivity?.phase === 'failed' || Date.now()-c.timestamp.getTime()-(c.duration ?? 0)<60_000)))} : undefined;
+  // The same priority as the standard view: actionable state and capacity
+  // precede expandable agent/history rows at every supported pane height.
   const rows = [identity, data.paneFreshSession ? colors.dim('New session at the prompt · binds on its first message') : renderTurnActivityLine(data.turnActivity,width) ?? renderBindingHintLine(data,width),
-    renderHealthLine(data,width), renderRateLimitLine(data,width),
-    ...renderAgentLines(data.agentActivity,width),
-    renderToolsLine(liveTools,width,Date.now(),data.partialHistory,data.turnActivity?.phase==='awaiting-approval',data.project.cwd),
-    renderTodosLine(data.planProgress,width)];
-  if (hudDetailsExpanded() || (data.contextUsage?.percent ?? 0) >= 70) rows.push(renderTokenLine(data,width));
+    renderHealthLine(data,width), renderRateLimitLine(data,width)];
+  if (!data.paneFreshSession && (hudDetailsExpanded() || (data.contextUsage?.percent ?? 0) >= 70)) rows.push(renderTokenLine(data,width));
+  rows.push(renderToolsLine(liveTools,width,Date.now(),data.partialHistory,data.turnActivity?.phase==='awaiting-approval',data.project.cwd));
+  const agents = renderAgentLines(data.agentActivity,width);
+  const remaining = Math.max(0, maxLines - rows.filter(Boolean).length);
+  if (agents.length > remaining && remaining > 0) {
+    rows.push(...agents.slice(0, remaining - 1), colors.dim(`Agents: ${data.agentActivity?.visibleAgentCount ?? agents.length} active · d details`));
+  } else rows.push(...agents);
+  rows.push(renderTodosLine(data.planProgress,width));
   if (hudDetailsExpanded()) rows.push(renderSessionDetailLine(data,width),renderNoteLine(data,width));
   return rows.filter((row): row is string=>Boolean(row)).map(row=>truncateAnsi(row,width));
 }
@@ -997,7 +1003,7 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   } else if (data.displayMode === 'overview') {
     rows = renderOverviewLayout(data,layout,Math.max(1,width-Math.min(7,options.reservedRow1Width ?? 0)),options.maxLines ?? Infinity);
   } else if (data.layoutPreset === 'coexist') {
-    rows = renderCoexistLayout(data,layout,width);
+    rows = renderCoexistLayout(data,layout,width,options.maxLines ?? Infinity,options.reservedRow1Width ?? 0);
   } else if (layout.mode === 'compact') {
     rows = renderCompactLayout(data,layout,width);
   } else {

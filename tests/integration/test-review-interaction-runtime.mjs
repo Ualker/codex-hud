@@ -1,3 +1,4 @@
+import { getCodexDataNamespace } from '../../dist/utils/codex-path.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -47,7 +48,7 @@ try {
  fs.writeFileSync(rollout,[{timestamp:stamp,type:'session_meta',payload:{id:thread,cwd:root,timestamp:stamp}},
   {timestamp:stamp,type:'event_msg',payload:{type:'task_complete',turn_id:'t',error:{message:'fixture failed'}}}].map(JSON.stringify).join('\n')+'\n');
  tmux(['set-option','-t',second,'@codex_hud_main_pane',secondMain]);tmux(['set-option','-t',second,'@codex_hud_pane',secondHud]);
- tmux(['set-option','-t',second,'@codex_hud_bound',Buffer.from(JSON.stringify({tmuxSession:second,sessionId:thread,rolloutPath:rollout,cwd:root,label:'Target label'})).toString('base64')]);
+ tmux(['set-option','-t',second,'@codex_hud_bound',Buffer.from(JSON.stringify({namespace:getCodexDataNamespace(env),tmuxSession:second,sessionId:thread,rolloutPath:rollout,cwd:root,label:'Target label'})).toString('base64')]);
  tmux(['send-keys','-t',hud,'C-t','C-t']);
  await waitFor(()=>capture().includes('Target label'),'other HUD label arrives in overview');
  tmux(['send-keys','-t',hud,'f','j']);

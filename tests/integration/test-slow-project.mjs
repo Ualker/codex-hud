@@ -11,6 +11,7 @@ import path from 'node:path';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-slow-project-'));
 const codexHome = path.join(root, 'home', '.codex');
 const projectRoot = path.join(root, 'repo');
+const originalHome = process.env.HOME;
 const originalCodexHome = process.env.CODEX_HOME;
 
 function writeSkill(skillRoot, name) {
@@ -34,6 +35,7 @@ try {
   writeSkill(path.join(codexHome, 'skills'), 'global-codex');
   writeSkill(path.join(projectRoot, '.codex', 'skills'), 'project-codex');
   writeSkill(path.join(projectRoot, '.agents', 'skills'), 'other-agent');
+  process.env.HOME = root;
   process.env.CODEX_HOME = codexHome;
 
   const { collectSlowProjectSnapshot } = await import(
@@ -45,8 +47,8 @@ try {
   });
   assert.equal(snapshot.config.model, 'gpt-fixture');
   assert.equal(snapshot.project.mcpCount, 1);
-  assert.equal(snapshot.project.skillsCount, 2);
-  assert.equal(snapshot.project.otherAgentSkillsCount, 1);
+  assert.equal(snapshot.project.skillsCount, 3);
+  assert.equal(snapshot.project.otherAgentSkillsCount, 0);
   assert.equal(snapshot.project.globalConfigActive, true);
   assert.equal(snapshot.configError, undefined);
   assert.ok(snapshot.collectedAt instanceof Date);
@@ -81,7 +83,7 @@ try {
   );
   assert.equal(
     malformed.project.skillsCount,
-    2,
+    3,
     'config failure must not suppress independent project asset collection'
   );
 
@@ -108,6 +110,7 @@ try {
 
   console.log('test-slow-project: PASS');
 } finally {
+  if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = originalCodexHome;
   fs.rmSync(root, { recursive: true, force: true });

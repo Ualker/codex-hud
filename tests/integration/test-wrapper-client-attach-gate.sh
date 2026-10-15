@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export HUD_TEST_REAL_NODE="$(command -v node)"
 
 # Verifies the PR#8 client-attach launch gate at two levels:
 #   1. Structural semantics of what the wrapper emits into tmux (gate is
@@ -43,6 +44,7 @@ FAKE
 
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
+if [[ "${1:-}" == */dist/namespace.js ]]; then exec "$HUD_TEST_REAL_NODE" "$@"; fi
 if [[ "${1:-}" == "--version" ]]; then
   echo "v20.19.0"
   exit 0

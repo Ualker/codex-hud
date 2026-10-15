@@ -68,7 +68,7 @@ const originalSessionsPath = process.env.CODEX_SESSIONS_PATH;
 const originalMainPane = process.env.CODEX_HUD_MAIN_PANE;
 
 try {
-  // --- Rollout cwd cache: resolved first lines are cached permanently. ---
+  // --- Rollout cwd cache: resolved first lines refresh on replacement. ---
   {
     const home = makeTempCodexHome();
     const cwdA = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hud-cwd-a-'));
@@ -85,14 +85,14 @@ try {
       'a fresh rollout with a matching cwd must be found'
     );
 
-    // Real rollouts never rewrite their first line; the cache pins the first
-    // successful read so fallback scans stop re-opening every file.
+    // Restores/replacements can rewrite session_meta without changing size.
     fs.writeFileSync(rolloutPath, `${sessionMetaLine(sessionId, cwdB)}\n`, 'utf8');
     assert.equal(
       findActiveRollouts(60, cwdA).length,
-      1,
-      'a resolved first line must be served from the cache without re-reading'
+      0,
+      'a rewritten first line must invalidate its cached cwd'
     );
+    assert.equal(findActiveRollouts(60, cwdB).length, 1);
   }
 
   // --- Rollout cwd cache: unresolved entries re-read after the file grows. ---

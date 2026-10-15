@@ -20,7 +20,7 @@ const data = {
   config: { model: 'gpt-6-astra', sandbox_mode: 'workspace-write', approval_policy: 'on-request' },
   git: { isGitRepo: true, branch: 'main', isDirty: true, modified: 3, added: 1, deleted: 0, untracked: 0, ahead: 0, behind: 0 },
   project: { cwd: '/work/codex-hud', projectName: 'codex-hud', mcpCount: 6, skillsCount: 17, hooksCount: 2 },
-  session: { id: 'session-demo-001', model: 'gpt-6-astra', reasoningEffort: 'max', startTime: ago(3600), title: 'Fix compact visibility and session controls', cwd: '/work/codex-hud', cliVersion: '0.153.4' },
+  session: { sandboxMode: 'workspace-write', approvalPolicy: 'on-request', id: 'session-demo-001', model: 'gpt-6-astra', reasoningEffort: 'max', startTime: ago(3600), title: 'Fix compact visibility and session controls', cwd: '/work/codex-hud', cliVersion: '0.153.4' },
   tokenUsage: { last_token_usage: { total_tokens: 71_093 }, total_token_usage: { total_tokens: 325_845 } },
   contextUsage: { used: 71_093, total: 258400, percent: 28, compactCount: 3 },
   rateLimits: { primary: { used_percent: 35, window_minutes: 300, resets_at: now / 1000 + 3600 } },
@@ -58,20 +58,21 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
   const activePalette = light ? lightPalette : palette;
   let body = '';
   for (const [row, line] of raw.split('\n').entries()) {
-    let x = 20, color = foreground, opacity = 1, weight = 400;
+    let x = 20, color = foreground, opacity = 1, weight = 400, underline = false;
     for (const segment of line.split(/(\x1b\[[\d;]*m)/)) {
       if (segment.startsWith('\x1b[')) {
         for (const code of segment.slice(2, -1).split(';').map(Number)) {
-          if (code === 0) { color = foreground; opacity = 1; weight = 400; }
+          if (code === 0) { color = foreground; opacity = 1; weight = 400; underline = false; }
           else if (code === 1) weight = 700;
           else if (code === 2) opacity = 0.64;
+          else if (code === 4) underline = true;
           else if (activePalette[code]) color = activePalette[code];
         }
       } else if (segment) {
         const length = visualLength(segment) * cell;
         // NBSP keeps terminal cells intact in SVG readers that collapse
         // spaces despite xml:space. Honor bold so the fixture matches the HUD.
-        body += `<text x="${x}" y="${78 + row * 23}" fill="${color}" opacity="${opacity}" font-weight="${weight}" textLength="${length}" lengthAdjust="spacingAndGlyphs">${escape(segment).replaceAll(' ', '&#160;')}</text>`;
+        body += `<text x="${x}" y="${78 + row * 23}" fill="${color}" opacity="${opacity}" font-weight="${weight}" text-decoration="${underline ? 'underline' : 'none'}" textLength="${length}" lengthAdjust="spacingAndGlyphs">${escape(segment).replaceAll(' ', '&#160;')}</text>`;
         x += length;
       }
     }
@@ -83,10 +84,19 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
   console.log(output);
 }
 preview('single', 'Codex HUD / single session / rendered fixture', data);
-preview('overview', 'Codex HUD / overview / rendered fixture', { ...data, displayMode: 'overview', overviewSelfSessionId: sessions[0].id, overview: { sessions, updatedAt: ago(0) } });
+preview('overview', 'Codex HUD / overview / rendered fixture', { ...data, displayMode: 'overview', overviewSelfSessionId: sessions[0].id, overviewSelectionId: sessions[1].id, overview: { sessions, updatedAt: ago(0), namespace: 'fixture1234567890' } });
 preview('single-light', 'Codex HUD / light terminal / rendered fixture', data, 140, 6, true);
 preview('single-narrow', 'Codex HUD / 60 columns', { ...data, partialHistory: true,
   turnActivity: { ...data.turnActivity, phase: 'awaiting-approval' } }, 60, 6);
 
 preview('coexist', 'Codex HUD / companion layout', { ...data, layoutPreset: 'coexist', sessionLabel: 'HUD review' });
 preview('help', 'Codex HUD / keyboard help', { ...data, helpVisible: true });
+
+preview('coexist-pressure', 'Codex HUD / coexist / critical context / 5 rows', {
+  ...data, layoutPreset: 'coexist', contextUsage: { ...data.contextUsage, percent: 95, used: 245480 },
+  turnActivity: { ...data.turnActivity, phase: 'awaiting-approval' },
+  agentActivity: { visibleAgentCount: 6, rows: Array.from({ length: 6 }, (_, i) => ({
+    threadId: String(i), agentPath: `/root/agent-${i}`, label: `Agent ${i}`, status: 'running',
+    elapsedStartedAt: ago(30), activeDescendantCount: 0,
+  })) },
+}, 100, 5);

@@ -7,6 +7,7 @@ import {
 import { stripAnsi, visualLength } from '../../dist/render/colors.js';
 
 const data = {
+  session: { sandboxMode: "workspace-write", approvalPolicy: "on-request" },
   config: {
     model: 'gpt-5.6-sol',
     sandbox_mode: 'workspace-write',
@@ -136,7 +137,7 @@ const plain = (value) => (value === null ? null : stripAnsi(value));
 // width — at 56 columns the row carried MCP and Hooks, at 64 Hooks vanished in
 // favour of the longer skills cell, and at 76 it came back. It also let a
 // shorter low-priority cell displace the higher-priority one it outranked on
-// length alone (at 44 columns "Codex skills: 17" appeared and
+// length alone (at 44 columns "Skills enabled: 17" appeared and
 // "MCP configured: 6" did not).
 {
   const cells = (width) => {
@@ -166,7 +167,7 @@ const plain = (value) => (value === null ? null : stripAnsi(value));
 {
   const fullAccess = {
     ...data,
-    config: { ...data.config, sandbox_mode: 'danger-full-access' },
+    session: { ...data.session, sandboxMode: 'danger-full-access' },
   };
   for (const width of [146, 60, 40, 20, 14]) {
     const line = plain(renderEnvironmentLine(fullAccess, width));

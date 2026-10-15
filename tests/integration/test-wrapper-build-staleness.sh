@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export HUD_TEST_REAL_NODE="$(command -v node)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -14,6 +15,10 @@ trap cleanup EXIT
 
 mkdir -p "$TEMP_ROOT/bin" "$TEMP_ROOT/src/collectors" "$TEMP_ROOT/dist" "$TEMP_ROOT/node_modules"
 cp "$ROOT_DIR/bin/codex-hud" "$TEMP_ROOT/bin/codex-hud"
+cp "$ROOT_DIR/package.json" "$TEMP_ROOT/package.json"
+mkdir -p "$TEMP_ROOT/dist/utils"
+cp "$ROOT_DIR/dist/namespace.js" "$TEMP_ROOT/dist/namespace.js"
+cp "$ROOT_DIR/dist/utils/codex-path.js" "$TEMP_ROOT/dist/utils/codex-path.js"
 
 : > "$TEMP_ROOT/dist/index.js"
 : > "$TEMP_ROOT/src/index.ts"
@@ -29,6 +34,7 @@ FAKE
 
 cat > "$FAKE_BIN_DIR/node" <<'FAKE'
 #!/usr/bin/env bash
+if [[ "${1:-}" == */dist/namespace.js ]]; then exec "$HUD_TEST_REAL_NODE" "$@"; fi
 if [[ "${1:-}" == "--version" ]]; then
   echo "v20.19.0"
   exit 0

@@ -25,15 +25,15 @@ function resolveExistingDirectory(candidate?: string): string | null {
   return null;
 }
 
-export function getCodexHome(): string {
-  if (process.env.CODEX_HOME) {
-    const resolved = resolveExistingDirectory(process.env.CODEX_HOME);
-    if (!resolved) throw new Error(`CODEX_HOME (${process.env.CODEX_HOME}) does not exist or is not a directory.`);
+export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.CODEX_HOME) {
+    const resolved = resolveExistingDirectory(env.CODEX_HOME);
+    if (!resolved) throw new Error(`CODEX_HOME (${env.CODEX_HOME}) does not exist or is not a directory.`);
     return resolved;
   }
   const candidates = [
-    path.join(os.homedir(), '.codex'),
-    path.join(os.homedir(), '.codex_home'),
+    path.join(env.HOME || os.homedir(), '.codex'),
+    path.join(env.HOME || os.homedir(), '.codex_home'),
   ];
 
   for (const candidate of candidates) {
@@ -71,12 +71,22 @@ export function getSessionsDir(): string {
   return resolved;
 }
 
-/** Share quota state only between HUDs reading the same Codex data source. */
-export function getCodexDataNamespace(): string {
+/** Canonicalize existing parents too, so a not-yet-created sessions dir is stable. */
+function canonicalDataPath(candidate: string): string {
+  try { return fs.realpathSync(candidate); }
+  catch {
+    const absolute = path.resolve(candidate);
+    const parent = path.dirname(absolute);
+    return parent === absolute ? absolute : path.join(canonicalDataPath(parent), path.basename(absolute));
+  }
+}
+
+/** One scope for attachment, bindings, overview, diagnostics and quota caches. */
+export function getCodexDataNamespace(env: NodeJS.ProcessEnv = process.env): string {
   let home: string;
-  try { home = getCodexHome(); }
-  catch { home = path.resolve(process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex')); }
-  const candidate = process.env.CODEX_SESSIONS_PATH ?? path.join(home, 'sessions');
-  const sessions = resolveExistingDirectory(candidate) ?? path.resolve(candidate);
+  try { home = getCodexHome(env); }
+  catch { home = canonicalDataPath(env.CODEX_HOME || path.join(env.HOME || os.homedir(), '.codex')); }
+  const candidate = env.CODEX_SESSIONS_PATH || path.join(home, 'sessions');
+  const sessions = canonicalDataPath(candidate);
   return createHash('sha256').update(JSON.stringify([home, sessions])).digest('hex').slice(0, 16);
 }
