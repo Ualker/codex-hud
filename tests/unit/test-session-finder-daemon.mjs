@@ -428,22 +428,25 @@ const THREAD_C = '01a0cdc2-dd83-7832-884b-aa0a34d4aeff';
 const THREAD_X = '01a0cd66-0000-7000-8000-000000000001';
 const THREAD_D = '01a0cd77-3333-7444-8555-a66677778888';
 const T0 = Date.now() - 3_600_000;
+// Linux reads /proc even with our fake ps. Keep synthetic PIDs outside the
+// real PID range so unrelated host processes cannot supply their start times.
+const fixturePid = (id) => 1_000_000_000 + id;
 
 // Pane %1's Codex launched the daemon; %4's TUI never shows up in its logs.
 const table = [
-  `100 1 -zsh`,
-  `101 100 ${WRAPPER} --sandbox danger-full-access`,
-  `102 101 ${NATIVE} --sandbox danger-full-access`,
-  `103 102 ${DAEMON} app-server --listen unix:// --managed-daemon`,
-  `104 102 ${DAEMON} app-server daemon pid-update-loop`,
-  `200 1 -zsh`,
-  `202 200 ${NATIVE} --sandbox danger-full-access`,
-  `300 1 -zsh`,
-  `302 300 ${NATIVE} --sandbox danger-full-access`,
-  `400 1 -zsh`,
-  `402 400 ${NATIVE} --sandbox danger-full-access`,
-  `500 1 -zsh`,
-  `502 500 ${NATIVE} --sandbox danger-full-access`,
+  `${fixturePid(100)} 1 -zsh`,
+  `${fixturePid(101)} ${fixturePid(100)} ${WRAPPER} --sandbox danger-full-access`,
+  `${fixturePid(102)} ${fixturePid(101)} ${NATIVE} --sandbox danger-full-access`,
+  `${fixturePid(103)} ${fixturePid(102)} ${DAEMON} app-server --listen unix:// --managed-daemon`,
+  `${fixturePid(104)} ${fixturePid(102)} ${DAEMON} app-server daemon pid-update-loop`,
+  `${fixturePid(200)} 1 -zsh`,
+  `${fixturePid(202)} ${fixturePid(200)} ${NATIVE} --sandbox danger-full-access`,
+  `${fixturePid(300)} 1 -zsh`,
+  `${fixturePid(302)} ${fixturePid(300)} ${NATIVE} --sandbox danger-full-access`,
+  `${fixturePid(400)} 1 -zsh`,
+  `${fixturePid(402)} ${fixturePid(400)} ${NATIVE} --sandbox danger-full-access`,
+  `${fixturePid(500)} 1 -zsh`,
+  `${fixturePid(502)} ${fixturePid(500)} ${NATIVE} --sandbox danger-full-access`,
 ].join('\n');
 fs.writeFileSync(path.join(root, 'table'), `${table}\n`);
 fs.writeFileSync(path.join(root, 'starts'), '');
@@ -468,7 +471,8 @@ while [[ "\${1:-}" != "" ]]; do
   shift || true
 done
 case "$target" in
-  %1) echo 100 ;; %2) echo 200 ;; %3) echo 300 ;; %4) echo 400 ;; %5) echo 500 ;;
+  %1) echo ${fixturePid(100)} ;; %2) echo ${fixturePid(200)} ;; %3) echo ${fixturePid(300)} ;;
+  %4) echo ${fixturePid(400)} ;; %5) echo ${fixturePid(500)} ;;
   *) exit 1 ;;
 esac
 `
@@ -513,7 +517,7 @@ function log(atMs, pid, body, threadId = null, target = 't') {
     dbPath,
     `INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid)
      VALUES (${Math.floor(atMs / 1000)}, ${(atMs % 1000) * 1_000_000}, 'INFO', '${q(target)}', '${q(body)}',
-       ${threadId ? `'${q(threadId)}'` : 'NULL'}, 'pid:${pid}:uuid-${pid}');`
+       ${threadId ? `'${q(threadId)}'` : 'NULL'}, 'pid:${fixturePid(pid)}:uuid-${fixturePid(pid)}');`
   );
 }
 
@@ -622,7 +626,7 @@ try {
   executeSql(
     dbPath,
     `DELETE FROM logs WHERE thread_id IN ('${THREAD_B}', '${THREAD_C}')
-       OR (process_uuid = 'pid:103:uuid-103' AND thread_id IS NULL
+       OR (process_uuid = 'pid:${fixturePid(103)}:uuid-${fixturePid(103)}' AND thread_id IS NULL
            AND ts < ${Math.floor((Date.now() - 600_000) / 1000)});`
   );
   // Each reload is a new process: nothing of this one's ledger carries over.
