@@ -632,7 +632,7 @@ try {
     'an unpaired daemon client stays unbound: no agents-overview row, cwd guess or daemon-written snapshot'
   );
 
-  // Train1009: a temporary fork used the main TUI's connection, ran without
+  // Train1009: /side forked through the main TUI's connection, ran without
   // a persisted session, then shut down while the original task kept going.
   // Its thread/fork span must not replace the main conversation in the HUD.
   const FORK = '01a1537c-683d-7b90-9f86-6349129288aa';
@@ -642,6 +642,9 @@ try {
   log(Date.now() - 14_000, 103, span('turn/start', 2), FORK);
   assert.equal((await resolve('%1', a.finder)).session?.path, rolloutA,
     'compacting subsequent turn/start rows must retain the transient fork evidence');
+  log(Date.now() - 13_000, 103, span('thread/unsubscribe', 2), FORK);
+  assert.equal((await resolve('%1', a.finder)).session?.path, rolloutA,
+    'closing /side must leave the HUD on the still-running main conversation');
   assert.equal((await resolve('%1')).session?.path, rolloutA,
     'a new finder must recover the main thread from the connection history');
 
@@ -675,6 +678,9 @@ try {
   log(Date.now() - 5_000, 103, span('thread/start', 2), THREAD_A2);
   const again = await resolve('%1', a.finder);
   assert.equal(again.session?.path, `codex-log://${THREAD_A2}`, 'the pane follows its /new session');
+  log(Date.now() - 4_000, 103, span('thread/resume', 2), THREAD_A);
+  assert.equal((await resolve('%1', a.finder)).session?.path, rolloutA,
+    'an explicit /resume still selects the requested persisted conversation');
 
   // A HUD reloaded hours later. B and C grew into long sessions, and Codex
   // keeps 1000 rows per thread and 1000 thread-less rows per process: the
