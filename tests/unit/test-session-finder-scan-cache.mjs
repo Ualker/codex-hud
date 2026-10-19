@@ -86,7 +86,13 @@ try {
     );
 
     // Restores/replacements can rewrite session_meta without changing size.
+    // Some Linux filesystems timestamp both writes in the same clock tick.
+    // Give this rewrite a distinct revision without relying on a sleep.
+    const previous = fs.statSync(rolloutPath);
     fs.writeFileSync(rolloutPath, `${sessionMetaLine(sessionId, cwdB)}\n`, 'utf8');
+    const rewrittenAt = new Date(previous.mtimeMs + 1000);
+    fs.utimesSync(rolloutPath, rewrittenAt, rewrittenAt);
+    assert.equal(fs.statSync(rolloutPath).size, previous.size, 'the rewrite keeps the same size');
     assert.equal(
       findActiveRollouts(60, cwdA).length,
       0,
