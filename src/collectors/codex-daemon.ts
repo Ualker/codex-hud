@@ -55,16 +55,7 @@ export const CONNECT_TOLERANCE_MS = 1_000;
 export const START_SLACK_MS = 2_000;
 /** ...and at most this late after its TUI started (first request 0.1-21s). */
 export const STARTUP_WINDOW_MS = 300_000;
-/**
- * TUIs poll account/rateLimits/read every 1-5 minutes. A connection silent
- * for longer belongs to a TUI that already exited; left in the ordered
- * fallback it would shift every later pairing by one.
- */
-export const LIVE_WINDOW_MS = 15 * 60_000;
-/**
- * A saved ledger forgets a connection after a day without requests: live
- * TUIs poll every few minutes, so its TUI is gone.
- */
+/** Unowned history expires after a day; quiet live owners keep their evidence. */
 export const LEDGER_KEEP_MS = 24 * 60 * 60_000;
 
 export interface ThreadEvent {
@@ -308,13 +299,13 @@ export class DaemonLedger {
   }
 
   /**
-   * Forget connections silent for LEDGER_KEEP_MS, and connect lines older
-   * than that which no longer sit next to a kept connection's first request
-   * (the only thing they are compared with).
+   * Expire old unowned connections. Callers retain connections identified
+   * for surviving TUIs: request silence is not evidence of process exit.
+   * Keep connect lines next to retained connections as identity evidence.
    */
-  prune(nowMs: number): void {
+  prune(nowMs: number, retainedConnections: ReadonlySet<number> = new Set()): void {
     for (const [id, connection] of this.connections) {
-      if (connection.lastMs < nowMs - LEDGER_KEEP_MS) {
+      if (connection.lastMs < nowMs - LEDGER_KEEP_MS && !retainedConnections.has(id)) {
         this.connections.delete(id);
       }
     }
@@ -336,45 +327,40 @@ export class DaemonLedger {
  * - Only session connections are paired: at least one thread request, and a
  *   client name that mentions `tui` (or none). A TUI's probe connection meets
  *   its connect line as closely as the real one does and, with the lower id,
- *   won the order pass: new panes stayed unbound until the probe fell out of
- *   LIVE_WINDOW_MS. When any session connection was active within
- *   LIVE_WINDOW_MS, only the live ones take part.
+ *   won the old order pass. Activity timestamps never determine ownership:
+ *   a surviving TUI may be silent for hours while another pane is active.
  * - First pass: the TUI's own connect line, when exactly one connection and
  *   exactly one TUI meet within CONNECT_TOLERANCE_MS. This pass may correct a
  *   remembered pairing (`fixed`).
- * - Second pass: connection ids grow with TUI start order, so each remaining
- *   TUI takes the smallest free id above the ids of TUIs started before it
- *   and below those started after it, whose first request falls into its
- *   startup window.
+ * - Startup evidence is a fallback only when one connection has one possible
+ *   owner. Known neighbours bound the connection IDs; overlapping startup
+ *   windows without enough evidence remain unpaired.
  * TUIs left unpaired stay unbound; callers must not guess for them.
  */
 export function mapConnectionsToClients(
   clients: readonly DaemonClient[],
   connections: ReadonlyMap<number, DaemonConnection>,
   connectedAtMs: ReadonlyMap<string, number>,
-  nowMs: number,
+  _nowMs: number,
   fixed?: ReadonlyMap<string, number>,
   lifecycle?: { daemonStartedAtMs: number | undefined }
 ): Map<string, number> {
-  let candidates = [...connections.entries()]
+  const candidates = [...connections.entries()]
     .filter(([, connection]) => {
       const client = (connection.client ?? '').toLowerCase();
       return connection.events.length > 0 && (!client || client.includes('tui'));
     })
     .map(([id]) => id);
-  const live = candidates.filter(
-    (id) => (connections.get(id)?.lastMs ?? 0) >= nowMs - LIVE_WINDOW_MS
-  );
-  if (live.length > 0) {
-    candidates = live;
-  }
   candidates.sort((left, right) => left - right);
 
   const pairs = new Map<string, number>();
   const taken = (id: number) => [...pairs.values()].includes(id);
   for (const client of clients) {
     const remembered = fixed?.get(client.pid);
-    if (remembered !== undefined && candidates.includes(remembered) && !taken(remembered)) {
+    const firstMs = remembered === undefined ? undefined : connections.get(remembered)?.firstMs;
+    if (remembered !== undefined && candidates.includes(remembered) && !taken(remembered) &&
+      [...(fixed?.values() ?? [])].filter(id => id === remembered).length === 1 &&
+      (!Number.isFinite(client.startMs) || (firstMs ?? 0) >= client.startMs - START_SLACK_MS)) {
       pairs.set(client.pid, remembered);
     }
   }
@@ -382,7 +368,8 @@ export function mapConnectionsToClients(
   const nearByConnection = new Map<number, string[]>();
   for (const client of clients) {
     const connectedAt = connectedAtMs.get(client.pid);
-    if (connectedAt === undefined) {
+    if (connectedAt === undefined ||
+      (Number.isFinite(client.startMs) && connectedAt < client.startMs - START_SLACK_MS)) {
       continue;
     }
     const near = candidates.filter(
@@ -408,35 +395,39 @@ export function mapConnectionsToClients(
   const ordered = clients
     .filter((client) => Number.isFinite(client.startMs))
     .sort((left, right) => left.startMs - right.startMs);
-  ordered.forEach((client, index) => {
-    if (pairs.has(client.pid)) {
-      return;
-    }
-    // Reconnecting clients race after a daemon restart. Their original
-    // process start order says nothing about the new connection numbering.
-    if (lifecycle && (lifecycle.daemonStartedAtMs === undefined ||
-      client.startMs < lifecycle.daemonStartedAtMs - START_SLACK_MS)) {
-      return;
-    }
-    const before = ordered.slice(0, index).map((c) => pairs.get(c.pid)).filter(
-      (id): id is number => id !== undefined
-    );
-    const after = ordered.slice(index + 1).map((c) => pairs.get(c.pid)).filter(
-      (id): id is number => id !== undefined
-    );
-    const low = Math.max(-1, ...before);
-    const high = Math.min(Number.POSITIVE_INFINITY, ...after);
-    for (const id of candidates) {
-      if (id <= low || id >= high || taken(id)) {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const possible = new Map<string, number[]>();
+    for (const [index, client] of ordered.entries()) {
+      if (pairs.has(client.pid)) continue;
+      // Reconnecting clients race after a daemon restart. Their original
+      // process start order says nothing about the new connection numbering.
+      if (lifecycle && (lifecycle.daemonStartedAtMs === undefined ||
+        client.startMs < lifecycle.daemonStartedAtMs - START_SLACK_MS)) {
         continue;
       }
-      const firstMs = connections.get(id)?.firstMs ?? 0;
-      if (firstMs >= client.startMs - START_SLACK_MS && firstMs <= client.startMs + STARTUP_WINDOW_MS) {
-        pairs.set(client.pid, id);
-        break;
+      const before = ordered.slice(0, index).map((c) => pairs.get(c.pid)).filter(
+        (id): id is number => id !== undefined
+      );
+      const after = ordered.slice(index + 1).map((c) => pairs.get(c.pid)).filter(
+        (id): id is number => id !== undefined
+      );
+      const low = Math.max(-1, ...before);
+      const high = Math.min(Number.POSITIVE_INFINITY, ...after);
+      possible.set(client.pid, candidates.filter(id => {
+        const firstMs = connections.get(id)?.firstMs ?? 0;
+        return id > low && id < high && !taken(id) &&
+          firstMs >= client.startMs - START_SLACK_MS && firstMs <= client.startMs + STARTUP_WINDOW_MS;
+      }));
+    }
+    for (const [pid, ids] of possible) {
+      if (ids.length === 1 && [...possible.values()].filter(other => other.includes(ids[0])).length === 1) {
+        pairs.set(pid, ids[0]);
+        changed = true;
       }
     }
-  });
+  }
   return pairs;
 }
 
