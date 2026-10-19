@@ -81,6 +81,7 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
   
   // Project + git
   parts.push(renderProjectLine(data));
+  if (data.paneFreshSession) parts.push(colors.dim('New session · awaiting first message'));
 
   const agentSummary = renderCompactAgentSummary(data.agentActivity);
   if (agentSummary) {
@@ -307,11 +308,7 @@ function renderExpandedLayout(
   // is live proof the pane still runs the bound session, and `exited` is the
   // more specific fact.
   const paneFreshLine =
-    data.paneFreshSession === true &&
-    (data.turnActivity?.phase === 'idle' ||
-      data.turnActivity?.phase === 'aborted' ||
-      data.turnActivity?.phase === 'failed' ||
-      data.turnActivity?.phase === 'interrupted')
+    data.paneFreshSession === true
       ? truncateAnsi(
           colors.dim(
             `${icons.pending} New session at the prompt · binds on its first message`
@@ -319,18 +316,11 @@ function renderExpandedLayout(
           width
         )
       : null;
-  // While the hint stands, the session-scoped rows describe the previous
-  // session. They stay (they are the useful "what came before") but recede:
-  // at full brightness the stale `Ctx: 24% left` sat directly above a pane
-  // footer reading `Context 100% left`, and the biggest number on the HUD
-  // contradicted the pane. Account-scoped cells (the quota) keep their color.
-  const dimStaleRow = (line: string): string => colors.dim(stripAnsi(line));
+  // renderHud removes the previous session's data while this hint stands.
   const staleSessionRows = paneFreshLine !== null;
 
   // Context capacity is actionable and remains ahead of activity history.
-  const rawTokenLine = renderTokenLine(data, width);
-  const tokenLine =
-    staleSessionRows && rawTokenLine ? dimStaleRow(rawTokenLine) : rawTokenLine;
+  const tokenLine = renderTokenLine(data, width);
   // Two readings of the same account quota: the alert form only appears under
   // pressure, the calm form always states where the window stands. The calm
   // one is worth a row only when there is one to spare, so the ladder picks.
@@ -354,11 +344,7 @@ function renderExpandedLayout(
         // floor the context gauge itself would be sacrificed to a calm quota,
         // so the two signals stay on separate rows and the layout ladder picks.
         if (tokenBudget >= 80) {
-          const rawCompressed = renderTokenLine(data, tokenBudget);
-          const compressedTokenLine =
-            staleSessionRows && rawCompressed
-              ? dimStaleRow(rawCompressed)
-              : rawCompressed;
+          const compressedTokenLine = renderTokenLine(data, tokenBudget);
           if (compressedTokenLine) {
             const compressed =
               `${compressedTokenLine}${usageSeparator}${rateLimitLine}`;
@@ -401,13 +387,11 @@ function renderExpandedLayout(
     ...data.toolActivity, runningCalls, recentCalls,
     totalCalls: fullDetails ? data.toolActivity.totalCalls : recentCalls.length,
   } : undefined;
-  const rawToolsLine = renderToolsLine(
+  const toolsLine = renderToolsLine(
     visibleTools, width, nowMs, data.partialHistory,
     data.turnActivity?.phase === 'awaiting-approval',
     data.session?.cwd ?? data.project.cwd
   );
-  const toolsLine =
-    staleSessionRows && rawToolsLine ? dimStaleRow(rawToolsLine) : rawToolsLine;
   const turnLine = renderTurnActivityLine(data.turnActivity, width);
   const turnLineShown = paneFreshLine ?? turnLine;
   const awaitingApproval =
@@ -418,9 +402,7 @@ function renderExpandedLayout(
   const agentLines = renderAgentLines(data.agentActivity, width);
   const agentSummaryLine = renderAgentSummaryLine(data.agentActivity, width);
   const planLine = renderTodosLine(data.planProgress, width);
-  const sessionLine = renderSessionDetailLine(data, width, {
-    dimStaleCells: staleSessionRows,
-  });
+  const sessionLine = renderSessionDetailLine(data, width);
   // Nothing bound yet: say so instead of rendering three rows and letting the
   // blank remainder read as a broken HUD.
   const bindingHintLine = renderBindingHintLine(data, width);
@@ -975,7 +957,8 @@ function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number,
   // The same priority as the standard view: actionable state and capacity
   // precede expandable agent/history rows at every supported pane height.
   const rows = [identity, data.paneFreshSession ? colors.dim('New session at the prompt · binds on its first message') : renderTurnActivityLine(data.turnActivity,width) ?? renderBindingHintLine(data,width),
-    renderHealthLine(data,width), renderRateLimitLine(data,width)];
+    renderHealthLine(data,width), renderRateLimitLine(data,width,Date.now(),
+      { includeBelowPressure: data.paneFreshSession === true })];
   if (!data.paneFreshSession && (hudDetailsExpanded() || (data.contextUsage?.percent ?? 0) >= 70)) rows.push(renderTokenLine(data,width));
   rows.push(renderToolsLine(liveTools,width,Date.now(),data.partialHistory,data.turnActivity?.phase==='awaiting-approval',data.project.cwd));
   const agents = renderAgentLines(data.agentActivity,width);
@@ -989,7 +972,19 @@ function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number,
 }
 
 export function renderHud(data: HudData, options: RenderOptions): string[] {
-  const layout = options.layout ?? DEFAULT_LAYOUT;
+  let layout = options.layout ?? DEFAULT_LAYOUT;
+  // A live working/exited phase is newer evidence than the cached footer.
+  const freshSession = data.paneFreshSession === true && (!data.turnActivity ||
+    ['idle', 'aborted', 'failed', 'interrupted'].includes(data.turnActivity.phase));
+  if (freshSession && data.displayMode !== 'overview') {
+    data = { ...data, session: undefined, contextUsage: undefined, tokenUsage: undefined,
+      toolActivity: undefined, agentActivity: undefined, planProgress: undefined,
+      protocolHealth: undefined, partialHistory: undefined, runtimeStateComplete: false,
+      boundWithoutRollout: false };
+    layout = { ...layout, showDuration: false };
+  } else if (data.paneFreshSession && !freshSession) {
+    data = { ...data, paneFreshSession: false };
+  }
   const width = options.width;
   let rows: string[];
   if (data.helpVisible) {

@@ -1075,14 +1075,13 @@ interface SharedDaemonLedger {
   ledger: LedgerSnapshot;
 }
 
-function shareDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number): void {
+function mergeSharedDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number): void {
   if (
     !ledger.processUuid ||
     nowMs - (ledgerSharedAt.get(ledger) ?? Number.NEGATIVE_INFINITY) < LEDGER_SHARE_INTERVAL_MS
   ) {
     return;
   }
-  ledgerSharedAt.set(ledger, nowMs);
   try {
     const name = `daemon-ledger-${getCodexDataNamespace()}`;
     const shared = readSharedSnapshot(
@@ -1098,10 +1097,28 @@ function shareDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number):
     if (shared) {
       ledger.merge(shared);
     }
-    ledger.prune(nowMs);
+  } catch {
+    // Sharing is an aid; binding must never depend on it.
+  }
+}
+
+function shareDaemonLedger(
+  ledger: DaemonLedger,
+  dbPath: string,
+  nowMs: number,
+  retainedConnections: ReadonlySet<number>
+): void {
+  if (!ledger.processUuid ||
+    nowMs - (ledgerSharedAt.get(ledger) ?? Number.NEGATIVE_INFINITY) < LEDGER_SHARE_INTERVAL_MS) {
+    return;
+  }
+  ledgerSharedAt.set(ledger, nowMs);
+  try {
+    ledger.prune(nowMs, retainedConnections);
     const snapshot = ledger.snapshot();
     if (snapshot) {
-      writeSharedSnapshot(name, { dbPath, ledger: snapshot } satisfies SharedDaemonLedger, nowMs);
+      writeSharedSnapshot(`daemon-ledger-${getCodexDataNamespace()}`,
+        { dbPath, ledger: snapshot } satisfies SharedDaemonLedger, nowMs);
     }
   } catch {
     // Sharing is an aid; binding must never depend on it.
@@ -1170,7 +1187,6 @@ async function refreshDaemonLedger(
   }
 
   const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
-  let read = 0;
   for (let batch = 0; batch < DAEMON_LEDGER_MAX_BATCHES; batch++) {
     // Newlines and the column separator are flattened so each row stays one
     // line; the span header sits at the start of the body.
@@ -1213,14 +1229,13 @@ LIMIT ${DAEMON_LEDGER_BATCH}
       });
     }
     ledger.ingest(rows);
-    read += rows.length;
     if (rows.length < DAEMON_LEDGER_BATCH) {
       break;
     }
   }
-  if (read > 0) {
-    shareDaemonLedger(ledger, dbPath, nowMs);
-  }
+  // Recover shared identity before pairing; prune only after identifying
+  // the connections of surviving clients, including long-idle ones.
+  mergeSharedDaemonLedger(ledger, dbPath, nowMs);
   return ledger;
 }
 
@@ -2061,6 +2076,8 @@ export class SessionFinder {
       fixed,
       { daemonStartedAtMs }
     );
+    const dbPath = getLogDatabaseCandidates()[0];
+    if (dbPath) shareDaemonLedger(ledger, dbPath, now, new Set(pairs.values()));
     const connectionId = pairs.get(tuiPid);
     if (connectionId === undefined) {
       this.daemonLink = null;

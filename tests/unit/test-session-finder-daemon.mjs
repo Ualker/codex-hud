@@ -165,7 +165,7 @@ for (const body of [
   assert.equal(other.merge(saved), false);
   assert.equal(connectionThreads(other.connections.get(2)).current, 'cccc');
 
-  // A day without requests ends a connection; old connect lines go with it.
+  // Old unowned history expires; live owners are covered by the idle test.
   fresh.connectedAtMs.set('11111', now - 2 * DAY);
   fresh.prune(now);
   assert.deepEqual([...fresh.connections.keys()].sort((a, b) => a - b), [2]);
@@ -230,7 +230,7 @@ const asObject = (pairs) => Object.fromEntries([...pairs].sort());
 
 {
   // Train2: 2 and 5 belong to panes that exited long ago; 6904 never logged
-  // its connect line. Order alone pairs the same way.
+  // its connect line. Its neighbours' exact evidence bounds its identity.
   const clients = [
     { pid: '6904', startMs: T },
     { pid: '7803', startMs: T + 2_750 },
@@ -246,18 +246,22 @@ const asObject = (pairs) => Object.fromEntries([...pairs].sort());
   const expected = { 27437: 15, 6904: 9, 7803: 12 };
   const connected = new Map([['7803', T + 4_390], ['27437', T + 481_620]]);
   assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, NOW)), expected);
-  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), NOW)), expected);
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), NOW)), { 27437: 15 },
+    'overlapping startup windows without connect evidence remain unbound');
 }
 
 {
-  // B opened and closed between A and C: its dead connection must not shift C.
+  // B opened and closed between A and C. Without ownership evidence, recent
+  // activity cannot prove which of the overlapping connections belongs to C.
   const clients = [{ pid: 'A', startMs: T }, { pid: 'C', startMs: T + 62_000 }];
   const conns = book({
     2: [T + 1_000, null, 'codex-tui'],
     5: [T + 61_500, T + 70_000, 'codex-tui'],
     8: [T + 63_000, null, 'codex-tui'],
   });
-  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), NOW)), { A: 2, C: 8 });
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), NOW)), {});
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map([['A', T + 1000]]), NOW)), { A: 2 },
+    'known identity is kept while the ambiguous neighbour stays unbound');
 }
 
 {
@@ -276,12 +280,12 @@ const asObject = (pairs) => Object.fromEntries([...pairs].sort());
 }
 
 {
-  // Two TUIs connecting within the tolerance of each other: fall back to
-  // start order.
+  // Two TUIs connecting within the tolerance of each other: their start
+  // order cannot disambiguate the overlapping connection evidence.
   const clients = [{ pid: 'A', startMs: T }, { pid: 'B', startMs: T + 500 }];
   const conns = book({ 2: [T + 1_100, null, 'codex-tui'], 5: [T + 1_700, null, 'codex-tui'] });
   const connected = new Map([['A', T + 1_000], ['B', T + 1_600]]);
-  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, NOW)), { A: 2, B: 5 });
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, NOW)), {});
 }
 
 {
@@ -373,7 +377,8 @@ const asObject = (pairs) => Object.fromEntries([...pairs].sort());
   const connected = new Map([['15107', S + 1_350], ['16839', S + 18_150], ['18096', S + 29_560]]);
   const expected = { 15107: 29, 16839: 32, 18096: 35 };
   assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, connected, now)), expected);
-  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), now)), expected);
+  assert.deepEqual(asObject(mapConnectionsToClients(clients, conns, new Map(), now)), {},
+    'without connect evidence these startup windows overlap');
 }
 
 // A restarted daemon renumbers connections in reconnect order, not TUI order.

@@ -235,9 +235,8 @@ const render = (data) =>
 }
 
 {
-  // While the hint stands, the previous session's metric rows recede: at full
-  // brightness the stale `Ctx: 24% left` sat directly above a pane footer
-  // reading `Context 100% left`. Account-scoped quota keeps its color.
+  // A new prompt must not show the previous session's identity or metrics.
+  // Account-scoped quota and the pane's directory remain useful.
   const staleMetrics = {
     tokenUsage: {
       last_token_usage: {
@@ -283,8 +282,7 @@ const render = (data) =>
     },
   };
   process.env.CODEX_HUD_DETAILS = 'full';
-  const dimmedFrame = renderHud(
-    hudData({
+  const freshData = hudData({
       paneFreshSession: true,
       ...staleMetrics,
       session: {
@@ -293,51 +291,22 @@ const render = (data) =>
         startTime: at(-3600_000),
         cwd: '/tmp/x',
         cliVersion: '0.149.1',
+        title: 'Previous task title',
       },
-    }),
-    { width: 146, showDetails: true, layout, maxLines: 12 }
-  );
-  const ctxRow = dimmedFrame.find((line) => stripAnsi(line).includes('Ctx: '));
-  assert.ok(ctxRow, 'the stale context row still renders');
-  assert.match(
-    ctxRow,
-    /^\x1b\[2mCtx: /,
-    'the stale session metrics recede to dim as one block'
-  );
-  assert.ok(
-    stripAnsi(ctxRow).includes('7d 86% left'),
-    'the account quota stays on the row'
-  );
-  const dimClose = ctxRow.indexOf('\x1b[0m');
-  assert.ok(
-    dimClose !== -1 && dimClose < ctxRow.indexOf('7d 86% left'),
-    'the dim region closes before the account quota cell'
-  );
-  const toolsRow = dimmedFrame.find((line) =>
-    stripAnsi(line).includes('42 total')
-  );
-  assert.ok(toolsRow, 'the stale tool row still renders');
-  assert.match(toolsRow, /^\x1b\[2m/, 'the stale tool history recedes to dim');
-
-  // Session/CLI/Provider describe the previous session — measured live as
-  // `CLI: 0.149.1` under a pane running v0.150.1 — and recede with it. The
-  // directory is the pane's own: it keeps its link, and with it its color.
-  const sessionRow = dimmedFrame.find((line) =>
-    stripAnsi(line).includes('Session: ')
-  );
-  assert.ok(sessionRow, 'the session detail row still renders');
-  assert.ok(
-    sessionRow.includes('\x1b[2mSession: 01a02279'),
-    'the stale session identity cell recedes to dim'
-  );
-  assert.ok(
-    sessionRow.includes('\x1b[2mCLI: 0.149.1'),
-    'the stale CLI version cell recedes to dim'
-  );
-  assert.ok(
-    sessionRow.includes('\x1b]8;;file://'),
-    'the directory cell keeps its link and its color'
-  );
+    });
+  for (const preset of ['standard', 'coexist', 'compact']) {
+    for (const maxLines of [5, 8, 12]) {
+      const frame = renderHud({ ...freshData, layoutPreset: preset === 'coexist' ? 'coexist' : 'standard' }, {
+        width: 146, showDetails: true,
+        layout: { ...layout, mode: preset === 'compact' ? 'compact' : 'expanded' }, maxLines,
+      }).map(stripAnsi).join('\n');
+      assert.doesNotMatch(frame, /Previous task title|Ctx:|42 total|01a02279|0\.149\.1|Turn aborted|\bup \d/,
+        `${preset}/${maxLines} hides the previous session`);
+      assert.match(frame, /New session/, `${preset}/${maxLines} explains the empty state`);
+      if (preset !== 'compact') assert.match(frame, /7d 86% left/, 'account quota survives');
+    }
+  }
+  assert.equal(freshData.session.title, 'Previous task title', 'rendering does not mutate collector state');
 
   // Without the fresh mark the same data keeps its normal colors.
   const normalFrame = renderHud(hudData({ ...staleMetrics }), {
