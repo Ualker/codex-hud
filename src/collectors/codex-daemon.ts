@@ -41,7 +41,7 @@ const NON_INTERACTIVE_SUBCOMMANDS = new Set([
   'cloud', 'features', 'help', 'agents', 'queue', 'migrate-rollouts',
 ]);
 
-/** Requests that put a connection on a thread; previews (thread/read) do not. */
+/** Session/fork candidates; previews (thread/read) do not change selection. */
 const THREAD_METHODS = new Set(['thread/start', 'thread/resume', 'thread/fork', 'turn/start']);
 
 /**
@@ -62,6 +62,8 @@ export interface ThreadEvent {
   atMs: number;
   method: string;
   threadId: string;
+  /** This stay began with thread/fork, before compacted turn/start rows. */
+  forked?: boolean;
 }
 
 export interface DaemonConnection {
@@ -146,8 +148,15 @@ export function parseConnectionSpan(
 function compactEvents(events: readonly ThreadEvent[]): ThreadEvent[] {
   const compacted: ThreadEvent[] = [];
   for (const event of [...events].sort((left, right) => left.atMs - right.atMs)) {
-    if (compacted[compacted.length - 1]?.threadId === event.threadId) {
-      compacted[compacted.length - 1] = event;
+    const previous = compacted[compacted.length - 1];
+    if (previous?.threadId === event.threadId) {
+      // Temporary side threads can use the TUI's own connection. Keep their
+      // fork origin when later turns compact the creation row; an explicit
+      // thread/start or thread/resume is separate selection evidence.
+      compacted[compacted.length - 1] = event.method === 'turn/start' &&
+        (previous.method === 'thread/fork' || previous.forked)
+        ? { ...event, forked: true }
+        : event;
     } else {
       compacted.push(event);
     }
@@ -190,7 +199,8 @@ export function reviveLedgerSnapshot(raw: unknown): LedgerSnapshot | null {
         isFiniteNumber((event as ThreadEvent).atMs) &&
         typeof (event as ThreadEvent).method === 'string' &&
         typeof (event as ThreadEvent).threadId === 'string' &&
-        (event as ThreadEvent).threadId !== ''
+        (event as ThreadEvent).threadId !== '' &&
+        ((event as ThreadEvent).forked === undefined || typeof (event as ThreadEvent).forked === 'boolean')
     );
     connections.push([id as number, { firstMs, lastMs, client, events: compactEvents(kept) }]);
   }

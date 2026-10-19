@@ -20,7 +20,6 @@ import {
 import { isProcessAlive } from './codex-liveness.js';
 import {
   DaemonLedger,
-  connectionThreads,
   isInteractiveCodexCommand,
   isManagedDaemonCommand,
   mapConnectionsToClients,
@@ -2084,18 +2083,32 @@ export class SessionFinder {
       return { threadId: null, keepCurrent: false, daemonClient: true };
     }
 
-    const { current } = connectionThreads(ledger.connections.get(connectionId));
+    const events = ledger.connections.get(connectionId)?.events ?? [];
+    // A thread/fork request may create an in-memory side conversation while
+    // the main task keeps running on this connection (Codex 0.163). Only a
+    // persisted fork can replace it. Walk this connection's own history so
+    // a cold HUD also recovers instead of retaining an already-wrong thread.
+    let threadId: string | null = null;
+    for (const event of [...events].reverse()) {
+      const [candidate] = await this.annotateCandidates([
+        { threadId: event.threadId, lastTs: event.atMs },
+      ]);
+      if (candidate.isSubagent ||
+        ((event.method === 'thread/fork' || event.forked) && candidate.rank < THREAD_RANK_ROLLOUT)) {
+        continue;
+      }
+      threadId = event.threadId;
+      break;
+    }
     // Rows of a long-idle connection may have rotated out of the logs.
-    const threadId =
-      current ?? (previous?.connectionId === connectionId ? previous.threadId : null);
+    if (events.length === 0 && previous?.connectionId === connectionId) {
+      threadId = previous.threadId;
+    }
     this.daemonLink = { daemonPid, tuiPid, connectionId, threadId };
     if (!threadId) {
       return { threadId: null, keepCurrent: false, daemonClient: true };
     }
 
-    // Rank it like the per-process path, so noteRolloutAppeared promotes a
-    // log-only /new thread as soon as its rollout lands.
-    await this.annotateCandidates([{ threadId, lastTs: now }]);
     return { threadId, keepCurrent: true, daemonClient: true };
   }
 

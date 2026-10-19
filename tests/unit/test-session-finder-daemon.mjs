@@ -124,6 +124,24 @@ for (const body of [
 }
 
 {
+  const ledger = new DaemonLedger('49747');
+  const row = (id, method) => ({ id, tsMs: id * 1000, threadId: 'fork',
+    processUuid: 'pid:49747:u', body: span(method, 2) });
+  ledger.ingest([row(1, 'thread/fork'), row(2, 'turn/start')]);
+  const snapshot = reviveLedgerSnapshot(JSON.parse(JSON.stringify(ledger.snapshot())));
+  assert.equal(snapshot.connections[0][1].events[0].forked, true,
+    'fork origin survives compaction and the shared snapshot');
+  const reloaded = new DaemonLedger('49747');
+  reloaded.ingest([row(3, 'turn/start')]);
+  assert.equal(reloaded.merge(snapshot), true);
+  assert.equal(reloaded.connections.get(2).events[0].forked, true,
+    'merging retained history restores fork origin after its log row was pruned');
+  reloaded.ingest([row(4, 'thread/resume')]);
+  assert.equal(reloaded.connections.get(2).events[0].forked, undefined,
+    'an explicit resume selects the thread independently of its fork origin');
+}
+
+{
   // A snapshot handed to the next HUD process: pruned rows only live on there.
   const DAY = 24 * 60 * 60_000;
   const now = 10 * DAY;
@@ -613,6 +631,44 @@ try {
     d.session, null,
     'an unpaired daemon client stays unbound: no agents-overview row, cwd guess or daemon-written snapshot'
   );
+
+  // Train1009: a temporary fork used the main TUI's connection, ran without
+  // a persisted session, then shut down while the original task kept going.
+  // Its thread/fork span must not replace the main conversation in the HUD.
+  const FORK = '01a1537c-683d-7b90-9f86-6349129288aa';
+  log(Date.now() - 15_000, 103, span('thread/fork', 2), FORK);
+  assert.equal((await resolve('%1', a.finder)).session?.path, rolloutA,
+    'a transient fork on the same connection must not steal the running session');
+  log(Date.now() - 14_000, 103, span('turn/start', 2), FORK);
+  assert.equal((await resolve('%1', a.finder)).session?.path, rolloutA,
+    'compacting subsequent turn/start rows must retain the transient fork evidence');
+  assert.equal((await resolve('%1')).session?.path, rolloutA,
+    'a new finder must recover the main thread from the connection history');
+
+  const coldScript = `
+    const { SessionFinder } = await import(${JSON.stringify(new URL('../../dist/collectors/session-finder.js', import.meta.url).href)});
+    const finder = new SessionFinder(${JSON.stringify(cwd)}, undefined, new Date(${T0}));
+    console.log((await finder.check(true))?.path ?? 'unbound');`;
+  assert.equal(execFileSync(process.execPath, ['--input-type=module', '-e', coldScript], {
+    encoding: 'utf8', env: { ...process.env, CODEX_HUD_MAIN_PANE: '%1' },
+  }).trim(), rolloutA, 'a cold process must also reject the transient fork');
+
+  // A normal /fork persists its inherited conversation. Watcher arrival
+  // must immediately promote it, even after a previous negative lookup.
+  const forkRollout = writeRollout(FORK, new Date());
+  await a.finder.noteRolloutAppeared(forkRollout);
+  assert.equal(a.finder.getCurrentSession()?.path, forkRollout,
+    'a persisted fork must still become the current session');
+
+  const CHILD = '01a1537d-1111-7222-8333-944455556666';
+  writeRollout(CHILD, new Date());
+  executeSql(path.join(home, 'state_5.sqlite'), `
+    CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, thread_source TEXT, archived INTEGER);
+    CREATE TABLE thread_spawn_edges (child_thread_id TEXT);
+    INSERT INTO thread_spawn_edges VALUES ('${CHILD}');`);
+  log(Date.now() - 10_000, 103, span('thread/fork', 2), CHILD);
+  assert.equal((await resolve('%1', a.finder)).session?.path, forkRollout,
+    'a known helper thread must not steal the binding even with its own rollout');
 
   // /new in pane %1: the connection moves on and only new rows are read.
   const THREAD_A2 = '01a0cdd0-2222-7333-8444-a55566667777';
