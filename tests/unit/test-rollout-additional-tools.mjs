@@ -37,6 +37,7 @@ function assertMetadataOnly(actual, before) {
 try {
   append('session_meta', {
     id: 'additional-tools-session', cwd: '/tmp/additional-tools', cli_version: '0.164.0', source: 'cli',
+    timestamp: new Date(clock).toISOString(),
   });
   append('event_msg', { type: 'task_started', turn_id: 'turn-1' });
   append('event_msg', {
@@ -58,6 +59,7 @@ try {
       append('event_msg', { type: 'task_complete', turn_id: 'turn-1' });
     }
     const before = await parser.parse();
+    assert.ok(Number.isFinite(before.session.startTime.getTime()), 'the fixture must contain a valid session timestamp');
     assert.equal(before.turnActivity.phase, phase);
     append(definition.type, { ...definition.payload, id: `tools-${phase}` });
     assertMetadataOnly(await parser.parse(), before);
