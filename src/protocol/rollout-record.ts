@@ -114,6 +114,9 @@ export const KNOWN_RESPONSE_TYPES = new Set([
   'custom_tool_call_output',
   'tool_search_call',
   'tool_search_output',
+  // Observed in codex-cli 0.164.0: dynamically supplied tool definitions,
+  // not invocations, tool results, or turn lifecycle changes.
+  'additional_tools',
 ]);
 export const KNOWN_EVENT_TYPES = new Set([
   'plan_update',
