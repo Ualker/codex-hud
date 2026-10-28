@@ -44,6 +44,8 @@ Protocol warnings are grouped by type in compact detail; `d` exposes the type na
 
 Codex 0.164.0 `additional_tools` records are recognized as tool definitions. They do not trigger compatibility warnings or count as tool executions; other unknown record types still produce diagnostics.
 
+Codex 0.165.0 `configuration_update` records update the displayed reasoning effort without changing tool or turn activity. The setting also survives a HUD reload with a large session log; invalid consumed fields and other unknown record types still produce diagnostics.
+
 Rollout reads discard stale work after rebinding, validate record envelopes, and replay large backlogs in bounded batches. `Catching up` identifies pending data; notifications are suppressed during substantial catch-up. Notification cooldown is isolated by session/turn. An explicit unavailable `CODEX_HOME` reports an error instead of reading another profile.
 
 Daemon binding preserves identified connections of surviving TUI processes even after hours without request logs. Connect-line evidence takes priority; overlapping startup evidence stays unbound instead of guessing by launch order. Shared history retains connections belonging to live clients. `/side` conversations (temporary in-memory forks) and known helper threads do not replace the main session, including when `/side` closes; a normal persisted fork, `/new`, or `/resume` still updates the binding. After rebuilding, reload the HUD panes with `codex-hud --reload --target <tmux-session>`; the main Codex process keeps running.

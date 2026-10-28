@@ -1183,6 +1183,7 @@ const HISTORY_STATE_MARKERS = [
   '"type":"plan_update"',
   '"type":"context_compacted"',
   '"type":"thread_settings_applied"',
+  '"type":"configuration_update"',
   '"role":"user"',
   '"name":"update_plan"',
   'tools.update_plan',
@@ -1235,6 +1236,13 @@ function recoverHistoryStateRecord(record: RolloutLine): RolloutLine | undefined
     return undefined;
   }
   const payload = record.payload as ResponseItemPayload;
+  if (payload.type === 'configuration_update') {
+    return {
+      timestamp: record.timestamp,
+      type: 'response_item',
+      payload: { type: 'configuration_update', reasoning: { effort: payload.reasoning?.effort } },
+    };
+  }
   const title = sessionTitleFromMessage(payload);
   if (title) {
     // Keep only the bounded display value, never an entire prompt. The
@@ -1882,6 +1890,15 @@ export async function parseRolloutFile(
         continue;
       }
 
+      if (payload.type === 'configuration_update') {
+        const effort = stringValue(payload.reasoning?.effort);
+        if (effort) {
+          sessionReasoningEffort = effort;
+          if (session) session.reasoningEffort = effort;
+        }
+        continue;
+      }
+
       if (
         isToolCallPayload(payload) &&
         (payload.name || payload.type === 'tool_search_call')
@@ -2333,7 +2350,7 @@ export class RolloutParser {
     // Merge with cached result for session info and accumulated stats
     if (this.cachedResult) {
       // Keep the stable session identity while retaining fields updated by
-      // incremental turn_context and thread_settings_applied records.
+      // incremental turn_context, thread settings and configuration updates.
       if (this.cachedResult.session && result.session) {
         result.session = { ...this.cachedResult.session, ...result.session };
       } else {
