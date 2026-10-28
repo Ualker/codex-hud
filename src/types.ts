@@ -253,6 +253,7 @@ export interface ResponseItemPayload {
     | 'custom_tool_call_output'
     | 'tool_search_call'
     | 'tool_search_output'
+    | 'configuration_update'
     | (string & {});
   role?: 'user' | 'assistant' | 'developer';
   content?: ContentBlock[];
@@ -263,6 +264,7 @@ export interface ResponseItemPayload {
   input?: string;
   execution?: string;
   tools?: unknown[];
+  reasoning?: { effort?: string | null } | null;
   status?: string;
   output?: FunctionOutput | ContentBlock[] | string | null;
 }

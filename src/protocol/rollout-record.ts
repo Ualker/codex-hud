@@ -45,6 +45,10 @@ function validPayload(type: string, payload: JsonRecord): boolean {
   if (type === 'turn_context') return validSettings(payload);
   if (type === 'response_item') {
     if (!stringFields(payload, ['name', 'call_id', 'id', 'role', 'status', 'execution'])) return false;
+    if (payload.type === 'configuration_update' && payload.reasoning != null) {
+      const reasoning = asRecord(payload.reasoning);
+      if (!reasoning || !stringFields(reasoning, ['effort'])) return false;
+    }
     if (['message', 'agent_message'].includes(String(payload.type)) && payload.content != null && !textBlocks(payload.content)) return false;
     if (payload.output != null && typeof payload.output !== 'string') {
       if (Array.isArray(payload.output)) return textBlocks(payload.output);
@@ -117,6 +121,8 @@ export const KNOWN_RESPONSE_TYPES = new Set([
   // Observed in codex-cli 0.164.0: dynamically supplied tool definitions,
   // not invocations, tool results, or turn lifecycle changes.
   'additional_tools',
+  // Observed in codex-cli 0.165.0: reasoning settings, not tool/turn activity.
+  'configuration_update',
 ]);
 export const KNOWN_EVENT_TYPES = new Set([
   'plan_update',
