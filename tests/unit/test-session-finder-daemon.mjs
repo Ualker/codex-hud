@@ -656,6 +656,11 @@ try {
     encoding: 'utf8', env: { ...process.env, CODEX_HUD_MAIN_PANE: '%1' },
   }).trim(), rolloutA, 'a cold process must also reject the transient fork');
 
+  executeSql(dbPath, "DELETE FROM logs WHERE process_uuid LIKE 'pid:502:%' AND thread_id IS NULL;");
+  assert.equal(execFileSync(process.execPath, ['--input-type=module', '-e', coldScript], {
+    encoding: 'utf8', env: { ...process.env, CODEX_HUD_MAIN_PANE: '%5' },
+  }).trim(), rolloutD, 'a cold HUD recovers an in-process TUI after thread-less mode evidence is pruned');
+
   // A normal /fork persists its inherited conversation. Watcher arrival
   // must immediately promote it, even after a previous negative lookup.
   const forkRollout = writeRollout(FORK, new Date());
