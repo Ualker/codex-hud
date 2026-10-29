@@ -72,13 +72,36 @@ function reviveQueries(raw: unknown): CachedQuery[] | null {
   return Array.isArray(raw) && raw.length <= 32 && raw.every(entry => entry &&
     typeof entry.key === 'string' && typeof entry.value === 'string' && Number.isFinite(entry.at)) ? raw : null;
 }
-function databaseVersion(file: string): string {
-  return [file, `${file}-wal`].map(candidate => {
-    try {
-      const s = fs.statSync(candidate);
-      return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
-    } catch { return '-'; }
-  }).join('|');
+function readHeader(file: string, size: number): { version: string; bytes: Buffer } | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const stat = fs.fstatSync(fd, { bigint: true });
+    const bytes = Buffer.alloc(size);
+    if (fs.readSync(fd, bytes, 0, size, 0) !== size) return null;
+    return { version: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`, bytes };
+  } catch { return null; }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+function databaseVersion(file: string): string | null {
+  // Rapid commits on overlayfs can have identical size and timestamps.
+  // SQLite's header includes the rollback-journal change counter (offset 24).
+  const database = readHeader(file, 32);
+  if (!database) return null;
+  const version = `${database.version}:${database.bytes.toString('hex')}`;
+  try {
+    fs.statSync(`${file}-wal`);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? version : null;
+  }
+  const wal = readHeader(`${file}-wal`, 32);
+  // The first two 48-byte wal-index headers contain the transaction counter,
+  // committed frame and generation salts. Readers' locks follow these headers.
+  // A missing or partially updated index is safe to query, but not to cache.
+  const index = readHeader(`${file}-shm`, 96);
+  if (!wal || !index || !index.bytes.subarray(0, 48).equals(index.bytes.subarray(48))) return null;
+  return `${version}|${wal.version}:${wal.bytes.toString('hex')}|${index.bytes.toString('hex')}`;
 }
 
 interface QueryCache {
@@ -140,6 +163,7 @@ export async function querySqlite(file: string, statements: string[]): Promise<s
   try {
     const now = Date.now();
     const version = databaseVersion(file);
+    if (version === null) return await execute(file, statements);
     const key = digest(JSON.stringify([version, statements]));
     const cache = cacheFor(file);
     let cached = cache.entries.get(key);

@@ -980,6 +980,25 @@ async function findInProcessTuis(pids: readonly string[]): Promise<Set<string>> 
       inProcessTuis.add(pid);
     }
   }
+  // Codex prunes thread-less and per-thread rows independently. After a long
+  // turn, only a threaded request span may still prove this TUI owns an
+  // app-server. Check unresolved PIDs together over the bounded recent window;
+  // ordinary TUI thread mentions are not evidence of an in-process server.
+  const unresolved = pids.filter(pid => /^\d+$/.test(pid) && !inProcessTuis.has(pid));
+  if (dbPath && unresolved.length > 0) {
+    const processFilter = unresolved.map(pid =>
+      `(process_uuid >= 'pid:${pid}:' AND process_uuid < 'pid:${pid};')`).join(' OR ');
+    const since = Math.floor((Date.now() - THREAD_CANDIDATE_WINDOW_MS) / 1000);
+    const where = `ts >= ${since} AND (${processFilter}) AND thread_id IS NOT NULL ` +
+      `AND feedback_log_body LIKE '%app_server.connection_id=%'`;
+    const output = (await querySqlite(dbPath, [
+      `SELECT DISTINCT process_uuid FROM logs INDEXED BY idx_logs_ts WHERE ${where}`,
+    ])) ?? (await querySqlite(dbPath, [`SELECT DISTINCT process_uuid FROM logs WHERE ${where}`]));
+    for (const line of output?.split('\n') ?? []) {
+      const pid = /^pid:(\d+):/.exec(line)?.[1];
+      if (pid && unresolved.includes(pid)) inProcessTuis.add(pid);
+    }
+  }
   return new Set(pids.filter((pid) => inProcessTuis.has(pid)));
 }
 
