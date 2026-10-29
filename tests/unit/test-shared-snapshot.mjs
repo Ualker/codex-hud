@@ -46,6 +46,17 @@ try {
   const dir = fs.readdirSync(stateDir);
   assert.ok(dir.includes('shared-probe.json'));
   assert.equal(dir.some((name) => name.endsWith('.tmp')), false);
+  const file = path.join(stateDir, 'shared-probe.json');
+  assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  fs.chmodSync(file, 0o644);
+  readSharedSnapshot('probe', 5000, () => null, t0 + 2500);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'legacy cache permissions are repaired on read');
+  const external = path.join(home, 'external.json');
+  fs.writeFileSync(external, JSON.stringify({ writtenAt: t0, value: { value: 99 } }));
+  fs.symlinkSync(external, path.join(stateDir, 'shared-symlink.json'));
+  assert.equal(readSharedSnapshot('symlink', 5000, revive, t0), null);
+  assert.equal(readSharedSnapshot('../external', 5000, revive, t0), null);
 
   console.log('test-shared-snapshot: PASS');
 } finally {

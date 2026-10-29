@@ -6,8 +6,9 @@ import { buildContextUsage } from '../context-usage.js';
 import { getCodexDataNamespace } from '../utils/codex-path.js';
 import { readSharedSnapshot, writeSharedSnapshot } from '../utils/shared-snapshot.js';
 import { withDetectorPhases } from '../utils/detector-phases.js';
+import { sessionTitle } from '../utils/privacy.js';
 import { isSubagentSessionSource } from './agent-activity.js';
-import { findActiveRollouts } from './session-finder.js';
+import { findActiveRollouts, peekRolloutMetadata, type SessionFile } from './session-finder.js';
 import { listOpenHudBindings, type OpenHudBinding } from './open-huds.js';
 import { compareOverviewSessions } from './overview-order.js';
 import { RolloutParser } from './rollout.js';
@@ -63,7 +64,8 @@ export class OverviewCollector {
     // Scope snapshots to the tmux server as well: panes from a private test
     // socket or another user's server are never valid navigation targets here.
     const server = process.env.TMUX?.split(',')[0] ?? process.env.TMUX_TMPDIR ?? 'default';
-    const cacheKey = `overview-${namespace}-${createHash('sha256').update(server).digest('hex').slice(0, 12)}`;
+    const privacy = process.env.CODEX_HUD_HIDE_TITLES === '1' ? '-private' : '';
+    const cacheKey = `overview-${namespace}-${createHash('sha256').update(server).digest('hex').slice(0, 12)}${privacy}`;
     const shared = this.options.shared === false ? null : readSharedSnapshot(cacheKey, 1500, reviveOverview, now);
     if (shared?.namespace === namespace && shared.updatedAt > this.previous.updatedAt) {
       this.previous = shared;
@@ -74,19 +76,32 @@ export class OverviewCollector {
       Promise.resolve(findActiveRollouts(30 * 60, undefined, 1, { strict: true })),
       listOpenHudBindings({ strict: true, namespace }),
     ]);
-    const files = [...scanned];
-    const scannedIds = new Set(scanned.map(file => file.sessionId));
+    const filesById = new Map<string, SessionFile>();
+    for (const file of scanned) {
+      const previous = filesById.get(file.sessionId);
+      if (!previous || file.timestamp > previous.timestamp ||
+        (file.timestamp.getTime() === previous.timestamp.getTime() && file.modifiedAt > previous.modifiedAt)) {
+        filesById.set(file.sessionId, file);
+      }
+    }
     const byId = new Map(bindings.map(binding => [binding.sessionId, binding]));
     const withoutRollout: OpenHudBinding[] = [];
     for (const binding of bindings) {
-      if (scannedIds.has(binding.sessionId)) continue;
+      // A live pane's binding wins over historical rollouts of a resumed ID.
+      filesById.delete(binding.sessionId);
       const stats = binding.rolloutPath ? statSafely(binding.rolloutPath) : null;
-      if (!binding.rolloutPath || !stats) {
+      const metadata = binding.rolloutPath ? peekRolloutMetadata(binding.rolloutPath) : null;
+      if (!binding.rolloutPath || !stats ||
+        (metadata?.sessionId && metadata.sessionId !== binding.sessionId)) {
         withoutRollout.push(binding);
       } else {
-        files.push({ path: binding.rolloutPath, sessionId: binding.sessionId, size: stats.size, timestamp: stats.mtime, modifiedAt: stats.mtime });
+        filesById.set(binding.sessionId, { path: binding.rolloutPath, sessionId: binding.sessionId, size: stats.size, timestamp: stats.mtime, modifiedAt: stats.mtime });
       }
     }
+    // Identity/type metadata outlives the much smaller parser LRU. Filtering
+    // before scheduling also keeps deferred subagents out of placeholder rows.
+    const files = [...filesById.values()].filter(file =>
+      !isSubagentSessionSource(peekRolloutMetadata(file.path)?.source));
 
     const previousById = new Map(this.previous.sessions.map(row => [row.id, row]));
     const priority = new Set(priorityIds);
@@ -123,14 +138,15 @@ export class OverviewCollector {
       const result = parser?.getCached();
       const binding = byId.get(file.sessionId);
       const previous = previousById.get(file.sessionId);
-      if (!result?.session) {
+      const identityMismatch = Boolean(result?.session && result.session.id !== file.sessionId);
+      if (!result?.session || identityMismatch) {
         sessions.push({
           ...previous, id: file.sessionId,
           cwd: previous?.cwd ?? binding?.cwd,
           projectName: previous?.projectName ?? (binding?.cwd ? path.basename(binding.cwd) : undefined),
-          title: binding?.label || previous?.title,
+          title: sessionTitle(previous?.title, binding?.label), label: binding?.label,
           tmuxSession: binding?.tmuxSession,
-          unavailable: unavailable || (!deferred && !previous),
+          unavailable: unavailable || identityMismatch || (!deferred && !previous),
           refreshing: deferred,
         });
         continue;
@@ -141,7 +157,7 @@ export class OverviewCollector {
       sessions.push({
         id: result.session.id, cwd: result.session.cwd,
         projectName: path.basename(result.session.cwd), tmuxSession: binding?.tmuxSession,
-        title: binding?.label || result.session.title, model: result.session.model,
+        title: sessionTitle(result.session.title, binding?.label), label: binding?.label, model: result.session.model,
         turnActivity: withDetectorPhases(result.turnActivity, binding?.approvalNeeded === true,
           binding?.likelyInterrupted === true, binding?.codexExited === true, result.lastEventTime ?? undefined),
         lastActivityAt: result.lastEventTime ?? result.turnActivity?.lastActivityAt,
@@ -154,13 +170,14 @@ export class OverviewCollector {
       sessions.push({
         id: binding.sessionId, cwd: binding.cwd,
         projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
-        tmuxSession: binding.tmuxSession, title: binding.label,
+        tmuxSession: binding.tmuxSession, title: binding.label, label: binding.label,
         neverStarted: !binding.rolloutPath,
         ...(binding.rolloutPath ? { unavailable: true } : {}),
       });
     }
     const activePaths = new Set(files.map(file => file.path));
     for (const file of this.checkedAt.keys()) if (!activePaths.has(file)) this.checkedAt.delete(file);
+    for (const file of this.parsers.keys()) if (!activePaths.has(file)) this.parsers.delete(file);
     sessions.sort(compareOverviewSessions);
     this.previous = { sessions, updatedAt: new Date(now), namespace };
     if (this.options.shared !== false) writeSharedSnapshot(cacheKey, this.previous, now);

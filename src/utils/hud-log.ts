@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { ensurePrivateDirectory } from './state-dir.js';
 
 // A repeating failure must not grow the log without bound; the file restarts
 // once it reaches this size (old contents are diagnostic, not precious).
@@ -38,7 +39,7 @@ function defaultLogDirCandidates(): string[] {
   } else if (home) {
     candidates.push(path.join(home, '.local', 'state', 'codex-hud'));
   }
-  candidates.push(path.join(os.tmpdir(), 'codex-hud'));
+  candidates.push(path.join(os.tmpdir(), `codex-hud-${process.getuid?.() ?? os.userInfo().username}`));
   return candidates;
 }
 
@@ -59,7 +60,7 @@ function logFilePath(): string | null {
   resolvedTarget = null;
   for (const dir of defaultLogDirCandidates()) {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      ensurePrivateDirectory(dir);
       fs.accessSync(dir, fs.constants.W_OK);
       resolvedTarget = path.join(dir, LOG_FILE_NAME);
       break;
@@ -78,22 +79,20 @@ export function logHudError(scope: string, error: unknown): void {
 
   const message =
     error instanceof Error ? error.stack ?? error.message : String(error);
+  let fd: number | undefined;
   try {
-    try {
-      if (fs.statSync(target).size >= LOG_SIZE_LIMIT_BYTES) {
-        fs.writeFileSync(
-          target,
-          `${new Date().toISOString()} [hud-log] previous contents truncated at ${LOG_SIZE_LIMIT_BYTES} bytes\n`
-        );
-      }
-    } catch {
-      // A missing file is created by the append below.
+    fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid())) return;
+    fs.fchmodSync(fd, 0o600);
+    if (stat.size >= LOG_SIZE_LIMIT_BYTES) {
+      fs.ftruncateSync(fd, 0);
+      fs.writeSync(fd, `${new Date().toISOString()} [hud-log] previous contents truncated at ${LOG_SIZE_LIMIT_BYTES} bytes\n`);
     }
-    fs.appendFileSync(
-      target,
-      `${new Date().toISOString()} [${scope}] ${message}\n`
-    );
+    fs.writeSync(fd, `${new Date().toISOString()} [${scope}] ${message}\n`);
   } catch {
     // Logging must never break the HUD.
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
 }

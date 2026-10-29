@@ -54,6 +54,7 @@ import {
 } from './lines/index.js';
 import { hudDetailsExpanded } from './detail-level.js';
 import { compactSessionTitle } from './session-title.js';
+import { renderHelp } from './help.js';
 import { formatCompactAge } from '../utils/format-age.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
@@ -950,28 +951,48 @@ function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number,
   }
   const identity = [label, environment].filter(Boolean).join('  ');
   const suppressTools = data.paneFreshSession || data.turnActivity?.phase === 'exited';
-  const liveTools = data.toolActivity && !suppressTools ? {...data.toolActivity,
-    recentCalls: data.toolActivity.recentCalls.filter(c=>c.status==='running'||
-      (c.status==='error' && data.turnActivity?.phase !== 'idle' &&
-        (data.turnActivity?.phase === 'failed' || Date.now()-c.timestamp.getTime()-(c.duration ?? 0)<60_000)))} : undefined;
-  // The same priority as the standard view: actionable state and capacity
-  // precede expandable agent/history rows at every supported pane height.
-  const rows = [identity, data.paneFreshSession ? colors.dim('New session at the prompt · binds on its first message') : renderTurnActivityLine(data.turnActivity,width) ?? renderBindingHintLine(data,width),
-    renderHealthLine(data,width), renderRateLimitLine(data,width,Date.now(),
-      { includeBelowPressure: data.paneFreshSession === true })];
-  if (!data.paneFreshSession && (hudDetailsExpanded() || (data.contextUsage?.percent ?? 0) >= 70)) rows.push(renderTokenLine(data,width));
-  rows.push(renderToolsLine(liveTools,width,Date.now(),data.partialHistory,data.turnActivity?.phase==='awaiting-approval',data.project.cwd));
-  const agents = renderAgentLines(data.agentActivity,width);
+  const phase = data.turnActivity?.phase;
+  const now = Date.now();
+  const liveTools = data.toolActivity && !suppressTools ? {
+    ...data.toolActivity,
+    recentCalls: data.toolActivity.recentCalls.filter(call =>
+      call.status === 'running' || (call.status === 'error' && phase !== 'idle' &&
+        (phase === 'failed' || now - call.timestamp.getTime() - (call.duration ?? 0) < 60_000))),
+  } : undefined;
+  // Actionable state and capacity precede expandable agent/history rows.
+  const state = data.paneFreshSession
+    ? colors.dim('New session at the prompt · binds on its first message')
+    : renderTurnActivityLine(data.turnActivity, width) ?? renderBindingHintLine(data, width);
+  const rows = [
+    identity, state, renderHealthLine(data, width),
+    renderRateLimitLine(data, width, now, { includeBelowPressure: data.paneFreshSession === true }),
+  ];
+  if (!data.paneFreshSession && (hudDetailsExpanded() || (data.contextUsage?.percent ?? 0) >= 70)) {
+    rows.push(renderTokenLine(data, width));
+  }
+  rows.push(renderToolsLine(liveTools, width, now, data.partialHistory, phase === 'awaiting-approval', data.project.cwd));
+  const agents = renderAgentLines(data.agentActivity, width);
   const remaining = Math.max(0, maxLines - rows.filter(Boolean).length);
   if (agents.length > remaining && remaining > 0) {
-    rows.push(...agents.slice(0, remaining - 1), colors.dim(`Agents: ${data.agentActivity?.visibleAgentCount ?? agents.length} active · d details`));
-  } else rows.push(...agents);
-  rows.push(renderTodosLine(data.planProgress,width));
-  if (hudDetailsExpanded()) rows.push(renderSessionDetailLine(data,width),renderNoteLine(data,width));
-  return rows.filter((row): row is string=>Boolean(row)).map(row=>truncateAnsi(row,width));
+    rows.push(...agents.slice(0, remaining - 1),
+      colors.dim(`Agents: ${data.agentActivity?.visibleAgentCount ?? agents.length} active · d details`));
+  } else {
+    rows.push(...agents);
+  }
+  rows.push(renderTodosLine(data.planProgress, width));
+  if (hudDetailsExpanded()) {
+    rows.push(renderSessionDetailLine(data, width), renderNoteLine(data, width));
+  }
+  return rows.filter((row): row is string => Boolean(row)).map(row => truncateAnsi(row, width));
 }
 
 export function renderHud(data: HudData, options: RenderOptions): string[] {
+  if (process.env.CODEX_HUD_HIDE_TITLES === '1') {
+    data = { ...data,
+      session: data.session ? { ...data.session, title: undefined } : undefined,
+      overview: data.overview ? { ...data.overview, sessions: data.overview.sessions.map(row => ({ ...row, title: row.label })) } : undefined,
+    };
+  }
   let layout = options.layout ?? DEFAULT_LAYOUT;
   // A live working/exited phase is newer evidence than the cached footer.
   const freshSession = data.paneFreshSession === true && (!data.turnActivity ||
@@ -988,13 +1009,7 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   const width = options.width;
   let rows: string[];
   if (data.helpVisible) {
-    rows = [
-      theme.value('HUD help · ? close · Esc return to Codex'),
-      'Ctrl+T / Prefix+H view · t tool detail · d full detail',
-      'Overview: j/k or arrows select · Enter open · f all/attention',
-      `c layout: ${data.layoutPreset ?? 'standard'} · view/details persist on reload`,
-      'Short name: codex-hud --label "task name" [Codex options]',
-    ].map(row=>truncateAnsi(row,width));
+    rows = renderHelp(data, width, options.maxLines);
   } else if (data.displayMode === 'overview') {
     rows = renderOverviewLayout(data,layout,Math.max(1,width-Math.min(7,options.reservedRow1Width ?? 0)),options.maxLines ?? Infinity);
   } else if (data.layoutPreset === 'coexist') {

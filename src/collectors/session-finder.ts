@@ -7,11 +7,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { createRequire } from 'module';
 import { getCodexDataNamespace, getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 import { startProbe } from '../utils/probe-latency.js';
 import { fileWasReplaced, sameFileVersion } from '../utils/file-version.js';
-import { runSqliteStatement } from '../utils/sqlite-probe.js';
+import { querySqlite } from './sqlite.js';
+import { getProcessStartTimesMs } from './process-start-times.js';
 import { readSharedSnapshot, writeSharedSnapshot } from '../utils/shared-snapshot.js';
 import {
   extractCodexRuntimeHookState,
@@ -31,28 +31,6 @@ import {
   type LedgerSnapshot,
 } from './codex-daemon.js';
 import type { SessionInfo } from '../types.js';
-
-/**
- * Built-in sqlite (Node >= 22.5). Preferred over spawning the sqlite3 CLI:
- * the CLI is missing in minimal containers and process spawns can stall for
- * seconds on loaded machines. Falls back to the CLI on older Node versions.
- */
-const nodeSqlite: { DatabaseSync: new (path: string, options: { readOnly: boolean }) => {
-  prepare(sql: string): { all(): Record<string, unknown>[] };
-  close(): void;
-} } | null = (() => {
-  const originalEmitWarning = process.emitWarning;
-  // Importing node:sqlite raises an ExperimentalWarning on stderr, which
-  // would leak into the HUD pane.
-  process.emitWarning = (() => {}) as typeof process.emitWarning;
-  try {
-    return createRequire(import.meta.url)('node:sqlite');
-  } catch {
-    return null;
-  } finally {
-    process.emitWarning = originalEmitWarning;
-  }
-})();
 
 const DEFAULT_LOOKBACK_DAYS = 30;
 const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
@@ -169,6 +147,7 @@ function readFirstLine(filePath: string, maxBytes: number = 1024 * 1024): string
 interface RolloutCwdCacheEntry {
   cwd: string | null;
   sessionId: string | null;
+  source?: SessionInfo['source'];
   version: fs.Stats;
 }
 
@@ -177,7 +156,7 @@ interface RolloutCwdCacheEntry {
 const rolloutCwdCache = new Map<string, RolloutCwdCacheEntry>();
 const ROLLOUT_CWD_CACHE_LIMIT = 8192;
 
-function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
+export function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
   const cached = rolloutCwdCache.get(filePath);
   let version: fs.Stats;
   try {
@@ -194,13 +173,15 @@ function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
 
   let cwd: string | null = null;
   let sessionId: string | null = null;
+  let source: SessionInfo['source'];
   try {
     const firstLine = readFirstLine(filePath);
     if (firstLine) {
       const entry = JSON.parse(firstLine.trim());
       if (entry.type === 'session_meta' && entry.payload) {
         cwd = normalizePath(entry.payload.cwd);
-        if (typeof entry.payload.id === 'string' && isThreadId(entry.payload.id)) {
+        source = entry.payload.source;
+        if (typeof entry.payload.id === 'string' && entry.payload.id.length > 0 && entry.payload.id.length <= 512) {
           sessionId = entry.payload.id;
         }
       }
@@ -212,7 +193,7 @@ function peekRolloutMetadata(filePath: string): RolloutCwdCacheEntry | null {
   if (rolloutCwdCache.size >= ROLLOUT_CWD_CACHE_LIMIT) {
     rolloutCwdCache.clear();
   }
-  const metadata = { cwd, sessionId, version };
+  const metadata = { cwd, sessionId, source, version };
   rolloutCwdCache.set(filePath, metadata);
   return metadata;
 }
@@ -733,102 +714,6 @@ function getLogDatabaseCandidates(): string[] {
     });
 }
 
-interface ReadOnlyDatabase {
-  prepare(sql: string): { all(): Record<string, unknown>[] };
-  close(): void;
-}
-
-// Probes run every few seconds; keep read-only handles open instead of
-// paying open/close on each query. Rotated databases (logs_2 -> logs_3)
-// leave stale entries behind, so a tiny cap closes everything before a new
-// path is opened; query errors also drop the handle so the next probe
-// reopens a fresh connection.
-const openReadOnlyDatabases = new Map<string, ReadOnlyDatabase>();
-const MAX_OPEN_DATABASES = 4;
-
-function closeReadOnlyDatabase(dbPath: string): void {
-  const cached = openReadOnlyDatabases.get(dbPath);
-  if (!cached) {
-    return;
-  }
-  openReadOnlyDatabases.delete(dbPath);
-  try {
-    cached.close();
-  } catch {
-    // Closing a broken handle must not break the probe.
-  }
-}
-
-function getReadOnlyDatabase(dbPath: string): ReadOnlyDatabase | null {
-  if (!nodeSqlite) {
-    return null;
-  }
-  const cached = openReadOnlyDatabases.get(dbPath);
-  if (cached) {
-    return cached;
-  }
-  if (openReadOnlyDatabases.size >= MAX_OPEN_DATABASES) {
-    for (const key of [...openReadOnlyDatabases.keys()]) {
-      closeReadOnlyDatabase(key);
-    }
-  }
-  const db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
-  openReadOnlyDatabases.set(dbPath, db);
-  return db;
-}
-
-/**
- * Run read-only SQL statements and return rows in sqlite3-CLI text form:
- * one row per line, columns joined with \x1f, NULL as empty string.
- * Returns null when the query could not be executed (treated as transient).
- */
-async function querySqlite(
-  dbPath: string,
-  statements: string[]
-): Promise<string | null> {
-  const finishProbe = startProbe('sqlite');
-  if (nodeSqlite) {
-    try {
-      const db = getReadOnlyDatabase(dbPath);
-      if (!db) {
-        return null;
-      }
-      const lines: string[] = [];
-      for (const statement of statements) {
-        for (const row of runSqliteStatement(db, statement)) {
-          lines.push(
-            Object.values(row)
-              .map((value) => (value === null || value === undefined ? '' : String(value)))
-              .join('\x1f')
-          );
-        }
-      }
-      return lines.join('\n');
-    } catch {
-      closeReadOnlyDatabase(dbPath);
-      return null;
-    } finally {
-      finishProbe();
-    }
-  }
-
-  try {
-    const { stdout } = await execFileAsync(
-      'sqlite3',
-      ['-readonly', '-separator', '\x1f', dbPath, statements.join(';\n') + ';'],
-      {
-        encoding: 'utf8',
-        timeout: PROBE_TIMEOUT_MS,
-      }
-    );
-    return stdout.trimEnd();
-  } catch {
-    return null;
-  } finally {
-    finishProbe();
-  }
-}
-
 function getStateDatabaseCandidates(): string[] {
   const codexHome = getCodexHome();
   let entries: string[];
@@ -987,68 +872,6 @@ async function getProcessTreeSnapshot(
     daemonPids,
     tuiPids,
   };
-}
-
-/** Boot time from /proc/stat (Linux); null elsewhere. */
-function readBootTimeSeconds(): number | null {
-  try {
-    const match = /^btime\s+(\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8'));
-    return match ? Number(match[1]) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Process start times in epoch ms. Linux reads /proc (no spawn; starttime is
- * in USER_HZ=100 ticks); elsewhere one `ps -o lstart=` call (1s resolution).
- * Exited or unreadable processes are simply missing from the result.
- */
-async function getProcessStartTimesMs(pids: readonly string[]): Promise<Map<string, number>> {
-  const starts = new Map<string, number>();
-  const valid = [...new Set(pids)].filter((pid) => /^\d+$/.test(pid));
-  if (valid.length === 0) {
-    return starts;
-  }
-
-  const bootSeconds = readBootTimeSeconds();
-  if (bootSeconds !== null) {
-    for (const pid of valid) {
-      try {
-        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-        const ticks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
-        if (Number.isFinite(ticks)) {
-          starts.set(pid, (bootSeconds + ticks / 100) * 1000);
-        }
-      } catch {
-        // exited between the table walk and now
-      }
-    }
-    return starts;
-  }
-
-  const finishProbe = startProbe('ps');
-  try {
-    // lstart is localized ("三  9月/23 20:10:02 2026" under zh_CN); only the C
-    // locale's "Wed Sep 23 20:10:02 2026" is something Date.parse reads.
-    const { stdout } = await execFileAsync('ps', ['-o', 'pid=,lstart=', '-p', valid.join(',')], {
-      encoding: 'utf8',
-      timeout: PROBE_TIMEOUT_MS,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
-    });
-    for (const line of stdout.split('\n')) {
-      const match = /^\s*(\d+)\s+(\S.*\S)\s*$/.exec(line);
-      const parsed = match ? Date.parse(match[2]) : Number.NaN;
-      if (match && Number.isFinite(parsed)) {
-        starts.set(match[1], parsed);
-      }
-    }
-  } catch {
-    // no start times: the connect-line pairing still works
-  } finally {
-    finishProbe();
-  }
-  return starts;
 }
 
 // Rows per ledger query and queries per refresh: the first refresh of a

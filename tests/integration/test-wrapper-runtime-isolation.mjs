@@ -30,7 +30,7 @@ fs.mkdirSync(path.join(fixture, 'dist/utils'), { recursive: true });
 fs.copyFileSync(path.join(repo, 'dist/namespace.js'), path.join(fixture, 'dist/namespace.js'));
 fs.copyFileSync(path.join(repo, 'dist/utils/codex-path.js'), path.join(fixture, 'dist/utils/codex-path.js'));
 const recorder = `import fs from 'node:fs';
-const names = ['CODEX_HOME', 'CODEX_SESSIONS_PATH', 'CODEX_HUD_DETAILS', 'NO_COLOR'];
+const names = ['CODEX_HOME', 'CODEX_SESSIONS_PATH', 'CODEX_HUD_DETAILS', 'NO_COLOR', 'CODEX_HUD_TMUX_STYLE', 'CODEX_HUD_HIDE_TITLES'];
 fs.writeFileSync(process.env.HUD_TEST_ROOT + '/' + process.env.TMUX_PANE + '.json',
   JSON.stringify({pid: process.pid, ...Object.fromEntries(names.map(k => [k, process.env[k] ?? null]))}));
 setInterval(() => {}, 1000);
@@ -83,7 +83,8 @@ try {
   tmux('set-option', '-s', 'escape-time', '321');
   const unrelated = paneValue('unrelated', '#{pane_pid}');
   const caller = { ...env, CODEX_HOME: path.join(root, "caller home'one"),
-    CODEX_SESSIONS_PATH: path.join(root, 'caller-sessions'), CODEX_HUD_BIND_TOGGLE: '0' };
+    CODEX_SESSIONS_PATH: path.join(root, 'caller-sessions'), CODEX_HUD_BIND_TOGGLE: '0',
+    CODEX_HUD_TMUX_STYLE: 'blue-purple', CODEX_HUD_HIDE_TITLES: '1' };
   delete caller.CODEX_HUD_DETAILS;
   delete caller.NO_COLOR;
   const first = await launch(caller);
@@ -93,20 +94,33 @@ try {
   }
   assert.equal(readPane(first.hud).CODEX_HUD_DETAILS, null);
   assert.equal(readPane(first.hud).NO_COLOR, null);
+  assert.equal(readPane(first.hud).CODEX_HUD_TMUX_STYLE, 'blue-purple');
+  assert.equal(readPane(first.hud).CODEX_HUD_HIDE_TITLES, '1');
   assert.equal(tmux('show-options', '-sv', 'escape-time'), '321');
 
   const mainPid = paneValue(first.main, '#{pane_pid}');
   const oldHudPid = readPane(first.hud).pid;
   execFileSync(path.join(fixture, 'bin/codex-hud'), ['--reload', '--target', first.session], {
     cwd: fixture, env: { ...caller, CODEX_HOME: path.join(root, 'different-reload-home'),
-      CODEX_SESSIONS_PATH: path.join(root, 'different-reload-sessions'), CODEX_HUD_DETAILS: 'full' },
+      CODEX_SESSIONS_PATH: path.join(root, 'different-reload-sessions'), CODEX_HUD_DETAILS: 'full',
+      CODEX_HUD_TMUX_STYLE: undefined, CODEX_HUD_HIDE_TITLES: undefined },
     stdio: 'pipe', timeout: 15_000,
   });
   await until(() => readPane(first.hud).pid !== oldHudPid, 'reload did not replace the HUD');
   assert.equal(readPane(first.hud).CODEX_HOME, caller.CODEX_HOME, 'reload stays with the main Codex data root');
   assert.equal(readPane(first.hud).CODEX_SESSIONS_PATH, caller.CODEX_SESSIONS_PATH);
   assert.equal(readPane(first.hud).CODEX_HUD_DETAILS, 'full');
+  assert.equal(readPane(first.hud).CODEX_HUD_TMUX_STYLE, 'blue-purple', 'theme survives reload from an unstyled shell');
+  assert.equal(readPane(first.hud).CODEX_HUD_HIDE_TITLES, '1', 'a plain reload must not reveal private titles');
   assert.equal(paneValue(first.main, '#{pane_pid}'), mainPid);
+  const themedPid = readPane(first.hud).pid;
+  execFileSync(path.join(fixture, 'bin/codex-hud'), ['--tmux-style', 'default', '--reload', '--target', first.session], {
+    cwd: fixture, env: { ...caller, CODEX_HUD_HIDE_TITLES: '0' }, stdio: 'pipe', timeout: 15_000,
+  });
+  await until(() => readPane(first.hud).pid !== themedPid, 'explicit default theme reload');
+  assert.equal(readPane(first.hud).CODEX_HUD_TMUX_STYLE, 'default');
+  assert.equal(option(first.session, '@codex_hud_tmux_style'), 'default');
+  assert.equal(readPane(first.hud).CODEX_HUD_HIDE_TITLES, '0', 'explicit 0 disables title privacy');
 
   const noRoots = { ...caller };
   delete noRoots.CODEX_HOME;

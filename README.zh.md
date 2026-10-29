@@ -20,7 +20,7 @@
 
 | 按键 | 操作 |
 | --- | --- |
-| `?` | 打开／关闭五行帮助面板 |
+| `?` | 打开／关闭帮助；窄屏时用 `j/k` 翻页 |
 | `Esc` | 关闭帮助；没有帮助时返回 Codex 主 pane |
 | `Ctrl+T` | 切换单会话／overview |
 | `t` / `d` | 循环工具详情／切换 HUD 完整详情 |
@@ -38,7 +38,9 @@ codex-hud --doctor --json
 npm run bench
 ```
 
-HUD 参数放在 Codex 参数或控制命令前。`standard` 保留常规布局；`coexist` 适合与 Codex 原生底栏共存，优先显示任务、子代理与告警，平静时的 Context 放进完整详情，高占用时仍显示。常驻权限标识改用信息强调色，与黄色即时告警区分。可选的 `blue-purple` 配色只改变目标 tmux session；`--tmux-style default` 清除这几个局部样式覆盖。对应环境变量为 `CODEX_HUD_LABEL`、`CODEX_HUD_LAYOUT`、`CODEX_HUD_TMUX_STYLE`。
+HUD 参数放在 Codex 参数或控制命令前。`standard` 保留常规布局；`coexist` 适合与 Codex 原生底栏共存，优先显示任务、子代理与告警，平静时的 Context 放进完整详情，高占用时仍显示。常驻权限标识改用信息强调色，与黄色即时告警区分。可选的 `blue-purple` 配色同步作用于 HUD 的蓝紫强调色和目标 tmux session；黄色告警、红色错误保持语义。`--tmux-style default` 恢复默认配色和局部 tmux 样式。`CODEX_HUD_THEME=blue-purple` 可单独设置 HUD 配色，优先于 tmux 样式；未设置样式变量的 shell 重载时，沿用该 session 的 tmux 配色。对应环境变量为 `CODEX_HUD_LABEL`、`CODEX_HUD_LAYOUT`、`CODEX_HUD_TMUX_STYLE`。
+
+日常权限行使用 `Approval: ask · [workspace-write]` 等短标识，`d` 保留完整权限与环境清单。切换模式、详情、工具和布局后会显示短暂反馈；终端支持焦点事件时，重新聚焦也显示当前模式。帮助使用实际安装的切换快捷键，窄屏分页后所有命令仍可访问。
 
 紧凑详情将协议警告按类型汇总；`d` 展示类型名称及异常记录数量，完整详情也显示额度来源和观测时间。`--doctor --json` 提供绑定依据、CLI/Node 版本、读取位置／积压、采集器健康状态和偏好。运行时快照最多每 10 秒刷新，进程已退出或快照过旧时标记为不新鲜；不包含提示词正文或认证信息。
 
@@ -53,7 +55,9 @@ daemon 绑定会保留仍存活 TUI 的已确认连接，即使数小时没有�
 
 自动重连、绑定公告、总览和额度共享统一使用 `CODEX_HOME` 与 `CODEX_SESSIONS_PATH` 的规范化目录作为数据范围；符号链接指向同一目录时视为同一范围。相同项目下的不同账号不会串接，总览顶部显示范围短标识与当前筛选状态。旧 HUD 没有范围标识时不会被混入总览，重载后会自动发布新标识；`--doctor --json` 将其标为 `scopeVerified: false`。
 
-总览最多保留 20 个日志解析器，每轮最多推进 8 个，解析调度预算 100 ms（已开始的单批读取会完成）。当前、选中和需处理的会话优先；其他行按较慢节奏轮换，保留最近快照。排队或积压中的行显示 `Updating`；同范围、同 tmux server 的 HUD 可复用短期总览快照。原生 SQLite 与 CLI 查询都计时，原生单条查询超过 50 ms 时记录查询摘要、行数和查询计划，不写入原 SQL 参数。
+总览按会话 ID 去重，以活跃 pane 的已验证绑定为准；子代理在进入解析队列前排除，避免缓存淘汰后出现占位残影。
+
+总览最多保留 20 个日志解析器，每轮最多推进 8 个，解析调度预算 100 ms（已开始的单批读取会完成）。当前、选中和需处理的会话优先；其他行按较慢节奏轮换，保留最近快照。排队或积压中的行显示 `Updating`；同范围、同 tmux server 的 HUD 可复用短期总览快照。原生 SQLite 在独立 Worker 中执行，兼容旧 Node 的 CLI 查询仍异步执行；查询最多等待 8 秒，超时后重建 Worker。小型查询结果按数据库与 WAL 版本复用最多 750 ms，进程启动时间也只短暂共享，不缓存完整进程命令。原生 SQLite 与 CLI 查询都计时，原生单条查询超过 50 ms 时记录查询摘要、行数和查询计划，不写入原 SQL 参数。
 
 完整详情里的 `Skills enabled: 已启用/已发现` 是文件与已检查配置的清单，**不是本轮已加载数**。包括项目各级与用户 `~/.agents/skills`、管理目录 `/etc/codex/skills`、旧 `.codex/skills` 和显式系统/管理目录；按真实 `SKILL.md` 路径去重，遵循 `CODEX_HOME/config.toml` 的 `[[skills.config]] enabled=false`。HUD 不模拟 Codex 的项目信任和完整 profile 合并；实际运行时加载数未知。
 
@@ -149,7 +153,7 @@ codex
 
 默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。切换 `d` 后，标题行会短暂显示三秒 `Details: compact/full`，即使两种模式当前显示的行相同也有反馈。单会话和概览标题统一将绝对路径缩成项目名或文件名，宽窗口适度增加标题空间，任务文字优先于运行时长和长分支。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
 
-预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg) · [5 行 coexist 容量告警](./doc/fig/coexist-pressure.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
+预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg) · [窄屏分页帮助](./doc/fig/help-narrow.svg) · [5 行 coexist 容量告警](./doc/fig/coexist-pressure.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
@@ -246,6 +250,12 @@ Codex `/goal` 的 `thread_goal_updated` 记录属于已知元数据，不会触�
 运行 `codex-hud --doctor` 可查看；JSONL 读取错误包含文件和出错字节位置。
 相同采集错误仅记录一次，原因变化或恢复后再次失败时重新记录。
 
+通知命令的非零退出、启动错误和超时会写入 HUD 诊断日志，并保留最多 4 KiB 的脱敏 stderr。命令超过 10 秒时终止其进程组；HUD 退出时也会清理仍在执行的通知。
+
+状态目录使用 `0700`，共享缓存、额度趋势和诊断文件使用 `0600`；旧缓存读取时会收紧权限，缓存读取拒绝符号链接。临时回退目录包含用户 ID。`CODEX_HUD_HIDE_TITLES=1` 适合不希望在总览与共享缓存中出现提示词标题的场景；它不删除已有 Codex 日志或其他未启用该选项的 HUD 缓存。
+
+首次运行时，默认 Codex home 或 `sessions` 目录尚未创建不会使 HUD 退出，目录与首个日志出现后自动绑定；显式指定但无效的 `CODEX_HOME` / `CODEX_SESSIONS_PATH` 仍会报错，避免连接到错误账号。`codex -c ... exec ...`、`codex --profile ... completion ...` 等带前置全局选项的非交互命令直接透传，保留参数、管道输出与退出码。
+
 ### 环境变量
 
 HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reload` 会重新捕获。
@@ -277,6 +287,8 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | 执行类默认显示命令头部（如 `npm test`）；`full` 显示脱敏摘要，`off` 隐藏目标细节，仍保留运行数量与失败结果（运行时可用 `t` 键或 `codex-hud --cycle-details` 循环切换）。shell 内建命令不算命令：`ffmpeg … ; echo ; exit` 显示为 `ffmpeg` |
 | `CODEX_HUD_ANIMATION` | `1` | 设为 `0` 固定活动图标，保留文字状态变化 |
 | `CODEX_HUD_MODE` | `single` | 初始显示模式：`single` 或 `overview` |
+| `CODEX_HUD_THEME` | 跟随 `CODEX_HUD_TMUX_STYLE` | HUD 强调色：`default` / `blue-purple`（深色终端）；尊重 `NO_COLOR` |
+| `CODEX_HUD_HIDE_TITLES` | `0` | `1` 隐藏提示词生成的会话标题，使用不含这些标题的独立总览缓存；手动 `--label` 保留。重载沿用，显式设为 `0` 关闭 |
 | `CODEX_HUD_LOG_FILE` | 每用户默认路径 | 将 HUD 诊断信息（watcher/渲染/追踪错误）追加写入该文件。macOS 默认 `~/Library/Logs/codex-hud/hud.log`，其他平台为 `$XDG_STATE_HOME/codex-hud/hud.log`；设为 `off` 则丢弃 |
 | `CODEX_HUD_NO_ATTACH` | `0` | 已废弃：强制新建会话而不复用 |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | 保留兼容；`.agents` 已计入 Codex skill 清单，不再单列 |

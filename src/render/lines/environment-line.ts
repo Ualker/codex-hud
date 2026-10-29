@@ -49,6 +49,8 @@ export function renderEnvironmentLine(
     approvalPolicy === undefined || (approvalPolicy === 'never' && sandbox === undefined);
   const approvalDisplay = approvalUncertain
     ? '?'
+    : options.compact && approvalPolicy === 'on-request' ? 'ask'
+    : options.compact && approvalPolicy === 'on-failure' ? 'on failure'
     : getApprovalPolicyDisplay({}, {
         approvalPolicy,
         sandboxMode: sandbox,
@@ -59,7 +61,9 @@ export function renderEnvironmentLine(
       : null;
 
   const sandboxPart = !fullAccess
-    ? colors.dim('Sandbox: ') +
+    ? options.compact && sandbox !== undefined
+      ? theme.info(`[${sanitizeTerminalText(sandbox)}]`)
+      : colors.dim('Sandbox: ') +
       (sandbox === undefined
         ? colors.dim('?')
         : sandbox === 'workspace-write'

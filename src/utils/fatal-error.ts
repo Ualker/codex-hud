@@ -14,7 +14,7 @@ export function installFatalHandlers(): void {
       try {
         if (process.stdin.isTTY)
           process.stdin.setRawMode(false);
-        writeSync(1, '\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[H\x1b[2KHUD stopped after an unexpected error; restarting…\n');
+        writeSync(1, '\x1b[?1004l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[H\x1b[2KHUD stopped after an unexpected error; restarting…\n');
       }
       catch { /* No asynchronous work in a damaged process. */ }
     }

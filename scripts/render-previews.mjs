@@ -3,6 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const option = (name, fallback) => {
+  const index = process.argv.indexOf(name);
+  return index < 0 ? fallback : process.argv[index + 1];
+};
+const outputDirectory = path.resolve(option('--output-dir', fileURLToPath(new URL('../doc/fig', import.meta.url))));
+process.env.CODEX_HUD_THEME = option('--theme', 'default');
+process.env.CODEX_HUD_ASCII = '0';
+delete process.env.CODEX_HUD_HIDE_TITLES;
+
 delete process.env.NO_COLOR;
 process.env.TERM = 'xterm-256color';
 process.env.CODEX_HUD_TOOL_DETAILS = 'targets';
@@ -61,7 +70,14 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
     let x = 20, color = foreground, opacity = 1, weight = 400, underline = false;
     for (const segment of line.split(/(\x1b\[[\d;]*m)/)) {
       if (segment.startsWith('\x1b[')) {
-        for (const code of segment.slice(2, -1).split(';').map(Number)) {
+        const codes = segment.slice(2, -1).split(';').map(Number);
+        for (let i = 0; i < codes.length; i++) {
+          const code = codes[i];
+          if (code === 38 && codes[i + 1] === 2 && i + 4 < codes.length) {
+            color = `rgb(${codes[i + 2]},${codes[i + 3]},${codes[i + 4]})`;
+            i += 4;
+            continue;
+          }
           if (code === 0) { color = foreground; opacity = 1; weight = 400; underline = false; }
           else if (code === 1) weight = 700;
           else if (code === 2) opacity = 0.64;
@@ -78,7 +94,7 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
     }
   }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(title)}"><rect width="${width}" height="${height}" rx="12" fill="${background}"/><path d="M0 48H${width}" stroke="${border}"/><circle cx="22" cy="24" r="5" fill="#ff5f57"/><circle cx="40" cy="24" r="5" fill="#febc2e"/><circle cx="58" cy="24" r="5" fill="#28c840"/><text x="80" y="29" fill="${light ? '#57606a' : '#8b949e'}" font-family="monospace" font-size="12">${escape(title)}</text><g font-family="Menlo,DejaVu Sans Mono,monospace" font-size="14" xml:space="preserve">${body}</g></svg>\n`;
-  const output = fileURLToPath(new URL(`../doc/fig/${name}.svg`, import.meta.url));
+  const output = path.join(outputDirectory, `${name}.svg`);
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, svg);
   console.log(output);
@@ -100,3 +116,5 @@ preview('coexist-pressure', 'Codex HUD / coexist / critical context / 5 rows', {
     elapsedStartedAt: ago(30), activeDescendantCount: 0,
   })) },
 }, 100, 5);
+
+preview('help-narrow', 'Codex HUD / paginated help / 40 columns', { ...data, helpVisible: true }, 40, 5);

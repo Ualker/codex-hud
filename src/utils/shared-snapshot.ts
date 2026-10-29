@@ -10,9 +10,7 @@
  * every failure degrades to collecting locally.
  */
 
-import * as fs from 'fs';
-
-import { resolveHudStateFile } from './state-dir.js';
+import { readPrivateState, resolveHudStateFile, writePrivateState } from './state-dir.js';
 
 interface SharedEnvelope {
   writtenAt: number;
@@ -39,7 +37,7 @@ export function readSharedSnapshot<T>(
     return null;
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as SharedEnvelope;
+    const parsed = JSON.parse(readPrivateState(filePath)) as SharedEnvelope;
     if (
       typeof parsed !== 'object' ||
       parsed === null ||
@@ -66,18 +64,12 @@ export function writeSharedSnapshot(
   if (!filePath) {
     return;
   }
-  const tempPath = `${filePath}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(
-      tempPath,
+    writePrivateState(
+      filePath,
       JSON.stringify({ writtenAt: nowMs, value } satisfies SharedEnvelope)
     );
-    fs.renameSync(tempPath, filePath);
   } catch {
-    try {
-      fs.rmSync(tempPath, { force: true });
-    } catch {
-      // Nothing left to clean.
-    }
+    // An unavailable cache never prevents collecting locally.
   }
 }

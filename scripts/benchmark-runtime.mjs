@@ -31,7 +31,7 @@ function stopChild(child) {
 const encode = (type, payload) => JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + '\n';
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !/^(CODEX_|CMUX_|TMUX|NODE_OPTIONS|NODE_COMPILE_CACHE)/.test(key)));
-const report = { node: process.version, platform: `${process.platform}/${process.arch}`, seconds, historyMiB, journalMode: 'wal',
+const report = { fixtureVersion: 2, node: process.version, platform: `${process.platform}/${process.arch}`, seconds, historyMiB, journalMode: 'wal',
   note: 'RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.', runs: [] };
 try {
   for (const count of instances) {
@@ -58,7 +58,7 @@ try {
       // Match the journal mode observed in Codex's logs/state databases. A
       // rollback-journal fixture adds startup reader/writer contention that
       // is absent from the WAL setup being measured.
-      sql('logs_1.sqlite', 'PRAGMA journal_mode=WAL; CREATE TABLE logs(id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, thread_id TEXT, process_uuid TEXT, target TEXT, message TEXT); CREATE INDEX logs_ts ON logs(ts);');
+      sql('logs_1.sqlite', 'PRAGMA journal_mode=WAL; CREATE TABLE logs(id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, thread_id TEXT, process_uuid TEXT, target TEXT, feedback_log_body TEXT); CREATE INDEX idx_logs_ts ON logs(ts); CREATE INDEX idx_logs_process_uuid_threadless_ts ON logs(process_uuid, ts, ts_nanos) WHERE thread_id IS NULL;');
       sql('state_5.sqlite', 'PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, thread_source TEXT, archived INTEGER); CREATE TABLE thread_spawn_edges(child_thread_id TEXT);');
       const filler = encode('response_item', { type: 'reasoning', content: 'x'.repeat(1000) });
       const block = filler.repeat(Math.ceil(historyMiB * 1048576 / Buffer.byteLength(filler)));
@@ -80,7 +80,10 @@ try {
         tmux(['set-option', '-t', name, '@codex_hud_pane', pane]);
         tmux(['set-option', '-t', name, '@codex_hud_main_pane', main]);
         sql('state_5.sqlite', `INSERT INTO threads VALUES (${sqlQuote(id)},${sqlQuote(rollout)},'cli',0);`);
-        sql('logs_1.sqlite', `INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,target,message) VALUES (${Math.floor(Date.now() / 1000)},0,${sqlQuote(id)},'pid:${mainPid}:fixture','codex_core','fixture');`);
+        sql('logs_1.sqlite', `INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,target,feedback_log_body) VALUES (${Math.floor(Date.now() / 1000)},0,${sqlQuote(id)},'pid:${mainPid}:fixture','codex_core','fixture');`);
+        // Model an in-process TUI explicitly. A managed daemon elsewhere on
+        // the host must not make this synthetic sleeper look like its client.
+        sql('logs_1.sqlite', `INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,target,feedback_log_body) VALUES (${Math.floor(Date.now() / 1000)},0,NULL,'pid:${mainPid}:fixture','codex_core','app_server.request{app_server.connection_id=0}: fixture');`);
         const metrics = path.join(run, `${i}.json`);
         const child = spawn(process.execPath, ['--import', path.join(repo, 'scripts/runtime-metrics.mjs'), path.join(repo, 'dist/index.js')], {
           cwd, env: { ...scopedEnv, TMUX: `${socket},${serverPid},0`,
@@ -92,7 +95,7 @@ try {
         let output = ''; let errors = '';
         child.stdout.on('data', chunk => { output = (output + chunk).slice(-65536); });
         child.stderr.on('data', chunk => { errors = (errors + chunk).slice(-4096); });
-        children.push({ child, metrics, output: () => output, errors: () => errors });
+        children.push({ child, metrics, name, id, rollout, output: () => output, errors: () => errors });
       }
       writer = setInterval(() => {
         appendBatches++;
@@ -105,12 +108,20 @@ try {
       for (const item of children) {
         assert.equal(item.child.exitCode, null, item.errors());
         assert.match(item.output(), /project-/, 'real overview must render fixture sessions');
+        const encoded = tmux(['show-option', '-qv', '-t', item.name, '@codex_hud_bound']);
+        const binding = encoded ? JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) : null;
+        const diagnostic = JSON.parse(fs.readFileSync(item.metrics, 'utf8'));
+        assert.equal(binding?.sessionId, item.id,
+          `each HUD must bind its own fixture, not just show scan results: ${JSON.stringify({ binding, sqlite: diagnostic.sqlite, probes: diagnostic.probes })}`);
+        assert.equal(binding?.rolloutPath, item.rollout);
       }
       clearInterval(writer);
       await Promise.all(children.map(({ child }) => stopChild(child)));
       const metrics = children.map(item => JSON.parse(fs.readFileSync(item.metrics, 'utf8')));
       assert.ok(metrics.every(item => item.probes.ps?.count > 0 && item.probes.sqlite?.count > 0),
         'benchmark must exercise process binding and SQLite, not just render frames');
+      assert.ok(metrics.every(item => item.sqlite.failures === 0),
+        'SQL failures invalidate the benchmark; update the fixture or fix the collector');
       const sum = key => Number(metrics.reduce((total, item) => total + (item[key] ?? 0), 0).toFixed(2));
       const subprocesses = {};
       for (const item of metrics) for (const [command, n] of Object.entries(item.subprocesses)) subprocesses[command] = (subprocesses[command] ?? 0) + n;

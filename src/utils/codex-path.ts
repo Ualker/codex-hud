@@ -43,6 +43,10 @@ export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
     }
   }
 
+  // A fresh install has no default home yet. Keep watching its canonical
+  // location while Codex creates it; explicit overrides above remain strict.
+  if (!fs.existsSync(candidates[0])) return canonicalDataPath(candidates[0]);
+
   throw new Error(
     'Unable to resolve Codex home. Set CODEX_HOME to the real directory or create ~/.codex (symlinked or not).'
   );
@@ -61,6 +65,9 @@ export function getSessionsDir(): string {
 
   const home = getCodexHome();
   const sessionsDir = path.join(home, 'sessions');
+  // Codex creates this lazily, after its first session starts. Chokidar can
+  // watch a missing directory; the namespace remains the same when it appears.
+  if (!fs.existsSync(sessionsDir)) return sessionsDir;
   const resolved = resolveExistingDirectory(sessionsDir);
   if (!resolved) {
     throw new Error(

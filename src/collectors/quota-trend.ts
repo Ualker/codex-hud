@@ -30,7 +30,7 @@
  * degrades silently to the in-process pairs.
  */
 
-import * as fs from 'fs';
+import { readPrivateState, writePrivateState } from '../utils/state-dir.js';
 
 import type { RateLimitSnapshot, RateLimitWindow } from '../types.js';
 
@@ -343,7 +343,7 @@ export class QuotaTrendTracker {
     let persisted: Map<number, WindowSeries> | null = null;
     try {
       persisted = parsePersisted(
-        fs.readFileSync(this.stateFilePath, 'utf8')
+        readPrivateState(this.stateFilePath)
       );
     } catch {
       return;
@@ -383,16 +383,10 @@ export class QuotaTrendTracker {
       windows[String(windowMinutes)] = series;
     }
     const payload = { version: PERSIST_VERSION, windows };
-    const tempPath = `${this.stateFilePath}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(tempPath, JSON.stringify(payload));
-      fs.renameSync(tempPath, this.stateFilePath);
+      writePrivateState(this.stateFilePath, JSON.stringify(payload));
     } catch {
-      try {
-        fs.rmSync(tempPath, { force: true });
-      } catch {
-        // Nothing left to clean.
-      }
+      // Persistence is optional; retain the in-memory series.
     }
   }
 }
