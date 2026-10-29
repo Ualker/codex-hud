@@ -22,7 +22,22 @@ assert.doesNotMatch(render({...data,layoutPreset:'coexist'}).join('\n'),/Ctx:/);
 assert.match(render({...data,layoutPreset:'coexist',contextUsage:{...data.contextUsage,percent:85}}).join('\n'),/Ctx:/);
 const filtered=render({...data,displayMode:'overview',overviewFilter:'attention',overviewSelectionId:'2'}).join('\n');
 assert.match(filtered,/> .*Approval/);assert.doesNotMatch(filtered,/Idle/);
-const help=render({...data,helpVisible:true}).join('\n');assert.match(help,/Esc return/);assert.match(help,/Enter open/);
+process.env.CODEX_HUD_TOGGLE_KEY = 'Prefix+G';
+for (const width of [28, 48, 120]) {
+  const pages = Array.from({ length: 4 }, (_, helpPage) => render({ ...data, helpVisible: true, helpPage }, width, 5));
+  const text = pages.flat().join('\n');
+  assert.match(text, /Prefix\+G: switch view/);
+  assert.doesNotMatch(text, /Prefix\+H/);
+  assert.match(text, /Enter: open selected/);
+  assert.match(text, /Esc: close/);
+  assert.ok(pages.every(rows => rows.length <= 5 && rows.every(row => visualLength(row) <= width)));
+}
+delete process.env.CODEX_HUD_TOGGLE_KEY;
+process.env.CODEX_HUD_HIDE_TITLES = '1';
+assert.doesNotMatch(render({ ...data, sessionLabel: '' }).join('\n'), /long original title/);
+assert.match(render(data).join('\n'), /My task/);
+assert.doesNotMatch(render({ ...data, displayMode: 'overview' }).join('\n'), /Task [0-2]/);
+delete process.env.CODEX_HUD_HIDE_TITLES;
 const protocol={...data,protocolHealth:{unknownTopLevelTypes:{meta:1},unknownResponseTypes:{future:2},unknownEventTypes:{},malformedLines:0}};
 assert.match(stripAnsi(renderHealthLine(protocol)),/2 types/);assert.equal(renderNoteLine(protocol),null);
 setHudDetails(true);assert.match(stripAnsi(renderHealthLine(protocol)),/future/);assert.match(stripAnsi(renderNoteLine(protocol)),/meta/);setHudDetails(false);

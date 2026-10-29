@@ -778,12 +778,17 @@ set_fixed_hud_height() {
 
     tmux set-option -t "$session_name" -q @codex_hud_pane "$hud_pane_id" || return 1
     tmux set-option -t "$session_name" -q @codex_hud_root "$HUD_DIR" || return 1
+    case "${CODEX_HUD_HIDE_TITLES:-}" in
+        0|1) tmux set-option -t "$session_name" @codex_hud_hide_titles "$CODEX_HUD_HIDE_TITLES" || return 1 ;;
+    esac
     case "${CODEX_HUD_TMUX_STYLE:-}" in
         blue-purple)
+            tmux set-option -t "$session_name" @codex_hud_tmux_style blue-purple || return 1
             tmux set-option -t "$session_name" status-style 'bg=#20202e,fg=#b8b8df' || return 1
             tmux set-option -t "$session_name" status-left-style 'fg=#92b4ff,bold' || return 1
             tmux set-option -t "$session_name" status-right-style 'fg=#b9a3e3' || return 1 ;;
         default)
+            tmux set-option -t "$session_name" @codex_hud_tmux_style default || return 1
             tmux set-option -u -t "$session_name" status-style || true
             tmux set-option -u -t "$session_name" status-left-style || true
             tmux set-option -u -t "$session_name" status-right-style || true ;;
@@ -923,6 +928,9 @@ HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HUD_MODE
     CODEX_HUD_LAYOUT
     CODEX_HUD_LABEL
+    CODEX_HUD_THEME
+    CODEX_HUD_TMUX_STYLE
+    CODEX_HUD_HIDE_TITLES
     CODEX_HUD_HEIGHT_FIT
     CODEX_HUD_TOOL_DETAILS
     CODEX_HUD_DETAILS
@@ -957,6 +965,20 @@ build_hud_pane_command() {
     for var in "${HUD_PASSTHROUGH_ENV_VARS[@]}"; do
         value="${!var:-}"
         case "$var" in
+            CODEX_HUD_HIDE_TITLES)
+                # A plain reload must not unexpectedly reveal private titles.
+                # Explicit 0 turns the setting off for this session.
+                if [[ -z "$value" ]]; then
+                    value=$(tmux show-option -qv -t "$session_name" @codex_hud_hide_titles 2>/dev/null || true)
+                fi
+                ;;
+            CODEX_HUD_TMUX_STYLE)
+                # Keep the HUD accent coordinated with this session's tmux
+                # style when --reload is invoked from an unstyled shell.
+                if [[ -z "$value" ]]; then
+                    value=$(tmux show-option -qv -t "$session_name" @codex_hud_tmux_style 2>/dev/null || true)
+                fi
+                ;;
             CODEX_HOME|CODEX_SESSIONS_PATH)
                 # Reloading display settings must keep the data roots of the
                 # still-running main Codex. New sessions always record either
@@ -1188,10 +1210,9 @@ is_passthrough_command() {
         exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|exec-server|\
         remote-control|app|completion|update|doctor|sandbox|debug|apply|a|\
         archive|delete|unarchive|cloud|features|help|--version|-V|\
-        agents|queue|migrate-rollouts)
-            # The last three arrived with codex 0.149: `queue` and
-            # `migrate-rollouts` are plain CLI commands whose output belongs
-            # on the caller's stdout, and `agents` is a browse TUI over the
+        agents|queue|migrate-rollouts|migrate-nfs-db)
+            # Operational commands belong on the caller's stdout, and
+            # `agents` is a browse TUI over the
             # app-server daemon, not a Codex session worth a HUD.
             return 0
             ;;
@@ -1201,11 +1222,39 @@ is_passthrough_command() {
     esac
 }
 
+# Codex accepts global options before its subcommand. Skip only known options
+# and their values: a prompt containing "exec" must remain an interactive run.
+has_passthrough_command() {
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            -c|--config|-p|--profile|-m|--model|-s|--sandbox|-a|--ask-for-approval|-C|--cd|\
+            -i|--image|--enable|--disable|--local-provider|--add-dir|--remote|--remote-auth-token-env)
+                [[ "$#" -ge 2 ]] || return 1
+                shift 2
+                ;;
+            --config=*|--profile=*|--model=*|--sandbox=*|--ask-for-approval=*|--cd=*|\
+            --image=*|--enable=*|--disable=*|--local-provider=*|--add-dir=*|--remote=*|--remote-auth-token-env=*|\
+            -c?*|-p?*|-m?*|-s?*|-a?*|-C?*|-i?*)
+                shift
+                ;;
+            --oss|--full-auto|--dangerously-bypass-approvals-and-sandbox|--search|--no-alt-screen|\
+            --strict-config|--approve-for-me|--dangerously-bypass-hook-trust|--worktree|--no-daemon)
+                shift
+                ;;
+            --) return 1 ;;
+            --help|-h) return 0 ;;
+            *) is_passthrough_command "$1"; return $? ;;
+        esac
+    done
+    return 1
+}
+
 # Main function
 main() {
     local codex_args=()
 
-    # Parse wrapper arguments and pass the rest to codex CLI.
+    # Wrapper options precede Codex argv. Once Codex arguments begin, retain
+    # every byte, including option values and Codex's own -- delimiter.
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
             --attach)
@@ -1214,13 +1263,9 @@ main() {
             --new-session)
                 FORCE_NEW_SESSION="1"
                 ;;
-            --)
-                shift
+            *)
                 codex_args+=("$@")
                 break
-                ;;
-            *)
-                codex_args+=("$1")
                 ;;
         esac
         shift
@@ -1241,7 +1286,7 @@ main() {
 
     # A non-interactive Codex subcommand belongs to the CLI, not to a HUD:
     # hosting it in a tmux pane detaches its output from the caller's stdout.
-    if [[ "${#codex_args[@]}" -gt 0 ]] && is_passthrough_command "${codex_args[0]}"; then
+    if has_passthrough_command "${codex_args[@]}"; then
         resolve_codex_cli
         exec "$CODEX_CLI_PATH" "${codex_args[@]}"
     fi

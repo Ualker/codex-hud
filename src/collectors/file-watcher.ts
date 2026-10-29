@@ -5,6 +5,7 @@
 
 import { watch, type FSWatcher } from 'chokidar';
 import * as path from 'path';
+import * as fs from 'fs';
 import { getCodexHome, getSessionsDir } from '../utils/codex-path.js';
 import { logHudError } from '../utils/hud-log.js';
 
@@ -82,6 +83,7 @@ export function isStaleSessionDatePath(
  */
 export class FileWatcher {
   private watcher: FSWatcher | null = null;
+  private missingParentTimer: NodeJS.Timeout | null = null;
   private callbacks: FileChangeCallback[] = [];
 
   constructor(
@@ -112,9 +114,13 @@ export class FileWatcher {
       return;
     }
 
+    // Chokidar handles a missing child, but can miss creation when several
+    // parent directories were absent at startup. Rearm only those paths once
+    // their parent exists; never watch the whole HOME as a workaround.
+    const missingParents = new Set(this.paths.filter(file => !fs.existsSync(path.dirname(file))));
     this.watcher = watch(this.paths, {
       persistent: true,
-      ignoreInitial: true,
+      ignoreInitial: missingParents.size === 0,
       usePolling: this.options.usePolling ?? false,
       interval: 1000,
       ...(this.options.ignored ? { ignored: this.options.ignored } : {}),
@@ -134,12 +140,37 @@ export class FileWatcher {
     this.watcher.on('add', (filePath) => this.notifyCallbacks(filePath, 'add'));
     this.watcher.on('change', (filePath) => this.notifyCallbacks(filePath, 'change'));
     this.watcher.on('unlink', (filePath) => this.notifyCallbacks(filePath, 'unlink'));
+    if (missingParents.size > 0) {
+      const watcher = this.watcher;
+      this.missingParentTimer = setInterval(() => {
+        for (const file of missingParents) {
+          if (!fs.existsSync(path.dirname(file))) continue;
+          missingParents.delete(file);
+          try {
+            watcher.unwatch(file);
+            watcher.add(file);
+          } catch (error) {
+            missingParents.add(file);
+            reportWatcherError('File watcher rearm', error);
+          }
+        }
+        if (missingParents.size === 0 && this.missingParentTimer) {
+          clearInterval(this.missingParentTimer);
+          this.missingParentTimer = null;
+        }
+      }, 1000);
+      this.missingParentTimer.unref();
+    }
   }
 
   /**
    * Stop watching
    */
   async stop(): Promise<void> {
+    if (this.missingParentTimer) {
+      clearInterval(this.missingParentTimer);
+      this.missingParentTimer = null;
+    }
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;

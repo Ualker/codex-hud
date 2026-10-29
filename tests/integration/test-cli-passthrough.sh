@@ -44,6 +44,11 @@ chmod +x "$FAKE_BIN_DIR/tmux"
 export PATH="$FAKE_BIN_DIR:$PATH"
 export CODEX_CLI_PATH="$FAKE_BIN_DIR/codex"
 unset TMUX
+# The live cmux shell may inject its own Codex argv. This fixture tests the
+# wrapper's forwarding contract with a plain CLI, just like run-suite.sh.
+while IFS= read -r name; do
+  case "$name" in CMUX_*) unset "$name" ;; esac
+done < <(compgen -e)
 
 failures=0
 check() {
@@ -82,6 +87,48 @@ done
 echo "stdout survives, so pipes and redirection work:"
 out="$("$ROOT_DIR/bin/codex-hud" exec "summarize this" 2>/dev/null | tr -d '\n')"
 check "codex exec is pipeable" "REAL-CODEX-CLI args=[exec summarize this]" "$out"
+
+echo "global options preserve argv, stdout and exit status:"
+cat > "$FAKE_BIN_DIR/codex" <<'FAKE'
+#!/usr/bin/env bash
+printf '<%s>\n' "$@"
+exit 23
+FAKE
+check_forwarding() {
+  local code=0 actual expected
+  rm -f "$MARKER"
+  actual="$("$ROOT_DIR/bin/codex-hud" "$@" | cat)" || code=$?
+  expected="$(printf '<%s>\n' "$@")"
+  if [[ "$actual" != "$expected" || "$code" != 23 || -e "$MARKER" ]]; then
+    echo "  FAIL: option forwarding: $* (exit=$code)"
+    failures=$((failures + 1))
+  fi
+}
+check_forwarding -c 'model="fixture"' exec --json 'two words'
+check_forwarding --profile work exec --json hello
+check_forwarding --profile=work --config 'key="exec"' completion zsh
+check_forwarding -pwork --search review --uncommitted
+check_forwarding --enable hooks --version
+check_forwarding -c --attach exec --json hello
+check_forwarding exec -- --new-session
+check_forwarding --strict-config --remote unix:// --profile work migrate-nfs-db --help
+check_forwarding -c 'model="fixture"' --help
+
+rm -f "$MARKER"
+"$ROOT_DIR/bin/codex-hud" -- exec >/dev/null 2>&1 || true
+if [[ ! -e "$MARKER" ]]; then
+  echo "  FAIL: -- marks a prompt, not a subcommand"
+  failures=$((failures + 1))
+fi
+
+for prompt in exec 'exec this prompt'; do
+  rm -f "$MARKER"
+  "$ROOT_DIR/bin/codex-hud" -c "$prompt" 'write a test' >/dev/null 2>&1 || true
+  if [[ ! -e "$MARKER" ]]; then
+    echo "  FAIL: option value must not become a subcommand"
+    failures=$((failures + 1))
+  fi
+done
 
 echo "interactive entry points still get a HUD:"
 for args in "" "resume" "fork" "write me a test"; do

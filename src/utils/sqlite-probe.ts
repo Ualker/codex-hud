@@ -51,3 +51,12 @@ export function runSqliteStatement(db: Database, sql: string, now: () => number 
 }
 
 export function getSqliteDiagnostics(): typeof diagnostics { return { ...diagnostics }; }
+
+/** Aggregate worker deltas without losing doctor/runtime metrics on the main thread. */
+export function mergeSqliteDiagnostics(delta: ReturnType<typeof getSqliteDiagnostics>): void {
+  diagnostics.statements += delta.statements;
+  diagnostics.failures += delta.failures;
+  diagnostics.overBudget += delta.overBudget;
+  diagnostics.maxMs = Math.max(diagnostics.maxMs, delta.maxMs);
+  if (delta.failures) diagnostics.lastErrorCode = delta.lastErrorCode;
+}

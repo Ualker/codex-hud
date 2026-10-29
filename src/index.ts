@@ -79,7 +79,7 @@ import {
   rateLimitAlertKind,
 } from './render/lines/activity-line.js';
 import { toggleHudDetails, setHudDetails, hudDetailsExpanded } from './render/detail-level.js';
-import { HudNotifier, isCompletedTurnNotifiable } from './notify.js';
+import { HudNotifier, isCompletedTurnNotifiable, stopNotifications } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
 import { recordCollectorFailure } from './utils/collector-health.js';
 import { resolveHudStateFile } from './utils/state-dir.js';
@@ -217,6 +217,7 @@ function noteWakeSignal(): void {
 
 let uiPreferences = normalizePreferences({});
 let helpVisible = false;
+let helpPage = 0;
 let overviewSelectionId: string | undefined;
 let uiNotice: string | undefined;
 let uiNoticeUntil = 0;
@@ -224,13 +225,22 @@ function persistUi(): void {
   uiPreferences = { ...uiPreferences, mode: displayMode, details: hudDetailsExpanded() ? 'full' : 'compact', tools: toolDetailsMode() };
   void savePreferences(HUD_TMUX_SESSION, uiPreferences);
 }
-function showUiNotice(message: string): void { uiNotice=message;uiNoticeUntil=Date.now()+4000;renderNow(); }
+function showUiNotice(message: string): void {
+  uiNotice = message;
+  uiNoticeUntil = Date.now() + 4000;
+  renderNow();
+}
+
+function showModeNotice(): void {
+  showUiNotice(`${displayMode} · ${hudDetailsExpanded() ? 'full' : 'compact'} · tools: ${toolDetailsMode()} · ${uiPreferences.layout}`);
+}
 
 function toggleDisplayMode(): void {
   noteWakeSignal();
   displayMode = displayMode === 'single' ? 'overview' : 'single';
   helpVisible = false;
   persistUi();
+  showModeNotice();
   if (displayMode === 'overview') {
     void overviewCache.refresh(true).catch(() => {
       // Keep the previous overview snapshot.
@@ -702,6 +712,7 @@ function collectData(): HudData {
     layoutPreset: uiPreferences.layout,
     sessionLabel: uiPreferences.label,
     helpVisible,
+    helpPage,
     uiNotice: Date.now() < uiNoticeUntil ? uiNotice : undefined,
     overviewFilter: uiPreferences.filter,
     overviewSelectionId,
@@ -1003,6 +1014,7 @@ async function shutdown(): Promise<void> {
   }
   isShuttingDown = true;
   isRunning = false;
+  stopNotifications();
 
   if (mainLoopTimer) {
     clearTimeout(mainLoopTimer);
@@ -1163,63 +1175,101 @@ function setupKeyListener(): void {
     }
     // Any interaction with the pane re-arms the hotkey hint.
     revealStatusHint();
-    if (input === '?') { helpVisible = !helpVisible; renderNow(); return; }
-    if (input === '\u001b') {
-      if (helpVisible) {helpVisible=false;renderNow();}
-      else void focusSession(HUD_TMUX_SESSION).then(ok=>{if(!ok)showUiNotice('Main pane unavailable');});
+    if (input === '\u001b[I') {
+      showModeNotice();
       return;
     }
-    if (input === 'c' || input === 'C') {
-      uiPreferences.layout=uiPreferences.layout==='standard'?'coexist':'standard';
-      persistUi();showUiNotice(`Layout: ${uiPreferences.layout}`);return;
-    }
-    if (displayMode === 'overview') {
-      const rows=filteredSessions(overviewCache.get().sessions,uiPreferences.filter);
-      if (input === 'f' || input === 'F') {
-        uiPreferences.filter=uiPreferences.filter==='all'?'attention':'all';
-        overviewSelectionId=undefined;persistUi();renderNow();return;
-      }
-      if (['j','k','\u001b[A','\u001b[B'].includes(input)) {
-        overviewSelectionId=moveSelection(rows,overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId,
-          input==='j'||input==='\u001b[B'?1:-1);
-        renderNow();return;
-      }
-      if (input === '\r' || input === '\n') {
-        const selected=rows.find(row=>row.tmuxSession && row.id===(overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId)) ?? rows.find(row=>row.tmuxSession);
-        void focusSession(selected?.tmuxSession,selected?.id).then(ok=>{if(!ok){showUiNotice('Session unavailable; refreshing overview');void overviewCache.refresh(true).catch(()=>undefined);}});
-        return;
-      }
-    }
-    if (TOGGLE_KEYS.some((key) => input.includes(key))) {
-      toggleDisplayMode();
+    if (input === '\u001b[O') return;
+    if (input === '?') {
+      helpVisible = !helpVisible;
+      helpPage = 0;
       renderNow();
       return;
     }
-    // `t` cycles tool details targets -> full -> off at runtime; the
-    // environment variable only seeds the initial mode. Matched exactly: a
-    // substring test fired on any paste or escape sequence containing a "t".
+    if (input === '\u001b') {
+      if (helpVisible) {
+        helpVisible = false;
+        renderNow();
+      } else {
+        void focusSession(HUD_TMUX_SESSION).then(ok => {
+          if (!ok) showUiNotice('Main pane unavailable');
+        });
+      }
+      return;
+    }
+    const navigation = ['j', 'k', '\u001b[A', '\u001b[B'].includes(input);
+    const direction = input === 'j' || input === '\u001b[B' ? 1 : -1;
+    if (helpVisible && navigation) {
+      helpPage += direction;
+      renderNow();
+      return;
+    }
+    if (input === 'c' || input === 'C') {
+      uiPreferences.layout = uiPreferences.layout === 'standard' ? 'coexist' : 'standard';
+      persistUi();
+      showModeNotice();
+      return;
+    }
+    if (displayMode === 'overview') {
+      const rows = filteredSessions(overviewCache.get().sessions, uiPreferences.filter);
+      if (input === 'f' || input === 'F') {
+        uiPreferences.filter = uiPreferences.filter === 'all' ? 'attention' : 'all';
+        overviewSelectionId = undefined;
+        persistUi();
+        showUiNotice(`Overview: ${uiPreferences.filter}`);
+        return;
+      }
+      if (navigation) {
+        overviewSelectionId = moveSelection(rows,
+          overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId, direction);
+        renderNow();
+        return;
+      }
+      if (input === '\r' || input === '\n') {
+        const selectedId = overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId;
+        const selected = rows.find(row => row.tmuxSession && row.id === selectedId) ?? rows.find(row => row.tmuxSession);
+        void focusSession(selected?.tmuxSession, selected?.id).then(ok => {
+          if (!ok) {
+            showUiNotice('Session unavailable; refreshing overview');
+            void overviewCache.refresh(true).catch(() => undefined);
+          }
+        });
+        return;
+      }
+    }
+    if (TOGGLE_KEYS.includes(input)) {
+      toggleDisplayMode();
+      return;
+    }
     if (input === 't' || input === 'T') {
       cycleToolDetailsMode();
     } else if (input === 'd' || input === 'D') {
       toggleHudDetails();
+    } else {
+      return;
     }
     persistUi();
-    renderNow();
+    showModeNotice();
   };
   let escapeTimer: NodeJS.Timeout | undefined;
   process.stdin.on('data', (data: Buffer) => {
     noteWakeSignal();
     if (escapeTimer) clearTimeout(escapeTimer);
-    const {mouse,keys}=parseInput(data.toString('utf8'));
+    const { mouse, keys } = parseInput(data.toString('utf8'));
     revealStatusHint();
-    if (mouse.handled) { if(mouse.click) toggleDisplayMode(); renderNow(); }
+    if (mouse.handled) {
+      if (mouse.click) toggleDisplayMode();
+      else showModeNotice();
+    }
     // A transport read can contain several key presses. Only recognize a
     // complete stream of HUD keys; arbitrary pasted text is never a command.
-    const tokens=keys.match(/\u001b\[[AB]|[?cdtfjkCDTFJK\r\n\u0003\u0014]/g) ?? [];
-    if(tokens.join('')===keys) for(const key of tokens) handleKey(key);
-    escapeTimer=setTimeout(()=>{
-      if(parseInput.flush()==='\u001b') handleKey('\u001b');
-    },80);
+    const tokens = keys.match(/\u001b\[[ABIO]|[?cdtfjkCDTFJK\r\n\u0003\u0014]/g) ?? [];
+    if (tokens.join('') === keys) {
+      for (const key of tokens) handleKey(key);
+    }
+    escapeTimer = setTimeout(() => {
+      if (parseInput.flush() === '\u001b') handleKey('\u001b');
+    }, 80);
   });
 }
 

@@ -127,6 +127,8 @@ export interface SessionOverviewItem {
   tmuxSession?: string;
   /** First prompt of the session; see SessionInfo.title. */
   title?: string;
+  /** Explicit user label, safe to retain when prompt titles are hidden. */
+  label?: string;
   model?: string;
   turnActivity?: TurnActivity;
   lastActivityAt?: Date;
@@ -642,6 +644,7 @@ export interface HudData {
   layoutPreset?: 'standard' | 'coexist';
   sessionLabel?: string;
   helpVisible?: boolean;
+  helpPage?: number;
   uiNotice?: string;
   overviewFilter?: 'all' | 'attention';
   overviewSelectionId?: string;

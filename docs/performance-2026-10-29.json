@@ -1,0 +1,2676 @@
+{
+  "baselineCommit": "4b7c97299fa4c54c3f817f22d10e0b36d988a62e",
+  "fixtureVersion": 2,
+  "before": {
+    "fixtureVersion": 2,
+    "node": "v24.21.0",
+    "platform": "darwin/arm64",
+    "seconds": 12,
+    "historyMiB": 8,
+    "journalMode": "wal",
+    "note": "RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.",
+    "runs": [
+      {
+        "instances": 1,
+        "appendBatches": 59,
+        "cpuMs": 469.71,
+        "rssSumMiB": 94.77,
+        "peakRssSumMiB": 94.77,
+        "stdoutWrites": 18,
+        "worstEventLoopP95Ms": 11.280383,
+        "worstEventLoopMaxMs": 16.392191,
+        "subprocesses": {
+          "tmux": 10,
+          "git": 1,
+          "ps": 1
+        },
+        "metrics": [
+          {
+            "pid": 73342,
+            "elapsedMs": 11997.982875,
+            "cpuMs": 469.706,
+            "rssMiB": 94.765625,
+            "peakRssMiB": 94.765625,
+            "eventLoopP95Ms": 11.280383,
+            "eventLoopMaxMs": 16.392191,
+            "stdoutWrites": 18,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 45,
+                "maxMs": 10,
+                "lastMs": 10
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 12,
+                "maxMs": 12,
+                "lastMs": 12
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 46,
+                "maxMs": 46,
+                "lastMs": 46
+              },
+              "sqlite": {
+                "count": 481,
+                "totalMs": 24,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 541,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.5487499999999983,
+              "lastErrorCode": ""
+            }
+          }
+        ]
+      },
+      {
+        "instances": 5,
+        "appendBatches": 59,
+        "cpuMs": 3685.3,
+        "rssSumMiB": 551.58,
+        "peakRssSumMiB": 574.8,
+        "stdoutWrites": 107,
+        "worstEventLoopP95Ms": 11.231231,
+        "worstEventLoopMaxMs": 25.264127,
+        "subprocesses": {
+          "tmux": 45,
+          "git": 5,
+          "ps": 5
+        },
+        "metrics": [
+          {
+            "pid": 74430,
+            "elapsedMs": 12291.855833,
+            "cpuMs": 775.639,
+            "rssMiB": 109.609375,
+            "peakRssMiB": 121.65625,
+            "eventLoopP95Ms": 11.182079,
+            "eventLoopMaxMs": 15.294463,
+            "stdoutWrites": 18,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 47,
+                "maxMs": 11,
+                "lastMs": 8
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 10,
+                "maxMs": 10,
+                "lastMs": 10
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 55,
+                "maxMs": 55,
+                "lastMs": 55
+              },
+              "sqlite": {
+                "count": 483,
+                "totalMs": 33,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 543,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.47912500000001046,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 74466,
+            "elapsedMs": 12244.263875,
+            "cpuMs": 749.937,
+            "rssMiB": 110.125,
+            "peakRssMiB": 120.6875,
+            "eventLoopP95Ms": 11.223039,
+            "eventLoopMaxMs": 15.417343,
+            "stdoutWrites": 25,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 62,
+                "maxMs": 16,
+                "lastMs": 8
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 15,
+                "maxMs": 15,
+                "lastMs": 15
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 63,
+                "maxMs": 63,
+                "lastMs": 63
+              },
+              "sqlite": {
+                "count": 484,
+                "totalMs": 25,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 544,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.43845799999962765,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 74525,
+            "elapsedMs": 12175.198792000001,
+            "cpuMs": 745.89,
+            "rssMiB": 109.953125,
+            "peakRssMiB": 110.5625,
+            "eventLoopP95Ms": 11.223039,
+            "eventLoopMaxMs": 25.264127,
+            "stdoutWrites": 19,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "git": {
+                "count": 1,
+                "totalMs": 13,
+                "maxMs": 13,
+                "lastMs": 13
+              },
+              "tmux": {
+                "count": 5,
+                "totalMs": 62,
+                "maxMs": 19,
+                "lastMs": 7
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 87,
+                "maxMs": 87,
+                "lastMs": 87
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 22,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 545,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.0806250000005093,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 74581,
+            "elapsedMs": 12086.731792,
+            "cpuMs": 727.165,
+            "rssMiB": 109.78125,
+            "peakRssMiB": 109.78125,
+            "eventLoopP95Ms": 11.231231,
+            "eventLoopMaxMs": 17.596415,
+            "stdoutWrites": 25,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 32,
+                "maxMs": 11,
+                "lastMs": 7
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 13,
+                "maxMs": 13,
+                "lastMs": 13
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 46,
+                "maxMs": 46,
+                "lastMs": 46
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 23,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 545,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.7585000000000264,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 74635,
+            "elapsedMs": 11998.022417,
+            "cpuMs": 686.667,
+            "rssMiB": 112.109375,
+            "peakRssMiB": 112.109375,
+            "eventLoopP95Ms": 11.198463,
+            "eventLoopMaxMs": 14.761983,
+            "stdoutWrites": 20,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 29,
+                "maxMs": 8,
+                "lastMs": 7
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 6,
+                "maxMs": 6,
+                "lastMs": 6
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 45,
+                "maxMs": 45,
+                "lastMs": 45
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 24,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 545,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.33199999999987995,
+              "lastErrorCode": ""
+            }
+          }
+        ]
+      },
+      {
+        "instances": 20,
+        "appendBatches": 59,
+        "cpuMs": 15853.31,
+        "rssSumMiB": 1931.16,
+        "peakRssSumMiB": 2091.25,
+        "stdoutWrites": 647,
+        "worstEventLoopP95Ms": 11.329535,
+        "worstEventLoopMaxMs": 43.122687,
+        "subprocesses": {
+          "tmux": 155,
+          "git": 20,
+          "ps": 20
+        },
+        "metrics": [
+          {
+            "pid": 75686,
+            "elapsedMs": 13446.383082999999,
+            "cpuMs": 1091.567,
+            "rssMiB": 114.234375,
+            "peakRssMiB": 119.8125,
+            "eventLoopP95Ms": 11.223039,
+            "eventLoopMaxMs": 27.131903,
+            "stdoutWrites": 40,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 55,
+                "maxMs": 12,
+                "lastMs": 11
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 10,
+                "maxMs": 10,
+                "lastMs": 10
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 59,
+                "maxMs": 59,
+                "lastMs": 59
+              },
+              "sqlite": {
+                "count": 484,
+                "totalMs": 22,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 544,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.196124999999995,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 75719,
+            "elapsedMs": 13406.030709,
+            "cpuMs": 1093.883,
+            "rssMiB": 119.625,
+            "peakRssMiB": 123.28125,
+            "eventLoopP95Ms": 11.223039,
+            "eventLoopMaxMs": 30.081023,
+            "stdoutWrites": 39,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 66,
+                "maxMs": 15,
+                "lastMs": 12
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 49,
+                "maxMs": 49,
+                "lastMs": 49
+              },
+              "sqlite": {
+                "count": 484,
+                "totalMs": 22,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 544,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.9257500000003347,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 75756,
+            "elapsedMs": 13346.573125,
+            "cpuMs": 1062.595,
+            "rssMiB": 119.15625,
+            "peakRssMiB": 124.890625,
+            "eventLoopP95Ms": 11.296767,
+            "eventLoopMaxMs": 22.396927,
+            "stdoutWrites": 41,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 59,
+                "maxMs": 13,
+                "lastMs": 9
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 14,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 53,
+                "maxMs": 53,
+                "lastMs": 53
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 34,
+                "maxMs": 5,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 545,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 4.961207999999715,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 75823,
+            "elapsedMs": 13274.932333,
+            "cpuMs": 957.119,
+            "rssMiB": 102.703125,
+            "peakRssMiB": 116.59375,
+            "eventLoopP95Ms": 11.173887,
+            "eventLoopMaxMs": 31.047679,
+            "stdoutWrites": 32,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 5,
+                "totalMs": 41,
+                "maxMs": 11,
+                "lastMs": 9
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 12,
+                "maxMs": 12,
+                "lastMs": 12
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 65,
+                "maxMs": 65,
+                "lastMs": 65
+              },
+              "sqlite": {
+                "count": 486,
+                "totalMs": 19,
+                "maxMs": 5,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 546,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 4.730207999999038,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 75880,
+            "elapsedMs": 13207.805959,
+            "cpuMs": 977.577,
+            "rssMiB": 106.015625,
+            "peakRssMiB": 110.875,
+            "eventLoopP95Ms": 11.165695,
+            "eventLoopMaxMs": 36.438015,
+            "stdoutWrites": 34,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 5,
+                "totalMs": 60,
+                "maxMs": 16,
+                "lastMs": 15
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 23,
+                "maxMs": 23,
+                "lastMs": 23
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 75,
+                "maxMs": 75,
+                "lastMs": 75
+              },
+              "sqlite": {
+                "count": 487,
+                "totalMs": 21,
+                "maxMs": 3,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 547,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 3.0774170000004233,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 75933,
+            "elapsedMs": 13125.318875,
+            "cpuMs": 828.089,
+            "rssMiB": 101.203125,
+            "peakRssMiB": 114.796875,
+            "eventLoopP95Ms": 11.231231,
+            "eventLoopMaxMs": 26.689535,
+            "stdoutWrites": 33,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 39,
+                "maxMs": 12,
+                "lastMs": 12
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 61,
+                "maxMs": 61,
+                "lastMs": 61
+              },
+              "sqlite": {
+                "count": 488,
+                "totalMs": 18,
+                "maxMs": 3,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 548,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.649999999999636,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 75986,
+            "elapsedMs": 13053.325167,
+            "cpuMs": 821.52,
+            "rssMiB": 100.078125,
+            "peakRssMiB": 112.015625,
+            "eventLoopP95Ms": 11.190271,
+            "eventLoopMaxMs": 24.494079,
+            "stdoutWrites": 33,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 37,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 19,
+                "maxMs": 19,
+                "lastMs": 19
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 67,
+                "maxMs": 67,
+                "lastMs": 67
+              },
+              "sqlite": {
+                "count": 489,
+                "totalMs": 22,
+                "maxMs": 3,
+                "lastMs": 1
+              }
+            },
+            "sqlite": {
+              "statements": 549,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.416457999999693,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76050,
+            "elapsedMs": 12969.542792,
+            "cpuMs": 689.968,
+            "rssMiB": 77.859375,
+            "peakRssMiB": 86.578125,
+            "eventLoopP95Ms": 11.124735,
+            "eventLoopMaxMs": 34.471935,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 34,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 13,
+                "maxMs": 13,
+                "lastMs": 13
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 61,
+                "maxMs": 61,
+                "lastMs": 61
+              },
+              "sqlite": {
+                "count": 490,
+                "totalMs": 19,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 550,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.6908329999996567,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76109,
+            "elapsedMs": 12906.357041000001,
+            "cpuMs": 685.857,
+            "rssMiB": 79.34375,
+            "peakRssMiB": 85.171875,
+            "eventLoopP95Ms": 11.206655,
+            "eventLoopMaxMs": 21.643263,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 31,
+                "maxMs": 12,
+                "lastMs": 10
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 55,
+                "maxMs": 55,
+                "lastMs": 55
+              },
+              "sqlite": {
+                "count": 491,
+                "totalMs": 21,
+                "maxMs": 3,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 551,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.6154999999998836,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76161,
+            "elapsedMs": 12860.784124999998,
+            "cpuMs": 720.832,
+            "rssMiB": 88.96875,
+            "peakRssMiB": 88.96875,
+            "eventLoopP95Ms": 11.288575,
+            "eventLoopMaxMs": 33.554431,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 44,
+                "maxMs": 20,
+                "lastMs": 20
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 16,
+                "maxMs": 16,
+                "lastMs": 16
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 58,
+                "maxMs": 58,
+                "lastMs": 58
+              },
+              "sqlite": {
+                "count": 492,
+                "totalMs": 15,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 552,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.8918330000005881,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76215,
+            "elapsedMs": 12771.913375,
+            "cpuMs": 680.974,
+            "rssMiB": 78.171875,
+            "peakRssMiB": 88,
+            "eventLoopP95Ms": 11.239423,
+            "eventLoopMaxMs": 26.902527,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 34,
+                "maxMs": 13,
+                "lastMs": 13
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 66,
+                "maxMs": 66,
+                "lastMs": 66
+              },
+              "sqlite": {
+                "count": 493,
+                "totalMs": 18,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 553,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.368208999999979,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76265,
+            "elapsedMs": 12722.518291999999,
+            "cpuMs": 709.283,
+            "rssMiB": 95.71875,
+            "peakRssMiB": 95.71875,
+            "eventLoopP95Ms": 11.272191,
+            "eventLoopMaxMs": 30.719999,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 40,
+                "maxMs": 19,
+                "lastMs": 19
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 14,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 60,
+                "maxMs": 60,
+                "lastMs": 60
+              },
+              "sqlite": {
+                "count": 494,
+                "totalMs": 21,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 554,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.7286659999999756,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76317,
+            "elapsedMs": 12640.199917,
+            "cpuMs": 715.096,
+            "rssMiB": 92.375,
+            "peakRssMiB": 104.09375,
+            "eventLoopP95Ms": 11.329535,
+            "eventLoopMaxMs": 38.731775,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 43,
+                "maxMs": 17,
+                "lastMs": 17
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 15,
+                "maxMs": 15,
+                "lastMs": 15
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 61,
+                "maxMs": 61,
+                "lastMs": 61
+              },
+              "sqlite": {
+                "count": 495,
+                "totalMs": 21,
+                "maxMs": 3,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 555,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.64574999999968,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76372,
+            "elapsedMs": 12582.271459000001,
+            "cpuMs": 705.344,
+            "rssMiB": 95.640625,
+            "peakRssMiB": 100.625,
+            "eventLoopP95Ms": 11.182079,
+            "eventLoopMaxMs": 43.122687,
+            "stdoutWrites": 32,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "git": {
+                "count": 1,
+                "totalMs": 22,
+                "maxMs": 22,
+                "lastMs": 22
+              },
+              "tmux": {
+                "count": 3,
+                "totalMs": 62,
+                "maxMs": 33,
+                "lastMs": 19
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 59,
+                "maxMs": 59,
+                "lastMs": 59
+              },
+              "sqlite": {
+                "count": 496,
+                "totalMs": 12,
+                "maxMs": 1,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 556,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.7947500000000218,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76426,
+            "elapsedMs": 12479.748041,
+            "cpuMs": 701.835,
+            "rssMiB": 94.59375,
+            "peakRssMiB": 105.0625,
+            "eventLoopP95Ms": 11.198463,
+            "eventLoopMaxMs": 27.426815,
+            "stdoutWrites": 32,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 34,
+                "maxMs": 14,
+                "lastMs": 11
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 18,
+                "maxMs": 18,
+                "lastMs": 18
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 71,
+                "maxMs": 71,
+                "lastMs": 71
+              },
+              "sqlite": {
+                "count": 497,
+                "totalMs": 20,
+                "maxMs": 3,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 557,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.8287499999999,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76486,
+            "elapsedMs": 12420.181625,
+            "cpuMs": 694.44,
+            "rssMiB": 95.5625,
+            "peakRssMiB": 107.359375,
+            "eventLoopP95Ms": 11.165695,
+            "eventLoopMaxMs": 31.932415,
+            "stdoutWrites": 33,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 41,
+                "maxMs": 21,
+                "lastMs": 21
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 10,
+                "maxMs": 10,
+                "lastMs": 10
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 60,
+                "maxMs": 60,
+                "lastMs": 60
+              },
+              "sqlite": {
+                "count": 498,
+                "totalMs": 21,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 558,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.9310000000004948,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76538,
+            "elapsedMs": 12338.337458,
+            "cpuMs": 690.194,
+            "rssMiB": 96.1875,
+            "peakRssMiB": 103.59375,
+            "eventLoopP95Ms": 11.182079,
+            "eventLoopMaxMs": 36.700159,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 42,
+                "maxMs": 16,
+                "lastMs": 15
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 14,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 61,
+                "maxMs": 61,
+                "lastMs": 61
+              },
+              "sqlite": {
+                "count": 499,
+                "totalMs": 21,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 559,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.8434159999997064,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76592,
+            "elapsedMs": 12265.3195,
+            "cpuMs": 685.746,
+            "rssMiB": 93.34375,
+            "peakRssMiB": 104.390625,
+            "eventLoopP95Ms": 11.247615,
+            "eventLoopMaxMs": 31.686655,
+            "stdoutWrites": 29,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 42,
+                "maxMs": 19,
+                "lastMs": 19
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 19,
+                "maxMs": 19,
+                "lastMs": 19
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 63,
+                "maxMs": 63,
+                "lastMs": 63
+              },
+              "sqlite": {
+                "count": 500,
+                "totalMs": 21,
+                "maxMs": 2,
+                "lastMs": 1
+              }
+            },
+            "sqlite": {
+              "statements": 560,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.751792000000023,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76642,
+            "elapsedMs": 12204.462666,
+            "cpuMs": 680.157,
+            "rssMiB": 91.046875,
+            "peakRssMiB": 109.296875,
+            "eventLoopP95Ms": 11.247615,
+            "eventLoopMaxMs": 35.291135,
+            "stdoutWrites": 30,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 36,
+                "maxMs": 19,
+                "lastMs": 19
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 12,
+                "maxMs": 12,
+                "lastMs": 12
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 57,
+                "maxMs": 57,
+                "lastMs": 57
+              },
+              "sqlite": {
+                "count": 500,
+                "totalMs": 21,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 560,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.5522499999999582,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 76694,
+            "elapsedMs": 12133.098084000001,
+            "cpuMs": 661.235,
+            "rssMiB": 89.328125,
+            "peakRssMiB": 90.125,
+            "eventLoopP95Ms": 11.165695,
+            "eventLoopMaxMs": 35.127295,
+            "stdoutWrites": 29,
+            "fileDescriptors": 21,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 30,
+                "maxMs": 17,
+                "lastMs": 17
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 10,
+                "maxMs": 10,
+                "lastMs": 10
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 54,
+                "maxMs": 54,
+                "lastMs": 54
+              },
+              "sqlite": {
+                "count": 500,
+                "totalMs": 10,
+                "maxMs": 2,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 560,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.5525420000012673,
+              "lastErrorCode": ""
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "after": {
+    "fixtureVersion": 2,
+    "node": "v24.21.0",
+    "platform": "darwin/arm64",
+    "seconds": 12,
+    "historyMiB": 8,
+    "journalMode": "wal",
+    "note": "RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.",
+    "runs": [
+      {
+        "instances": 1,
+        "appendBatches": 59,
+        "cpuMs": 338.27,
+        "rssSumMiB": 107.3,
+        "peakRssSumMiB": 107.3,
+        "stdoutWrites": 18,
+        "worstEventLoopP95Ms": 11.190271,
+        "worstEventLoopMaxMs": 14.721023,
+        "subprocesses": {
+          "tmux": 10,
+          "git": 1,
+          "ps": 1
+        },
+        "metrics": [
+          {
+            "pid": 22673,
+            "elapsedMs": 11979.229166000001,
+            "cpuMs": 338.274,
+            "rssMiB": 107.296875,
+            "peakRssMiB": 107.296875,
+            "eventLoopP95Ms": 11.190271,
+            "eventLoopMaxMs": 14.721023,
+            "stdoutWrites": 18,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 29,
+                "maxMs": 7,
+                "lastMs": 3
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 7,
+                "maxMs": 7,
+                "lastMs": 7
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 44,
+                "maxMs": 44,
+                "lastMs": 44
+              },
+              "sqlite": {
+                "count": 481,
+                "totalMs": 49,
+                "maxMs": 17,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 145,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.47391700000000014,
+              "lastErrorCode": ""
+            }
+          }
+        ]
+      },
+      {
+        "instances": 5,
+        "appendBatches": 59,
+        "cpuMs": 3191.44,
+        "rssSumMiB": 679.19,
+        "peakRssSumMiB": 679.19,
+        "stdoutWrites": 96,
+        "worstEventLoopP95Ms": 11.157503,
+        "worstEventLoopMaxMs": 19.415039,
+        "subprocesses": {
+          "tmux": 46,
+          "git": 5,
+          "ps": 5
+        },
+        "metrics": [
+          {
+            "pid": 24363,
+            "elapsedMs": 12310.786458,
+            "cpuMs": 665.549,
+            "rssMiB": 145.046875,
+            "peakRssMiB": 145.046875,
+            "eventLoopP95Ms": 11.100159,
+            "eventLoopMaxMs": 19.415039,
+            "stdoutWrites": 22,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 53,
+                "maxMs": 14,
+                "lastMs": 5
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 9,
+                "maxMs": 9,
+                "lastMs": 9
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 44,
+                "maxMs": 44,
+                "lastMs": 44
+              },
+              "sqlite": {
+                "count": 483,
+                "totalMs": 107,
+                "maxMs": 23,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 151,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.7789589999999862,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 24396,
+            "elapsedMs": 12260.180790999999,
+            "cpuMs": 665.197,
+            "rssMiB": 134.796875,
+            "peakRssMiB": 134.796875,
+            "eventLoopP95Ms": 11.157503,
+            "eventLoopMaxMs": 16.228351,
+            "stdoutWrites": 17,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 53,
+                "maxMs": 12,
+                "lastMs": 5
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 14,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 57,
+                "maxMs": 57,
+                "lastMs": 57
+              },
+              "sqlite": {
+                "count": 484,
+                "totalMs": 100,
+                "maxMs": 25,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 152,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.18154099999998152,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 24451,
+            "elapsedMs": 12192.317791,
+            "cpuMs": 654.585,
+            "rssMiB": 138.390625,
+            "peakRssMiB": 138.390625,
+            "eventLoopP95Ms": 11.149311,
+            "eventLoopMaxMs": 18.808831,
+            "stdoutWrites": 21,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 5,
+                "totalMs": 57,
+                "maxMs": 18,
+                "lastMs": 7
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 17,
+                "maxMs": 17,
+                "lastMs": 17
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 68,
+                "maxMs": 68,
+                "lastMs": 68
+              },
+              "sqlite": {
+                "count": 484,
+                "totalMs": 93,
+                "maxMs": 20,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 147,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.34379100000001017,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 24527,
+            "elapsedMs": 12072.913583,
+            "cpuMs": 606.372,
+            "rssMiB": 134.796875,
+            "peakRssMiB": 134.796875,
+            "eventLoopP95Ms": 11.116543,
+            "eventLoopMaxMs": 12.345343,
+            "stdoutWrites": 18,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 5,
+                "totalMs": 30,
+                "maxMs": 8,
+                "lastMs": 5
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 52,
+                "maxMs": 52,
+                "lastMs": 52
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 97,
+                "maxMs": 18,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 147,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.14304200000000833,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 24667,
+            "elapsedMs": 11994.294292,
+            "cpuMs": 599.741,
+            "rssMiB": 126.15625,
+            "peakRssMiB": 126.15625,
+            "eventLoopP95Ms": 11.124735,
+            "eventLoopMaxMs": 15.532031,
+            "stdoutWrites": 18,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 24,
+                "maxMs": 6,
+                "lastMs": 6
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 7,
+                "maxMs": 7,
+                "lastMs": 7
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 46,
+                "maxMs": 46,
+                "lastMs": 46
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 87,
+                "maxMs": 16,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 144,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.22600000000011278,
+              "lastErrorCode": ""
+            }
+          }
+        ]
+      },
+      {
+        "instances": 20,
+        "appendBatches": 59,
+        "cpuMs": 17032.62,
+        "rssSumMiB": 2248.03,
+        "peakRssSumMiB": 2403.28,
+        "stdoutWrites": 527,
+        "worstEventLoopP95Ms": 11.411455,
+        "worstEventLoopMaxMs": 37.158911,
+        "subprocesses": {
+          "tmux": 156,
+          "git": 20,
+          "ps": 20
+        },
+        "metrics": [
+          {
+            "pid": 26868,
+            "elapsedMs": 13633.621875,
+            "cpuMs": 1106.577,
+            "rssMiB": 137.859375,
+            "peakRssMiB": 140.875,
+            "eventLoopP95Ms": 11.313151,
+            "eventLoopMaxMs": 23.150591,
+            "stdoutWrites": 28,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 53,
+                "maxMs": 12,
+                "lastMs": 10
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 48,
+                "maxMs": 48,
+                "lastMs": 48
+              },
+              "sqlite": {
+                "count": 483,
+                "totalMs": 418,
+                "maxMs": 26,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 150,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.012249999999767,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 26921,
+            "elapsedMs": 13567.544542,
+            "cpuMs": 1075.898,
+            "rssMiB": 123.078125,
+            "peakRssMiB": 129.984375,
+            "eventLoopP95Ms": 11.296767,
+            "eventLoopMaxMs": 25.690111,
+            "stdoutWrites": 35,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "tmux": {
+                "count": 6,
+                "totalMs": 66,
+                "maxMs": 17,
+                "lastMs": 10
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 46,
+                "maxMs": 46,
+                "lastMs": 46
+              },
+              "sqlite": {
+                "count": 484,
+                "totalMs": 403,
+                "maxMs": 37,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 147,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 4.717500000000001,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 26987,
+            "elapsedMs": 13491.483583,
+            "cpuMs": 1011.426,
+            "rssMiB": 118.703125,
+            "peakRssMiB": 128.515625,
+            "eventLoopP95Ms": 11.255807,
+            "eventLoopMaxMs": 26.492927,
+            "stdoutWrites": 22,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 5,
+                "totalMs": 44,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 16,
+                "maxMs": 16,
+                "lastMs": 16
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 51,
+                "maxMs": 51,
+                "lastMs": 51
+              },
+              "sqlite": {
+                "count": 485,
+                "totalMs": 395,
+                "maxMs": 25,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 147,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.2014170000002196,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27051,
+            "elapsedMs": 13393.312958,
+            "cpuMs": 1035.829,
+            "rssMiB": 119.59375,
+            "peakRssMiB": 133.15625,
+            "eventLoopP95Ms": 11.173887,
+            "eventLoopMaxMs": 22.544383,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 9,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 5,
+                "totalMs": 43,
+                "maxMs": 13,
+                "lastMs": 10
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 19,
+                "maxMs": 19,
+                "lastMs": 19
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 61,
+                "maxMs": 61,
+                "lastMs": 61
+              },
+              "sqlite": {
+                "count": 486,
+                "totalMs": 424,
+                "maxMs": 29,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 146,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.831083000000035,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27119,
+            "elapsedMs": 13330.419957999999,
+            "cpuMs": 906.048,
+            "rssMiB": 109.75,
+            "peakRssMiB": 112.921875,
+            "eventLoopP95Ms": 11.198463,
+            "eventLoopMaxMs": 36.077567,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 49,
+                "maxMs": 16,
+                "lastMs": 11
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 14,
+                "maxMs": 14,
+                "lastMs": 14
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 53,
+                "maxMs": 53,
+                "lastMs": 53
+              },
+              "sqlite": {
+                "count": 487,
+                "totalMs": 394,
+                "maxMs": 26,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 147,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.38562500000000455,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27178,
+            "elapsedMs": 13253.806583,
+            "cpuMs": 890.989,
+            "rssMiB": 115.375,
+            "peakRssMiB": 118.890625,
+            "eventLoopP95Ms": 11.411455,
+            "eventLoopMaxMs": 19.333119,
+            "stdoutWrites": 25,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 42,
+                "maxMs": 12,
+                "lastMs": 12
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 13,
+                "maxMs": 13,
+                "lastMs": 13
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 55,
+                "maxMs": 55,
+                "lastMs": 55
+              },
+              "sqlite": {
+                "count": 488,
+                "totalMs": 377,
+                "maxMs": 25,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 143,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.0472920000011072,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27230,
+            "elapsedMs": 13175.652083,
+            "cpuMs": 885.476,
+            "rssMiB": 116.984375,
+            "peakRssMiB": 119.984375,
+            "eventLoopP95Ms": 11.214847,
+            "eventLoopMaxMs": 35.717119,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 8,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 4,
+                "totalMs": 42,
+                "maxMs": 14,
+                "lastMs": 12
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 16,
+                "maxMs": 16,
+                "lastMs": 16
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 58,
+                "maxMs": 58,
+                "lastMs": 58
+              },
+              "sqlite": {
+                "count": 488,
+                "totalMs": 358,
+                "maxMs": 27,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 139,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.19441699999879347,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27314,
+            "elapsedMs": 13042.38125,
+            "cpuMs": 773.333,
+            "rssMiB": 101.375,
+            "peakRssMiB": 103.8125,
+            "eventLoopP95Ms": 11.247615,
+            "eventLoopMaxMs": 30.965759,
+            "stdoutWrites": 25,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "git": {
+                "count": 1,
+                "totalMs": 11,
+                "maxMs": 11,
+                "lastMs": 11
+              },
+              "tmux": {
+                "count": 3,
+                "totalMs": 28,
+                "maxMs": 16,
+                "lastMs": 6
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 53,
+                "maxMs": 53,
+                "lastMs": 53
+              },
+              "sqlite": {
+                "count": 490,
+                "totalMs": 379,
+                "maxMs": 20,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 144,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.2008750000004511,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27358,
+            "elapsedMs": 12982.18125,
+            "cpuMs": 764.688,
+            "rssMiB": 101.1875,
+            "peakRssMiB": 104.59375,
+            "eventLoopP95Ms": 11.280383,
+            "eventLoopMaxMs": 36.110335,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 33,
+                "maxMs": 16,
+                "lastMs": 9
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 15,
+                "maxMs": 15,
+                "lastMs": 15
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 63,
+                "maxMs": 63,
+                "lastMs": 63
+              },
+              "sqlite": {
+                "count": 491,
+                "totalMs": 397,
+                "maxMs": 24,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 145,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.9494579999991402,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27410,
+            "elapsedMs": 12911.477291000001,
+            "cpuMs": 757.407,
+            "rssMiB": 102.546875,
+            "peakRssMiB": 105.0625,
+            "eventLoopP95Ms": 11.288575,
+            "eventLoopMaxMs": 22.953983,
+            "stdoutWrites": 25,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 30,
+                "maxMs": 12,
+                "lastMs": 10
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 8,
+                "maxMs": 8,
+                "lastMs": 8
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 68,
+                "maxMs": 68,
+                "lastMs": 68
+              },
+              "sqlite": {
+                "count": 492,
+                "totalMs": 409,
+                "maxMs": 32,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 149,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.6112919999995938,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27463,
+            "elapsedMs": 12826.454208,
+            "cpuMs": 721.573,
+            "rssMiB": 87.796875,
+            "peakRssMiB": 99.328125,
+            "eventLoopP95Ms": 11.255807,
+            "eventLoopMaxMs": 19.251199,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 26,
+                "maxMs": 10,
+                "lastMs": 6
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 15,
+                "maxMs": 15,
+                "lastMs": 15
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 64,
+                "maxMs": 64,
+                "lastMs": 64
+              },
+              "sqlite": {
+                "count": 493,
+                "totalMs": 361,
+                "maxMs": 23,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 139,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 1.537333000000217,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27517,
+            "elapsedMs": 12735.981125,
+            "cpuMs": 754.698,
+            "rssMiB": 104.21875,
+            "peakRssMiB": 120.765625,
+            "eventLoopP95Ms": 11.304959,
+            "eventLoopMaxMs": 20.840447,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 39,
+                "maxMs": 19,
+                "lastMs": 11
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 17,
+                "maxMs": 17,
+                "lastMs": 17
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 51,
+                "maxMs": 51,
+                "lastMs": 51
+              },
+              "sqlite": {
+                "count": 494,
+                "totalMs": 371,
+                "maxMs": 24,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 144,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.46045799999956216,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27567,
+            "elapsedMs": 12666.827583,
+            "cpuMs": 754.157,
+            "rssMiB": 104.765625,
+            "peakRssMiB": 105.5,
+            "eventLoopP95Ms": 11.296767,
+            "eventLoopMaxMs": 37.158911,
+            "stdoutWrites": 27,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 47,
+                "maxMs": 28,
+                "lastMs": 9
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 17,
+                "maxMs": 17,
+                "lastMs": 17
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 47,
+                "maxMs": 47,
+                "lastMs": 47
+              },
+              "sqlite": {
+                "count": 495,
+                "totalMs": 370,
+                "maxMs": 22,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 143,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.8942499999993743,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27651,
+            "elapsedMs": 12585.351875,
+            "cpuMs": 754.311,
+            "rssMiB": 106.328125,
+            "peakRssMiB": 119.96875,
+            "eventLoopP95Ms": 11.263999,
+            "eventLoopMaxMs": 35.749887,
+            "stdoutWrites": 26,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 33,
+                "maxMs": 15,
+                "lastMs": 10
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 16,
+                "maxMs": 16,
+                "lastMs": 16
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 75,
+                "maxMs": 75,
+                "lastMs": 75
+              },
+              "sqlite": {
+                "count": 496,
+                "totalMs": 365,
+                "maxMs": 35,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 140,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.9759169999999813,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27725,
+            "elapsedMs": 12523.810667,
+            "cpuMs": 752.553,
+            "rssMiB": 106.625,
+            "peakRssMiB": 122.46875,
+            "eventLoopP95Ms": 11.223039,
+            "eventLoopMaxMs": 32.964607,
+            "stdoutWrites": 25,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 50,
+                "maxMs": 29,
+                "lastMs": 12
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 24,
+                "maxMs": 24,
+                "lastMs": 24
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 72,
+                "maxMs": 72,
+                "lastMs": 72
+              },
+              "sqlite": {
+                "count": 497,
+                "totalMs": 354,
+                "maxMs": 31,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 142,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.2746669999999938,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27779,
+            "elapsedMs": 12428.795875,
+            "cpuMs": 743.535,
+            "rssMiB": 105.890625,
+            "peakRssMiB": 116,
+            "eventLoopP95Ms": 11.214847,
+            "eventLoopMaxMs": 28.082175,
+            "stdoutWrites": 25,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 30,
+                "maxMs": 12,
+                "lastMs": 11
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 21,
+                "maxMs": 21,
+                "lastMs": 21
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 85,
+                "maxMs": 85,
+                "lastMs": 85
+              },
+              "sqlite": {
+                "count": 498,
+                "totalMs": 339,
+                "maxMs": 37,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 140,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.3668330000000424,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27831,
+            "elapsedMs": 12334.310292,
+            "cpuMs": 754.439,
+            "rssMiB": 107.671875,
+            "peakRssMiB": 118.78125,
+            "eventLoopP95Ms": 11.190271,
+            "eventLoopMaxMs": 34.766847,
+            "stdoutWrites": 25,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 35,
+                "maxMs": 13,
+                "lastMs": 13
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 23,
+                "maxMs": 23,
+                "lastMs": 23
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 68,
+                "maxMs": 68,
+                "lastMs": 68
+              },
+              "sqlite": {
+                "count": 499,
+                "totalMs": 368,
+                "maxMs": 39,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 141,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.43520800000001714,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27882,
+            "elapsedMs": 12233.233459000001,
+            "cpuMs": 731.388,
+            "rssMiB": 107.703125,
+            "peakRssMiB": 118.78125,
+            "eventLoopP95Ms": 11.198463,
+            "eventLoopMaxMs": 26.542079,
+            "stdoutWrites": 24,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 29,
+                "maxMs": 11,
+                "lastMs": 9
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 22,
+                "maxMs": 22,
+                "lastMs": 22
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 76,
+                "maxMs": 76,
+                "lastMs": 76
+              },
+              "sqlite": {
+                "count": 499,
+                "totalMs": 333,
+                "maxMs": 28,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 134,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 2.1975839999995515,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27937,
+            "elapsedMs": 12125.666458,
+            "cpuMs": 726.403,
+            "rssMiB": 105.75,
+            "peakRssMiB": 117.46875,
+            "eventLoopP95Ms": 11.190271,
+            "eventLoopMaxMs": 25.444351,
+            "stdoutWrites": 24,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 7,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 3,
+                "totalMs": 40,
+                "maxMs": 17,
+                "lastMs": 13
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 15,
+                "maxMs": 15,
+                "lastMs": 15
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 73,
+                "maxMs": 73,
+                "lastMs": 73
+              },
+              "sqlite": {
+                "count": 500,
+                "totalMs": 336,
+                "maxMs": 18,
+                "lastMs": 0
+              }
+            },
+            "sqlite": {
+              "statements": 135,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.42170899999928224,
+              "lastErrorCode": ""
+            }
+          },
+          {
+            "pid": 27991,
+            "elapsedMs": 12049.024416999999,
+            "cpuMs": 1131.895,
+            "rssMiB": 164.828125,
+            "peakRssMiB": 166.421875,
+            "eventLoopP95Ms": 11.214847,
+            "eventLoopMaxMs": 34.799615,
+            "stdoutWrites": 35,
+            "fileDescriptors": 23,
+            "subprocesses": {
+              "tmux": 10,
+              "git": 1,
+              "ps": 1
+            },
+            "probes": {
+              "tmux": {
+                "count": 6,
+                "totalMs": 68,
+                "maxMs": 22,
+                "lastMs": 15
+              },
+              "git": {
+                "count": 1,
+                "totalMs": 10,
+                "maxMs": 10,
+                "lastMs": 10
+              },
+              "ps": {
+                "count": 1,
+                "totalMs": 63,
+                "maxMs": 63,
+                "lastMs": 63
+              },
+              "sqlite": {
+                "count": 500,
+                "totalMs": 324,
+                "maxMs": 20,
+                "lastMs": 1
+              }
+            },
+            "sqlite": {
+              "statements": 130,
+              "failures": 0,
+              "overBudget": 0,
+              "maxMs": 0.42849999999998545,
+              "lastErrorCode": ""
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

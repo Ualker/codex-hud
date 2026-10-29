@@ -49,9 +49,13 @@ export const colors = {
 
 // Keep ordinary content neutral. Color signals activity or a state requiring
 // attention, rather than giving each kind of metadata its own bright hue.
+const bluePurple = (process.env.CODEX_HUD_THEME ?? process.env.CODEX_HUD_TMUX_STYLE) === 'blue-purple';
+const accent = bluePurple ? (text: string) => ansi('38;2;146;180;255', text) : colors.cyan;
+const secondaryAccent = bluePurple ? (text: string) => ansi('38;2;185;163;227', text) : colors.cyan;
+
 export const theme = {
   // Model and primary info
-  model: colors.cyan,
+  model: secondaryAccent,
   modelBracket: colors.dim,
   
   // Git status (oh-my-zsh style)
@@ -70,7 +74,7 @@ export const theme = {
   success: colors.green,
   warning: colors.yellow,
   error: colors.red,
-  info: colors.cyan,
+  info: accent,
   
   // Separators and decorations
   separator: colors.dim,
@@ -81,24 +85,24 @@ export const theme = {
   dim: colors.dim,
   
   // Context bar colors (based on percentage)
-  contextSafe: colors.cyan,       // < 70%
+  contextSafe: accent,       // < 70%
   contextWarning: colors.yellow,  // 70-84%
   contextDanger: colors.red,      // >= 85%
   
   // Tool activity
-  toolRunning: colors.cyan,
+  toolRunning: accent,
   toolCompleted: colors.dim,
   toolError: colors.red,
-  toolName: colors.cyan,
+  toolName: accent,
   toolTarget: colors.dim,
   
   // Agent activity
-  agentType: colors.cyan,
-  agentRunning: colors.cyan,
+  agentType: accent,
+  agentRunning: accent,
   agentCompleted: colors.dim,
   
   // Plan/Todo progress
-  planProgress: colors.cyan,
+  planProgress: accent,
   planStepCompleted: colors.dim,
   planStepPending: colors.dim,
   planStepInProgress: (text: string) => text,
