@@ -656,10 +656,31 @@ try {
     encoding: 'utf8', env: { ...process.env, CODEX_HUD_MAIN_PANE: '%1' },
   }).trim(), rolloutA, 'a cold process must also reject the transient fork');
 
-  executeSql(dbPath, "DELETE FROM logs WHERE process_uuid LIKE 'pid:502:%' AND thread_id IS NULL;");
+  const inProcessUuid = `pid:${fixturePid(502)}:uuid-${fixturePid(502)}`;
+  executeSql(dbPath, `DELETE FROM logs WHERE process_uuid = '${inProcessUuid}' AND thread_id IS NULL;`);
   assert.equal(execFileSync(process.execPath, ['--input-type=module', '-e', coldScript], {
     encoding: 'utf8', env: { ...process.env, CODEX_HUD_MAIN_PANE: '%5' },
   }).trim(), rolloutD, 'a cold HUD recovers an in-process TUI after thread-less mode evidence is pruned');
+
+  // Both request-span copies can be pruned during a long turn. The server's
+  // own modules still log under this TUI's PID; client-side messages and
+  // another process's server activity cannot establish the same ownership.
+  executeSql(dbPath, `DELETE FROM logs WHERE process_uuid = '${inProcessUuid}'
+    AND feedback_log_body LIKE '%app_server.connection_id=%';`);
+  log(Date.now() - 2000, 502, 'active turn', THREAD_D, 'codex_core::session::turn');
+  log(Date.now() - 1000, 502, 'codex_app_server::message_processor replied', null,
+    'codex_app_server_client::message_processor');
+  log(Date.now() - 1000, 103, 'handled request', null, 'codex_app_server::message_processor');
+  const coldInProcess = () => execFileSync(process.execPath, ['--input-type=module', '-e', coldScript], {
+    encoding: 'utf8', env: { ...process.env, CODEX_HUD_MAIN_PANE: '%5' },
+  }).trim();
+  assert.equal(coldInProcess(), 'unbound', 'client messages and another PID cannot prove server ownership');
+  for (const target of ['codex_app_server::message_processor', 'codex_app_server::outgoing_message']) {
+    executeSql(dbPath, `DELETE FROM logs WHERE process_uuid = '${inProcessUuid}'
+      AND target LIKE 'codex_app_server::%';`);
+    log(Date.now() - 500, 502, 'handled message', null, target);
+    assert.equal(coldInProcess(), rolloutD, `a cold HUD recovers from its own ${target} without request spans`);
+  }
 
   // A normal /fork persists its inherited conversation. Watcher arrival
   // must immediately promote it, even after a previous negative lookup.
