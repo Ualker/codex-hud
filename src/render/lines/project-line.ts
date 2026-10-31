@@ -54,20 +54,21 @@ function renderGitFileStats(git: GitStatus): string {
 type ProjectLineOptions = {
   includeFileStats?: boolean;
   maxWidth?: number;
+  emphasizeName?: boolean;
 };
 
 export function renderProjectLine(data: HudData, options: ProjectLineOptions = {}): string {
   const includeFileStats = options.includeFileStats !== false;
   const maxWidth = options.maxWidth;
   
-  // Project name (yellow like claude-hud), clickable via OSC 8 when a cwd
-  // is known.
+  // A task title takes visual priority; project-only headers stay bold.
+  const styleName = options.emphasizeName === false ? colors.dim : theme.projectName;
   const projectName =
     sanitizeTerminalText(data.project.projectName) || 'project';
   const projectCwd = data.project.cwd;
   const linkProject = (label: string): string =>
     projectCwd ? osc8Link(label, fileUrl(projectCwd)) : label;
-  const projectLabel = linkProject(theme.projectName(projectName));
+  const projectLabel = linkProject(styleName(projectName));
   const parts: string[] = [projectLabel];
   let gitDisplay = '';
   let gitContent = '';
@@ -148,5 +149,5 @@ export function renderProjectLine(data: HudData, options: ProjectLineOptions = {
   }
 
   const truncatedName = truncate(projectName, maxWidth);
-  return truncateAnsi(linkProject(theme.projectName(truncatedName)), maxWidth);
+  return truncateAnsi(linkProject(styleName(truncatedName)), maxWidth);
 }

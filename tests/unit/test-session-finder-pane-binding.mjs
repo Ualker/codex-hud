@@ -249,15 +249,15 @@ try {
 
     const finder = new SessionFinder(cwd, undefined, new Date());
     const resolved = await finder.check();
-    assert.ok(
-      resolved,
-      'fresh launch without a bound shell snapshot should fall back to a recent cwd rollout'
-    );
-    assert.equal(
-      resolved.path,
-      fs.realpathSync(rolloutPath),
-      'fallback should bind to the recent rollout in the current working directory'
-    );
+    assert.equal(resolved, null, 'a known pane waits for ownership evidence');
+    process.env.CODEX_HUD_MAIN_PANE = '%71';
+    const other = new SessionFinder(cwd, undefined, new Date());
+    assert.equal(await other.check(), null, 'another pane in the same cwd must not claim this rollout either');
+    process.env.CODEX_HUD_MAIN_PANE = '%70';
+    writeSnapshot(home, '019d7291-a135-7fe1-b46f-8f3eca4fa451', '%70', snapshotNonce());
+    assert.equal((await finder.check(true))?.path, fs.realpathSync(rolloutPath), 'exact pane evidence recovers binding');
+    delete process.env.CODEX_HUD_MAIN_PANE;
+    assert.equal((await new SessionFinder(cwd).check())?.path, fs.realpathSync(rolloutPath), 'standalone discovery remains supported');
   }
 
   {
@@ -285,12 +285,7 @@ try {
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
     const resolved = await finder.check();
-    assert.ok(resolved, 'expected fallback to resolve the launch-scoped rollout');
-    assert.equal(
-      resolved.path,
-      fs.realpathSync(launchRollout),
-      'missing shell snapshots should not drift to a newer unrelated active rollout'
-    );
+    assert.equal(resolved, null, 'cwd and launch time cannot replace missing or stale pane ownership');
   }
 
   {
@@ -319,12 +314,7 @@ try {
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
     const resolved = await finder.check();
-    assert.ok(resolved, 'expected a fresh rollout to resolve when pane binding is stale');
-    assert.equal(
-      resolved.path,
-      fs.realpathSync(freshRollout),
-      'stale pane-bound snapshots should yield to the current rollout for this HUD launch'
-    );
+    assert.equal(resolved, null, 'cwd and launch time cannot replace missing or stale pane ownership');
   }
 
   {
@@ -360,12 +350,7 @@ try {
 
     const finder = new SessionFinder(cwd, undefined, targetStartTime);
     const resolved = await finder.check();
-    assert.ok(resolved, 'expected a launch-scoped rollout to resolve when pane binding is stale');
-    assert.equal(
-      resolved.path,
-      fs.realpathSync(earlierRollout),
-      'stale pane-bound snapshots should prefer the launch-scoped rollout over the newest unrelated activity'
-    );
+    assert.equal(resolved, null, 'cwd and launch time cannot replace missing or stale pane ownership');
   }
 
   {

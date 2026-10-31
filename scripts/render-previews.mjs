@@ -23,7 +23,7 @@ const { renderToStdout, invalidateRenderedFrame } = await import('../dist/render
 const { visualLength } = await import('../dist/render/colors.js');
 const ago = (seconds) => new Date(now - seconds * 1000);
 const calls = ['npm test', 'rg compact src', 'git diff'].map((target, i) => ({
-  id: `tool-${i}`, name: 'exec_command', target, status: 'running', timestamp: ago(12 - i),
+  id: `tool-${i}`, name: 'exec', target, status: 'running', timestamp: ago(12 - i),
 }));
 const data = {
   config: { model: 'gpt-6-astra', sandbox_mode: 'workspace-write', approval_policy: 'on-request' },

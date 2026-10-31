@@ -10,25 +10,38 @@ export function renderHelp(data: HudData, width: number, maxLines = 5): string[]
   if (width >= 90 && maxLines >= 5) {
     return [
       theme.info('HUD help · ? close · Esc: close / return to Codex'),
-      `${toggle}: switch view · t tools: ${toolDetailsMode()} · d details: ${details}`,
+      `${toggle}: switch view · t: tool text (${toolDetailsMode()}) · d: history/info (${details})`,
       'Overview: j/k or arrows select · Enter: open selected · f all/attention',
-      `c layout: ${data.layoutPreset ?? 'standard'} · view: ${data.displayMode ?? 'single'} · choices persist`,
-      'Set name: codex-hud --label NAME',
+      `c: native-status companion (${data.layoutPreset ?? 'standard'}) · saved for this HUD`,
+      'Rename: codex-hud --label NAME --reload --target SESSION',
     ].map(row => truncateAnsi(row, width));
   }
   const entries = [
     `${toggle}: switch view`,
     `View: ${data.displayMode ?? 'single'}`,
-    `t tools: ${toolDetailsMode()}`,
-    `d details: ${details}`,
-    `c layout: ${data.layoutPreset ?? 'standard'}`,
+    `t: tool text (${toolDetailsMode()})`,
+    `d: history/info (${details})`,
+    `c: layout (${data.layoutPreset ?? 'standard'})`,
+    'coexist: companion to native status',
     'Overview: j/k or arrows select',
     'Enter: open selected session',
     'f: all / attention filter',
     'Esc: close / return to Codex',
-    'Set name: codex-hud --label NAME',
-    'View/detail choices persist',
-  ];
+    'Rename a session from your shell:',
+    'codex-hud --label NAME --reload --target SESSION',
+    'Choices saved for this HUD',
+  ].flatMap(entry => {
+    // Wrap commands rather than truncating away required control arguments.
+    const rows: string[] = [];
+    let row = '';
+    for (const word of entry.split(' ')) {
+      const next = row ? `${row} ${word}` : word;
+      if (next.length > width && row) { rows.push(row); row = word; }
+      else row = next;
+    }
+    if (row) rows.push(row);
+    return rows;
+  });
   const height = Math.max(3, Math.min(12, Number.isFinite(maxLines) ? maxLines : 5));
   const pageSize = height - 2;
   const pages = Math.ceil(entries.length / pageSize);

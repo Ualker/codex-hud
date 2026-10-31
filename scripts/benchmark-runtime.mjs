@@ -33,6 +33,7 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !/^(CODEX_|CMUX_|TMUX|NODE_OPTIONS|NODE_COMPILE_CACHE)/.test(key)));
 const report = { fixtureVersion: 2, node: process.version, platform: `${process.platform}/${process.arch}`, seconds, historyMiB, journalMode: 'wal',
   note: 'RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.', runs: [] };
+let succeeded = false;
 try {
   for (const count of instances) {
     const run = path.join(root, String(count));
@@ -121,7 +122,7 @@ try {
       assert.ok(metrics.every(item => item.probes.ps?.count > 0 && item.probes.sqlite?.count > 0),
         'benchmark must exercise process binding and SQLite, not just render frames');
       assert.ok(metrics.every(item => item.sqlite.failures === 0),
-        'SQL failures invalidate the benchmark; update the fixture or fix the collector');
+        `SQL failures invalidate the benchmark: ${JSON.stringify(metrics.map(item => ({ pid: item.pid, sqlite: item.sqlite })))}`);
       const sum = key => Number(metrics.reduce((total, item) => total + (item[key] ?? 0), 0).toFixed(2));
       const subprocesses = {};
       for (const item of metrics) for (const [command, n] of Object.entries(item.subprocesses)) subprocesses[command] = (subprocesses[command] ?? 0) + n;
@@ -131,11 +132,24 @@ try {
         worstEventLoopMaxMs: Math.max(...metrics.map(item => item.eventLoopMaxMs)), subprocesses, metrics });
     } finally {
       clearInterval(writer);
-      for (const { child } of children) if (child.exitCode === null) child.kill('SIGKILL');
+      await Promise.all(children.map(({ child }) => stopChild(child)));
+      for (const item of children) {
+        fs.writeFileSync(path.join(run, `${item.child.pid}.stdout.log`), item.output());
+        fs.writeFileSync(path.join(run, `${item.child.pid}.stderr.log`), item.errors());
+        fs.writeFileSync(path.join(run, `${item.child.pid}.exit.json`), JSON.stringify({
+          exitCode: item.child.exitCode, signal: item.child.signalCode, session: item.name,
+        }, null, 2));
+      }
       try { tmux(['kill-server']); } catch { /* Only this private socket. */ }
     }
   }
   console.log(JSON.stringify(report, null, 2));
+  succeeded = true;
+} catch (error) {
+  fs.writeFileSync(path.join(root, 'failure.txt'), error.stack ?? String(error));
+  fs.writeFileSync(path.join(root, 'partial-report.json'), JSON.stringify(report, null, 2));
+  throw error;
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  if (succeeded) fs.rmSync(root, { recursive: true, force: true });
+  else console.error(`Benchmark failed; diagnostics retained at ${root}`);
 }

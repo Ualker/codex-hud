@@ -255,6 +255,11 @@ try {
       96,
       'the newest informative snapshot wins over a newer empty one'
     );
+    assert.equal(found.limits.windowsRetained, true);
+    assert.equal(found.limits.credits.has_credits, false);
+    assert.equal(found.limits.primary.resets_at, RESETS_AT);
+    const { rateLimitAlertKind } = await import('../../dist/render/lines/activity-line.js');
+    assert.equal(rateLimitAlertKind(found.limits, Date.now()), 'credits-exhausted', 'cross-file exhaustion reaches the displayed alert');
   }
 
   {

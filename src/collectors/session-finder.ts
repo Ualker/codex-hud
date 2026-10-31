@@ -35,7 +35,6 @@ import type { SessionInfo } from '../types.js';
 const DEFAULT_LOOKBACK_DAYS = 30;
 const TARGET_START_TOLERANCE_MS = 10 * 60 * 1000;
 const PANE_SNAPSHOT_STALE_TOLERANCE_MS = 30 * 1000;
-const LAUNCH_ROLLOUT_BACKDATE_TOLERANCE_MS = 30 * 1000;
 
 // Spawned probes (tmux/ps/sqlite3) can take multiple seconds on a loaded
 // machine purely from process startup overhead; a tight timeout makes binding
@@ -1570,7 +1569,9 @@ export class SessionFinder {
     if (!threadId) {
       this.currentThreadId = null;
       return this.applyResolveBackoff(
-        this.resolveNextSession(this.findPaneLaunchSession(), currentExists),
+        // A cwd/timestamp match is not ownership evidence for a known pane.
+        // Keep an established binding, or wait for process/snapshot evidence.
+        this.resolveNextSession(null, currentExists),
         previousPath
       );
     }
@@ -1623,6 +1624,10 @@ export class SessionFinder {
    * of waiting out the facts TTL and poll interval.
    */
   async noteRolloutAppeared(rolloutPath: string): Promise<void> {
+    // Appends to an established rollout do not upgrade its binding evidence.
+    if (this.currentSession?.path === rolloutPath && !isLogBackedSession(this.currentSession)) {
+      return;
+    }
     const parsed = parseRolloutFilename(path.basename(rolloutPath));
     if (!parsed) {
       return;
@@ -2141,25 +2146,6 @@ export class SessionFinder {
     return this.findBestRecentSession();
   }
 
-  private findPaneLaunchSession(): SessionFile | null {
-    if (!this.targetStartTime) {
-      return this.findFallbackSession();
-    }
-
-    let rollouts = findRolloutsInDays(DEFAULT_LOOKBACK_DAYS);
-    if (this.targetCwd) {
-      rollouts = rollouts.filter((rollout) => peekRolloutCwd(rollout.path) === this.targetCwd);
-    }
-
-    const targetMs = this.targetStartTime.getTime();
-    const candidates = rollouts.filter(
-      (session) =>
-        session.timestamp.getTime() >= targetMs - LAUNCH_ROLLOUT_BACKDATE_TOLERANCE_MS
-    );
-
-    return this.selectUniqueClosestSession(candidates);
-  }
-
   private findBestRecentSession(): SessionFile | null {
     if (!this.targetStartTime) {
       return findMostRecentRollout(DEFAULT_LOOKBACK_DAYS, this.targetCwd || undefined);
@@ -2214,39 +2200,4 @@ export class SessionFinder {
     return candidates[0] ?? null;
   }
 
-  private selectUniqueClosestSession(sessions: SessionFile[]): SessionFile | null {
-    if (sessions.length === 0) {
-      return null;
-    }
-
-    if (!this.targetStartTime) {
-      return this.selectBestSession(sessions);
-    }
-
-    const targetMs = this.targetStartTime.getTime();
-    const sorted = [...sessions].sort((left, right) => {
-      const leftDelta = Math.abs(left.timestamp.getTime() - targetMs);
-      const rightDelta = Math.abs(right.timestamp.getTime() - targetMs);
-      if (leftDelta !== rightDelta) {
-        return leftDelta - rightDelta;
-      }
-      return right.modifiedAt.getTime() - left.modifiedAt.getTime();
-    });
-
-    const best = sorted[0];
-    const second = sorted[1];
-    if (!best) {
-      return null;
-    }
-
-    if (
-      second &&
-      Math.abs(second.timestamp.getTime() - targetMs) ===
-        Math.abs(best.timestamp.getTime() - targetMs)
-    ) {
-      return null;
-    }
-
-    return best;
-  }
 }

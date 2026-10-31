@@ -6,7 +6,8 @@ import { collectCodexAssetBreakdown } from '../../dist/collectors/codex-assets.j
 import { readCodexConfigStrict } from '../../dist/collectors/codex-config.js';
 import { renderEnvironmentLine } from '../../dist/render/lines/environment-line.js';
 import { renderHud } from '../../dist/render/header.js';
-import { stripAnsi, getSpinnerFrame, advanceSpinnerFrame } from '../../dist/render/colors.js';
+import { stripAnsi, visualLength, getSpinnerFrame, advanceSpinnerFrame } from '../../dist/render/colors.js';
+import { renderHelp } from '../../dist/render/help.js';
 import { moveSelection } from '../../dist/ui/state.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-inventory-layout-'));
@@ -56,6 +57,24 @@ try {
     assert.match(visible, /Ctx:.*5% left/, `${preset}/${height}: high context pressure must survive agents`);
     assert.match(visible, /[Aa]pproval/, `${preset}/${height}: approval must remain actionable`);
   }
+  const critical = { ...data, collectorHealth: { config: { status: 'error' } },
+    rateLimits: { primary: { used_percent: 100, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 3600 } } };
+  for (const preset of ['standard', 'coexist']) for (const height of [5, 8, 12]) for (const width of [40, 60, 120]) {
+    const lines = renderHud({ ...critical, layoutPreset: preset }, { width, maxLines: height, showDetails: true });
+    const visible = lines.slice(0, height).map(stripAnsi).join('\n');
+    assert.match(visible, /Current task/, `${preset}/${height}/${width}: task identity survives`);
+    assert.match(visible, /[Aa]pproval/, `${preset}/${height}/${width}: approval survives other warnings`);
+    assert.match(visible, /0% left/, `${preset}/${height}/${width}: exhausted quota survives other warnings`);
+    assert.ok(lines.every(line => visualLength(line) <= width));
+  }
+  const overview = renderHud({ ...data, displayMode: 'overview', overview: { namespace: 'private-scope', updatedAt: new Date(), sessions: [
+    { id: 'a', title: 'Needs input', projectName: 'Fixture', turnActivity: { phase: 'awaiting-approval' } },
+    { id: 'b', title: 'Finished', projectName: 'Fixture', turnActivity: { phase: 'idle' } },
+  ] } }, { width: 80, maxLines: 5 }).map(stripAnsi).join('\n');
+  assert.match(overview, /All 2.*1 need attention/);
+  assert.doesNotMatch(overview, /private|scope/);
+  const help = Array.from({ length: 30 }, (_, helpPage) => renderHelp({ ...data, helpPage }, 32, 5).map(stripAnsi).join(' ')).join(' ');
+  assert.match(help, /codex-hud --label NAME --reload --target SESSION/);
   process.env.CODEX_HUD_ANIMATION = '0';
   const still = getSpinnerFrame();
   advanceSpinnerFrame(); advanceSpinnerFrame();

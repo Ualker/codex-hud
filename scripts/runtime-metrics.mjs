@@ -14,6 +14,8 @@ eventLoop.enable();
 const subprocesses = {};
 let stdoutWrites = 0;
 let peakRss = 0;
+let peakHeap = 0;
+let peakExternal = 0;
 for (const name of ['execFile', 'execFileSync', 'spawn', 'spawnSync']) {
   const original = childProcess[name];
   childProcess[name] = function(command, ...args) {
@@ -34,14 +36,20 @@ const write = process.stdout.write;
 process.stdout.write = function(...args) { stdoutWrites++; return write.apply(this, args); };
 function flush() {
   const cpu = process.cpuUsage(initialCpu);
-  const rss = process.memoryUsage().rss;
+  const memory = process.memoryUsage();
+  const rss = memory.rss;
   peakRss = Math.max(peakRss, rss);
+  peakHeap = Math.max(peakHeap, memory.heapUsed);
+  peakExternal = Math.max(peakExternal, memory.external);
   let fileDescriptors;
   try { fileDescriptors = fs.readdirSync('/dev/fd').length; } catch { /* Platform optional. */ }
   fs.writeFileSync(process.env.HUD_BENCH_METRICS, JSON.stringify({
     pid: process.pid, elapsedMs: performance.now() - started,
     cpuMs: (cpu.user + cpu.system) / 1000,
     rssMiB: rss / 1048576, peakRssMiB: peakRss / 1048576,
+    mainHeapUsedMiB: memory.heapUsed / 1048576, mainExternalMiB: memory.external / 1048576,
+    mainArrayBuffersMiB: memory.arrayBuffers / 1048576,
+    mainPeakHeapMiB: peakHeap / 1048576, mainPeakExternalMiB: peakExternal / 1048576,
     eventLoopP95Ms: eventLoop.percentile(95) / 1e6, eventLoopMaxMs: eventLoop.max / 1e6,
     stdoutWrites, fileDescriptors, subprocesses, probes: getProbeDiagnostics(), sqlite: getSqliteDiagnostics(),
   }));

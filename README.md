@@ -48,11 +48,11 @@ Codex 0.164.0 `additional_tools` records are recognized as tool definitions. The
 
 Codex 0.165.0 `configuration_update` records update the displayed reasoning effort without changing tool or turn activity. The setting also survives a HUD reload with a large session log; invalid consumed fields and other unknown record types still produce diagnostics.
 
-Rollout reads discard stale work after rebinding, validate record envelopes, and replay large backlogs in bounded batches. `Catching up` identifies pending data; notifications are suppressed during substantial catch-up. Notification cooldown is isolated by session/turn. An explicit unavailable `CODEX_HOME` reports an error instead of reading another profile.
+Rollout reads discard stale work after rebinding, validate record envelopes, and replay large backlogs in bounded batches. `Catching up` identifies pending data. Notifications wait until the first bound log snapshot is caught up and remain suppressed while bytes are pending. Turn events are scoped by session/turn; quota alerts are scoped by data scope/window, so a new turn cannot repeat an unchanged quota alert. An explicit unavailable `CODEX_HOME` reports an error instead of reading another profile.
 
 Daemon binding preserves identified connections of surviving TUI processes even after hours without request logs. Connect-line evidence takes priority; overlapping startup evidence stays unbound instead of guessing by launch order. Shared history retains connections belonging to live clients. `/side` conversations (temporary in-memory forks) and known helper threads do not replace the main session, including when `/side` closes; a normal persisted fork, `/new`, or `/resume` still updates the binding. After rebuilding, reload the HUD panes with `codex-hud --reload --target <tmux-session>`; the main Codex process keeps running.
 
-Automatic reattachment, bindings, overview and shared quota use one data scope derived from canonical `CODEX_HOME` and `CODEX_SESSIONS_PATH` directories. Symlink aliases share a scope; different accounts in the same project do not. The overview keeps a short scope identifier and current filter visible. Legacy HUDs without scope metadata stay out of the overview until reloaded; `--doctor --json` marks their scope as unverified.
+Automatic reattachment, bindings, overview and shared quota use one data scope derived from canonical `CODEX_HOME` and `CODEX_SESSIONS_PATH` directories. Symlink aliases share a scope; different accounts in the same project do not. The overview shows session and attention counts plus the current filter; the scope identifier remains in diagnostics. Enter on a selection that disappeared reports it unavailable instead of opening another task. Legacy HUDs without scope metadata stay out of the overview until reloaded; `--doctor --json` marks their scope as unverified.
 
 The overview retains at most 20 parsers and advances at most 8 per refresh, with a 100 ms scheduling budget (an already-started bounded batch finishes). Current, selected and actionable sessions receive priority; other rows rotate at a slower cadence and retain their last snapshot. Queued or catching-up rows say `Updating`. HUDs on the same data scope and tmux server share short-lived snapshots. Native and CLI SQLite probes are timed; native statements exceeding 50 ms log a query digest, row count and query plan without SQL literals.
 
@@ -60,7 +60,7 @@ In full details, `Skills enabled: enabled/discovered` describes filesystem inven
 
 Unexpected global exceptions stop the renderer. The wrapper restarts only that process with a capped backoff (three retries per crash burst), leaving Codex running; ordinary exits and startup configuration errors do not restart. Uninstall likewise stops only the HUD panes owned by this checkout and preserves main panes. Alias backups retain their original RC paths and shell dialects; newer user aliases and ambiguous legacy flat backups are preserved rather than overwritten.
 
-The offline [performance benchmark](./docs/PERFORMANCE.md) covers frame rendering and four concurrent long-log readers. `npm run bench:runtime` also exercises 1/5/20 full HUD processes, process binding, SQLite, tmux, Git, watchers and continuous log appends. All tmux tests and runtime benchmarks use private servers or substitutes.
+The offline [performance benchmark](./docs/PERFORMANCE.md) covers frame rendering and four concurrent long-log readers. `npm run bench:runtime` also exercises 1/5/20 full HUD processes, process binding, SQLite, tmux, Git, watchers and continuous log appends. Supported tmux tests and runtime benchmarks use private servers or substitutes. Legacy manual tmux/install entry points are retired. Runtime benchmarks clean up on success; failures retain per-HUD metrics, bounded stdout/stderr and exit details, and print their diagnostics directory.
 
 ## Why Codex HUD?
 
@@ -157,7 +157,7 @@ After the first install, these are available in your shell:
 
 ## What's on the HUD?
 
-The default view uses the terminal foreground with a cyan accent, bold project names, and quieter labels, with completed tool history collapsed by default. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. Press `d` for environment inventory, Git file counts, token breakdown and session identity; `t` changes only tool detail. A three-second `Details: compact/full` confirmation appears in the header even when both modes show the same rows. Titles in both views shorten absolute paths to their project/file names and use more space in wide windows; useful task text takes priority over uptime and long branches. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
+The default view uses the terminal foreground with a cyan accent, bold task titles, and quieter project/address labels, with completed tool history collapsed by default. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. At 5/8/12 rows, approval, failure and exhausted quota precede environment and history. `t` changes tool text, `d` expands history, environment inventory, Git file counts, token breakdown and session identity, and `c` switches standard/native-status-companion layouts; choices are saved for this HUD. Rename an existing session with `codex-hud --label NAME --reload --target SESSION_NAME`; `--label` alone is a launch option. A four-second confirmation naming the changed setting and current HUD appears in the header even when both modes show the same rows. Titles in both views shorten absolute paths to their project/file names and use more space in wide windows; useful task text takes priority over uptime and long branches. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
 
 Previews: [light terminal](./doc/fig/single-light.svg) · [60-column pane](./doc/fig/single-narrow.svg) · [paged help](./doc/fig/help-narrow.svg) · [5-row coexist with critical context](./doc/fig/coexist-pressure.svg). These are generated by the actual renderer with `npm run docs:previews`.
 
@@ -313,6 +313,8 @@ tracking failures are recorded for `codex-hud --doctor`; JSONL read errors
 include the file and byte offset. Repeated identical failures are logged once
 until the cause changes or the collector recovers.
 
+Known main panes require process/connection or valid pane-snapshot ownership evidence; missing evidence stays unbound instead of guessing by cwd or launch time. Bound-log appends parse directly without waiting for binding probes; new files, removal and periodic checks still rebind. Cross-file quota scans retain the latest exhaustion signal with unexpired window information.
+
 Overview deduplicates by session ID, preferring a validated live pane binding, and filters subagents before scheduling parsers so eviction cannot resurrect placeholder rows. Native SQLite runs in a Worker with an 8-second deadline; older Node versions retain the asynchronous CLI fallback. Small query results are shared for up to 750 ms, invalidated by database/WAL versions. Process birth-time facts are shared briefly without persisting process command lines.
 
 Notifier failures, launch errors and timeouts are logged with up to 4 KiB of redacted stderr. The 10-second deadline kills the command's process group; HUD shutdown cleans up notifications still running.
@@ -390,9 +392,10 @@ enabled = true
 ## System Support
 
 Runtime requires Node.js `>=20.19.0` (matching Chokidar 5's engine contract) and
-tmux. Node.js `>=22.5` is recommended: session binding then uses the built-in
+tmux. Installation checks and both doctor formats probe the actual SQLite backend. Node 22.5–22.12 needs the CLI unless its experimental API is enabled. Node.js 22 LTS (`>=22.13`) or 24+ is recommended: session binding then uses the built-in
 `node:sqlite` instead of spawning the `sqlite3` CLI (which must be installed
 separately on 20.x).
+CI pins the 20.19.0 and 22.5.0 compatibility boundaries alongside current 22/24 releases.
 
 | Platform | Status |
 |----------|--------|

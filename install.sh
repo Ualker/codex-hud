@@ -166,6 +166,7 @@ process.exit(major > 20 || (major === 20 && minor >= 19) ? 0 : 1);
         error "Node.js 20.19+ is required (found $(node --version))"
     fi
     info "Node.js $(node --version)"
+    node "$SCRIPT_DIR/scripts/sqlite-backend.mjs" || error "A working SQLite backend is required for session binding."
     
     # Check npm
     if ! command_exists npm; then
