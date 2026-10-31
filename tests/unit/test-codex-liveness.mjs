@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   CodexLivenessProbe,
@@ -394,6 +397,42 @@ assert.match(
   await instance.refresh(quietIdle, now);
   await instance.refresh(quietIdle, now + 61_000);
   assert.equal(probes.length, 2);
+}
+
+// Exercise the real subprocess probe: procps honors inherited COLUMNS, so
+// long installed paths must remain visible even in a narrow HUD pane.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-liveness-width-'));
+  const saved = { PATH: process.env.PATH, COLUMNS: process.env.COLUMNS,
+    HUD_LIVENESS_TABLE: process.env.HUD_LIVENESS_TABLE };
+  try {
+    const table = path.join(dir, 'table');
+    const native = '/root/.local/nodejs/node-v24.14.0-linux-x64/lib/node_modules/@openai/codex/' +
+      'node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex';
+    const command = `${native} --ask-for-approval never --sandbox danger-full-access`;
+    fs.writeFileSync(table, `1000000100 1 bash\n1000000102 1000000100 ${command}\n`);
+    fs.writeFileSync(path.join(dir, 'tmux'), '#!/bin/sh\nprintf "1000000100\\n"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'ps'), '#!/bin/sh\ncase "$1" in\n' +
+      '*ww*) cat "$HUD_LIVENESS_TABLE" ;;\n' +
+      '*) cut -c1-"$COLUMNS" "$HUD_LIVENESS_TABLE" ;;\nesac\n', { mode: 0o755 });
+    process.env.PATH = `${dir}${path.delimiter}${saved.PATH ?? ''}`;
+    process.env.COLUMNS = '116';
+    process.env.HUD_LIVENESS_TABLE = table;
+    const instance = new CodexLivenessProbe({ mainPane: '%999', eventGraceMs: 0 });
+    await instance.refresh({});
+    assert.equal(instance.isCodexGone(), false, 'terminal width must not hide a live Codex process');
+    assert.equal(instance.getCodexCommand(), command, 'launch flags must also survive truncation');
+    fs.writeFileSync(table, '1000000100 1 bash\n');
+    instance.reset();
+    await instance.refresh({});
+    assert.equal(instance.isCodexGone(), true, 'an actual exit still reports gone');
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log('test-codex-liveness: PASS');
