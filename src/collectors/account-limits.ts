@@ -161,7 +161,7 @@ async function readTailSnapshot(
     }
     return { limits: payload.rate_limits, observedAt };
   }
-  return null;
+  return newestWindowless;
 }
 
 /**
@@ -180,6 +180,7 @@ export async function findLatestAccountRateLimits(): Promise<AccountRateLimits |
   }
 
   let newest: AccountRateLimits | null = null;
+  let newestWindowless: AccountRateLimits | null = null;
   for (let start = 0; start < candidates.length; start += SCAN_BATCH_FILES) {
     // Candidates are mtime-descending and a record cannot be newer than its
     // file's mtime, so once the snapshot in hand outdates every remaining
@@ -199,6 +200,12 @@ export async function findLatestAccountRateLimits(): Promise<AccountRateLimits |
       if (!snapshot) {
         continue;
       }
+      if (!hasRateLimitSignal(snapshot.limits)) {
+        if (!newestWindowless || snapshot.observedAt > newestWindowless.observedAt) {
+          newestWindowless = snapshot;
+        }
+        continue;
+      }
       if (
         !newest ||
         snapshot.observedAt.getTime() > newest.observedAt.getTime()
@@ -206,6 +213,12 @@ export async function findLatestAccountRateLimits(): Promise<AccountRateLimits |
         newest = snapshot;
       }
     }
+  }
+  if (newestWindowless && (!newest || newestWindowless.observedAt > newest.observedAt)) {
+    return {
+      limits: retainRateLimitWindows(newest?.limits, newestWindowless.limits, newestWindowless.observedAt.getTime()),
+      observedAt: newestWindowless.observedAt,
+    };
   }
   return newest;
 }
@@ -236,8 +249,14 @@ export function preferFreshestRateLimits(
   }
   const sessionInformative = hasRateLimitSignal(sessionLimits);
   const accountInformative = hasRateLimitSignal(account.limits);
+  const sessionAt = sessionObservedAt?.getTime() ?? 0;
   if (sessionInformative !== accountInformative) {
-    return sessionInformative ? sessionLimits : account.limits;
+    // A fresh windowless exhaustion is meaningful even when its own file
+    // has never recorded percentages. Preserve the other source's windows.
+    if (account.observedAt.getTime() >= sessionAt) {
+      return retainRateLimitWindows(sessionLimits, account.limits, account.observedAt.getTime());
+    }
+    return retainRateLimitWindows(account.limits, sessionLimits, sessionAt);
   }
   const sessionLimitId = sessionLimits.limit_id;
   const accountLimitId = account.limits.limit_id;
@@ -248,7 +267,6 @@ export function preferFreshestRateLimits(
   ) {
     return sessionLimits;
   }
-  const sessionAt = sessionObservedAt?.getTime() ?? 0;
   return account.observedAt.getTime() >= sessionAt
     ? account.limits
     : sessionLimits;

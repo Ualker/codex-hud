@@ -16,7 +16,16 @@ catch (error) {
   return null;
 } }
 const namespace = getCodexDataNamespace();
+let sqlite: { backend: string; message?: string };
+try {
+  const { stdout } = await exec(process.execPath, [path.join(root, 'scripts/sqlite-backend.mjs'), '--json'], { timeout: 6000 });
+  sqlite = JSON.parse(stdout);
+} catch (error) {
+  sqlite = { backend: 'unavailable', message: 'Install sqlite3 CLI or use Node.js 22.13+ with node:sqlite enabled.' };
+  errors.push(`sqlite: ${sqlite.message}`);
+}
 const report = { schemaVersion: 1, generatedAt: new Date().toISOString(), node: process.version, namespace,
+  sqlite,
   hud: { root, version: attempt(() => JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version),
     buildModifiedAt: attempt(() => fs.statSync(path.join(root, 'dist/index.js')).mtime.toISOString()) },
   codexHome: attempt(getCodexHome), sessionsDir: attempt(getSessionsDir),

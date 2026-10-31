@@ -78,6 +78,13 @@ export function moveSelection(rows: SessionOverviewItem[], selected: string | un
   if (index < 0) return rows[delta < 0 ? rows.length - 1 : 0]?.id;
   return rows[(index + delta + rows.length) % rows.length]?.id;
 }
+/** An explicit selection must never silently become a different task. */
+export function selectedSession(
+  rows: SessionOverviewItem[], selected: string | undefined, current?: string
+): SessionOverviewItem | undefined {
+  if (selected !== undefined) return rows.find(row => row.tmuxSession && row.id === selected);
+  return rows.find(row => row.tmuxSession && row.id === current) ?? rows.find(row => row.tmuxSession);
+}
 /** Validate the advertised binding again at activation time; never jump on a stale row. */
 export async function focusSession(tmuxSession: string | undefined, expectedSessionId?: string): Promise<boolean> {
   if (!tmuxSession)

@@ -20,10 +20,11 @@
  * at. A per-event cooldown keeps a flapping detector from paging repeatedly.
  */
 
-import { spawn } from 'child_process';
+import { runShellCommand } from './notify-command.js';
+export { runShellCommand, stopNotifications } from './notify-command.js';
 
 import { logHudError } from './utils/hud-log.js';
-import { sanitizeDisplayText } from './utils/display-text.js';
+import type { RateLimitSnapshot } from './types.js';
 
 export type HudNotifyEvent =
   | 'approval-needed'
@@ -36,6 +37,8 @@ export interface NotifyContext {
   sessionId?: string;
   turnId?: string;
   approvalId?: string;
+  /** Account/data scope and quota window, independent of the active turn. */
+  quotaScope?: string;
   tmuxSession?: string;
   cwd: string;
   /** Wall time of the finished turn; rides in the turn-completed and turn-failed payloads. */
@@ -85,71 +88,16 @@ export function isCompletedTurnNotifiable(
 /** A state that clears and trips again within this window fires once. */
 const REFIRE_COOLDOWN_MS = 5 * 60_000;
 
-/** The user command must not outlive the state it announces. */
-const NOTIFY_TIMEOUT_MS = 10_000;
-
-const activeNotifications = new Set<() => void>();
-
-export function stopNotifications(): void {
-  for (const stop of activeNotifications) stop();
-  activeNotifications.clear();
+export function rateLimitNotificationScope(account: string, limits?: RateLimitSnapshot): string {
+  return JSON.stringify([account, limits?.limit_id,
+    limits?.primary?.window_minutes, limits?.primary?.resets_at,
+    limits?.secondary?.window_minutes, limits?.secondary?.resets_at]);
 }
-// Covers startup failures and the fatal-error supervisor as well as shutdown.
-process.once('exit', stopNotifications);
 
-export function runShellCommand(command: string, payload: string, timeoutMs = NOTIFY_TIMEOUT_MS): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const processGroup = process.platform !== 'win32';
-    const child = spawn('/bin/sh', ['-c', command], {
-      detached: processGroup,
-      stdio: ['pipe', 'ignore', 'pipe'],
-      env: {
-        ...process.env,
-        CODEX_HUD_EVENT: JSON.parse(payload).event,
-        CODEX_HUD_EVENT_JSON: payload,
-      },
-    });
-    let stderr = Buffer.alloc(0);
-    let timedOut = false;
-    let settled = false;
-    const stop = (): void => {
-      try {
-        if (processGroup && child.pid) process.kill(-child.pid, 'SIGKILL');
-        else child.kill('SIGKILL');
-      } catch { /* The command may have exited just before the timeout. */ }
-    };
-    activeNotifications.add(stop);
-    const finish = (error?: Error): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      activeNotifications.delete(stop);
-      if (error) reject(error);
-      else resolve();
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-      finish(new Error(`Notifier timed out after ${timeoutMs}ms${stderr.length ? `: ${sanitizeDisplayText(stderr.toString('utf8'), 4096)}` : ''}`));
-      child.stderr.destroy();
-    }, timeoutMs);
-    child.stderr.on('data', (chunk: Buffer) => {
-      if (stderr.length < 4096) stderr = Buffer.concat([stderr, chunk.subarray(0, 4096 - stderr.length)]);
-    });
-    child.on('error', error => finish(error));
-    // close waits for inherited pipes too. A shell exiting before its helper
-    // does must not cancel the helper's deadline.
-    child.on('close', (code, signal) => {
-      if (timedOut || code !== 0) {
-        const reason = timedOut ? `timed out after ${timeoutMs}ms` : `exited with ${signal ?? `code ${code}`}`;
-        finish(new Error(`Notifier ${reason}${stderr.length ? `: ${sanitizeDisplayText(stderr.toString('utf8'), 4096)}` : ''}`));
-      } else finish();
-    });
-    child.stdin.on('error', () => {
-      // A command that never reads stdin closes the pipe; not a failure.
-    });
-    child.stdin.end(payload);
-  });
+function eventScope(event: HudNotifyEvent, context: NotifyContext): string {
+  if (event === 'limit-reached') return context.quotaScope ?? 'account';
+  return JSON.stringify([context.sessionId, context.turnId,
+    event === 'approval-needed' ? context.approvalId : undefined]);
 }
 
 export class HudNotifier {
@@ -163,7 +111,7 @@ export class HudNotifier {
     'turn-completed': false,
     'turn-failed': false,
   };
-  private lastScope = '';
+  private lastScopes: Partial<Record<HudNotifyEvent, string>> = {};
   private lastFiredMs: Partial<Record<HudNotifyEvent, number>> = {};
 
   constructor(options?: {
@@ -181,7 +129,7 @@ export class HudNotifier {
   reset(): void {
     this.seeded = false;
     this.lastFiredMs = {};
-    this.lastScope = '';
+    this.lastScopes = {};
     this.lastState = {
       'approval-needed': false,
       'turn-interrupted': false,
@@ -202,20 +150,16 @@ export class HudNotifier {
   ): HudNotifyEvent[] {
     const fired: HudNotifyEvent[] = [];
     try {
-      const scope = JSON.stringify([context.sessionId, context.turnId, context.approvalId]);
-      const scopeChanged = scope !== this.lastScope;
-      if (scopeChanged) {
-        this.lastFiredMs = {};
-        this.lastScope = scope;
-      }
       const previous = this.lastState;
       const wasSeeded = this.seeded;
       this.lastState = { ...states };
       this.seeded = true;
-      if (!this.command || !wasSeeded) {
-        return fired;
-      }
       for (const event of EVENT_NAMES) {
+        const scope = eventScope(event, context);
+        const scopeChanged = scope !== this.lastScopes[event];
+        if (scopeChanged) delete this.lastFiredMs[event];
+        this.lastScopes[event] = scope;
+        if (!this.command || !wasSeeded) continue;
         if (!states[event] || (previous[event] && !scopeChanged)) {
           continue;
         }

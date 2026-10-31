@@ -1,6 +1,6 @@
 import { isRootRolloutForCwd } from './utils/rollout-wake.js';
 import { publishDiagnostics } from './utils/diagnostics.js';
-import { loadPreferences, savePreferences, normalizePreferences, filteredSessions, moveSelection, focusSession } from './ui/state.js';
+import { loadPreferences, savePreferences, normalizePreferences, filteredSessions, moveSelection, selectedSession, focusSession } from './ui/state.js';
 import { installFatalHandlers } from './utils/fatal-error.js';
 /**
  * Codex HUD - Main entry point
@@ -79,7 +79,7 @@ import {
   rateLimitAlertKind,
 } from './render/lines/activity-line.js';
 import { toggleHudDetails, setHudDetails, hudDetailsExpanded } from './render/detail-level.js';
-import { HudNotifier, isCompletedTurnNotifiable, stopNotifications } from './notify.js';
+import { HudNotifier, isCompletedTurnNotifiable, rateLimitNotificationScope, stopNotifications } from './notify.js';
 import { logHudError } from './utils/hud-log.js';
 import { recordCollectorFailure } from './utils/collector-health.js';
 import { resolveHudStateFile } from './utils/state-dir.js';
@@ -232,7 +232,7 @@ function showUiNotice(message: string): void {
 }
 
 function showModeNotice(): void {
-  showUiNotice(`${displayMode} · ${hudDetailsExpanded() ? 'full' : 'compact'} · tools: ${toolDetailsMode()} · ${uiPreferences.layout}`);
+  showUiNotice(`This HUD: ${displayMode} · info ${hudDetailsExpanded() ? 'full' : 'compact'} · tools ${toolDetailsMode()} · ${uiPreferences.layout}`);
 }
 
 function toggleDisplayMode(): void {
@@ -300,9 +300,11 @@ const freshPromptDetector = new FreshPromptDetector({
 const notifier = new HudNotifier();
 
 let bindingGeneration = 0;
+let notificationBaselineReady = false;
 const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   if (isShuttingDown) return;
   bindingGeneration++;
+  notificationBaselineReady = false;
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
   approvalDetector.reset();
   stallDetector.reset();
@@ -633,6 +635,7 @@ async function refreshRolloutOnly(): Promise<boolean> {
     await parseRolloutSafely();
     if (generation !== bindingGeneration) return false;
     recordCollectorSuccess('rollout');
+    if (rolloutParser.getCached()?.pendingBytes === 0) notificationBaselineReady = true;
   } catch (error) {
     if (generation !== bindingGeneration) return false;
     recordCollectorError('rollout', error);
@@ -948,6 +951,34 @@ function fitPaneHeight(wantedRows: number, height: number): void {
     });
 }
 
+/** Both scheduled frames and collector-driven frames share one notification baseline. */
+function observeNotifications(data: HudData): void {
+  // Observed after the frame so a notification can never precede the pane
+  // stating the same thing. Rising edges only; see notify.ts.
+  const lastTurnMs = data.turnActivity?.lastTurnDurationMs;
+  if (notificationBaselineReady && (data.pendingBytes ?? 0) === 0) notifier.observe(
+    {
+      'approval-needed': data.turnActivity?.phase === 'awaiting-approval',
+      'turn-interrupted': data.turnActivity?.phase === 'interrupted',
+      'limit-reached': rateLimitAlertKind(data.rateLimits, Date.now()) !== null,
+      'turn-completed': isCompletedTurnNotifiable(
+        data.turnActivity?.phase,
+        lastTurnMs
+      ),
+      'turn-failed': data.turnActivity?.phase === 'failed',
+    },
+    {
+      sessionId: sessionFinder.getCurrentSession()?.sessionId,
+      turnId: data.turnActivity?.turnId,
+      quotaScope: rateLimitNotificationScope(CODEX_DATA_NAMESPACE, data.rateLimits),
+      tmuxSession: HUD_TMUX_SESSION,
+      cwd: HUD_CWD,
+      lastTurnDurationMs: lastTurnMs,
+      lastTurnError: data.turnActivity?.lastTurnError,
+    }
+  );
+}
+
 /**
  * Main render loop
  */
@@ -961,29 +992,7 @@ async function mainLoop(): Promise<void> {
     const { wantedRows, height } = renderToStdout(data);
     fitPaneHeight(wantedRows, height);
     delete collectorHealth.renderer;
-    // Observed after the frame so a notification can never precede the pane
-    // stating the same thing. Rising edges only; see notify.ts.
-    const lastTurnMs = data.turnActivity?.lastTurnDurationMs;
-    if ((data.pendingBytes ?? 0) < 1024 * 1024) notifier.observe(
-      {
-        'approval-needed': data.turnActivity?.phase === 'awaiting-approval',
-        'turn-interrupted': data.turnActivity?.phase === 'interrupted',
-        'limit-reached': rateLimitAlertKind(data.rateLimits, Date.now()) !== null,
-        'turn-completed': isCompletedTurnNotifiable(
-          data.turnActivity?.phase,
-          lastTurnMs
-        ),
-        'turn-failed': data.turnActivity?.phase === 'failed',
-      },
-      {
-        sessionId: sessionFinder.getCurrentSession()?.sessionId,
-        turnId: data.turnActivity?.turnId,
-        tmuxSession: HUD_TMUX_SESSION,
-        cwd: HUD_CWD,
-        lastTurnDurationMs: lastTurnMs,
-        lastTurnError: data.turnActivity?.lastTurnError,
-      }
-    );
+    observeNotifications(data);
     publishDiagnostics(HUD_TMUX_SESSION, {namespace:getCodexDataNamespace(),binding:sessionFinder.getDiagnostics(),
       probes:getProbeDiagnostics(),sqlite:getSqliteDiagnostics(),overview:overviewCollector.getDiagnostics(),
       rollout:rolloutParser.getDiagnostics(),cliVersion:data.session?.cliVersion,
@@ -1150,7 +1159,9 @@ function startCollectorTimers(): void {
 function renderNow(): void {
   if (isShuttingDown) return;
   try {
-    renderToStdout(collectData());
+    const data = collectData();
+    renderToStdout(data);
+    observeNotifications(data);
   } catch {
     // The regular render loop repaints on its next tick.
   }
@@ -1207,7 +1218,7 @@ function setupKeyListener(): void {
     if (input === 'c' || input === 'C') {
       uiPreferences.layout = uiPreferences.layout === 'standard' ? 'coexist' : 'standard';
       persistUi();
-      showModeNotice();
+      showUiNotice(`Layout: ${uiPreferences.layout} · current HUD`);
       return;
     }
     if (displayMode === 'overview') {
@@ -1226,8 +1237,7 @@ function setupKeyListener(): void {
         return;
       }
       if (input === '\r' || input === '\n') {
-        const selectedId = overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId;
-        const selected = rows.find(row => row.tmuxSession && row.id === selectedId) ?? rows.find(row => row.tmuxSession);
+        const selected = selectedSession(rows, overviewSelectionId, sessionFinder.getCurrentSession()?.sessionId);
         void focusSession(selected?.tmuxSession, selected?.id).then(ok => {
           if (!ok) {
             showUiNotice('Session unavailable; refreshing overview');
@@ -1241,15 +1251,18 @@ function setupKeyListener(): void {
       toggleDisplayMode();
       return;
     }
+    let notice: string;
     if (input === 't' || input === 'T') {
       cycleToolDetailsMode();
+      notice = `Tool text: ${toolDetailsMode()} · current HUD`;
     } else if (input === 'd' || input === 'D') {
       toggleHudDetails();
+      notice = `History/info: ${hudDetailsExpanded() ? 'full' : 'compact'} · current HUD`;
     } else {
       return;
     }
     persistUi();
-    showModeNotice();
+    showUiNotice(notice);
   };
   let escapeTimer: NodeJS.Timeout | undefined;
   process.stdin.on('data', (data: Buffer) => {
@@ -1328,13 +1341,17 @@ async function main(): Promise<void> {
     void refreshSlowProject(true);
   });
 
-  hudFileWatcher.onRolloutChange(async (rolloutPath) => {
+  hudFileWatcher.onRolloutChange(async (rolloutPath, event) => {
     const generation = bindingGeneration;
     const currentPath = sessionFinder.getCurrentSession()?.path;
     const candidate = rolloutPath !== currentPath && await isRootRolloutForCwd(rolloutPath,HUD_CWD_REAL);
     if (candidate) sessionFinder.setDeepIdle(false);
-    await sessionFinder.noteRolloutAppeared(rolloutPath);
-    await sessionFinder.check(candidate);
+    // Parsing the bound file must not wait for unrelated process/SQLite
+    // probes. Add/unlink and other identity evidence still recheck binding.
+    if (rolloutPath !== currentPath || event !== 'change') {
+      await sessionFinder.noteRolloutAppeared(rolloutPath);
+      await sessionFinder.check(candidate || event === 'unlink');
+    }
     const relevant = generation !== bindingGeneration ||
       rolloutPath === sessionFinder.getCurrentSession()?.path ||
       agentActivityCollector.isTrackedRollout(rolloutPath);

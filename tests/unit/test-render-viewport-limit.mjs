@@ -110,7 +110,9 @@ const responsiveViewport = fitLinesToViewport(expanded, 5, 90).map(stripAnsi);
 assert.equal(expanded.length, 6);
 // Live tool history outranks the static Dir/Session line: a small pane hides
 // the identity line first.
-assert.match(responsiveViewport[4], /read_file/);
+assert.match(responsiveViewport.join('\n'), /read_file/);
+assert.ok(responsiveViewport.findIndex(line => line.includes('read_file')) <
+  responsiveViewport.findIndex(line => line.includes('Approval:')), 'activity precedes static environment details');
 assert.match(responsiveViewport[4], /\+1 hidden$/);
 assert.doesNotMatch(responsiveViewport.join('\n'), /Dir:/);
 

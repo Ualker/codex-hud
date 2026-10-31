@@ -58,7 +58,7 @@ export function isApprovalProbeCandidate(
     return false;
   }
 
-  const running = input.toolActivity?.recentCalls.filter(
+  const running = (input.toolActivity?.runningCalls ?? input.toolActivity?.recentCalls)?.filter(
     (call) => call.status === 'running'
   ) ?? [];
   if (running.length === 0) {

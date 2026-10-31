@@ -266,7 +266,7 @@ export class HudFileWatcher {
   private currentRolloutPath: string | null = null;
 
   private onConfigChangeCallbacks: (() => void | Promise<void>)[] = [];
-  private onRolloutChangeCallbacks: ((path: string) => void | Promise<void>)[] = [];
+  private onRolloutChangeCallbacks: FileChangeCallback[] = [];
 
   constructor() {
     this.configWatcher = createConfigWatcher();
@@ -321,8 +321,8 @@ export class HudFileWatcher {
     // learning of it, on top of the render tick. The two-second stat sweep
     // in index.ts remains the safety net for the mounts fs.watch cannot see.
     this.rolloutWatcher = new FileWatcher([rolloutPath], { usePolling: false });
-    this.rolloutWatcher.onChange((filePath) => {
-      this.notifyRolloutChange(filePath);
+    this.rolloutWatcher.onChange((filePath, event) => {
+      this.notifyRolloutChange(filePath, event);
     });
     this.rolloutWatcher.start();
   }
@@ -337,7 +337,7 @@ export class HudFileWatcher {
   /**
    * Register callback for rollout file changes
    */
-  onRolloutChange(callback: (path: string) => void | Promise<void>): void {
+  onRolloutChange(callback: FileChangeCallback): void {
     this.onRolloutChangeCallbacks.push(callback);
   }
 
@@ -347,14 +347,14 @@ export class HudFileWatcher {
       // New rollout file added - could be a new session starting
       if (event === 'add' && filePath.includes('rollout-')) {
         // Notify so the main app can check if this is a more recent session
-        this.notifyRolloutChange(filePath);
+        this.notifyRolloutChange(filePath, event);
       }
     });
     this.sessionWatcher.start();
 
     this.shellSnapshotWatcher = createShellSnapshotWatcher();
-    this.shellSnapshotWatcher.onChange((filePath) => {
-      this.notifyRolloutChange(filePath);
+    this.shellSnapshotWatcher.onChange((filePath, event) => {
+      this.notifyRolloutChange(filePath, event);
     });
     this.shellSnapshotWatcher.start();
   }
@@ -371,10 +371,10 @@ export class HudFileWatcher {
     }
   }
 
-  private notifyRolloutChange(path: string): void {
+  private notifyRolloutChange(path: string, event: 'add' | 'change' | 'unlink'): void {
     for (const callback of this.onRolloutChangeCallbacks) {
       try {
-        void Promise.resolve(callback(path)).catch((error) => {
+        void Promise.resolve(callback(path, event)).catch((error) => {
           reportWatcherError('HUD rollout watcher callback failed', error);
         });
       } catch (error) {
