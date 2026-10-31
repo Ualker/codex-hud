@@ -178,7 +178,9 @@ async function probePaneForCodex(
   if (!panePid || !/^\d+$/.test(panePid)) {
     return null;
   }
-  const table = await run('ps', ['-axo', 'pid=,ppid=,command=']);
+  // procps honors the HUD's COLUMNS. Keep long executable paths and launch
+  // flags intact, as the session-finder process probe already does.
+  const table = await run('ps', ['-axww', '-o', 'pid=,ppid=,command=']);
   if (table === null) {
     return null;
   }
