@@ -962,13 +962,18 @@ async function findInProcessTuis(pids: readonly string[]): Promise<Set<string>> 
     }
   }
   const dbPath = getLogDatabaseCandidates()[0];
+  // Long turns can prune every connection span. These server-only module
+  // targets still prove ownership when logged by the TUI's own process;
+  // client-side targets and body text mentioning another server do not.
+  const serverEvidence = `(feedback_log_body LIKE '%app_server.connection_id=%' OR ` +
+    `target IN ('codex_app_server::message_processor', 'codex_app_server::outgoing_message'))`;
   for (const pid of pids) {
     if (!dbPath || !/^\d+$/.test(pid) || inProcessTuis.has(pid)) {
       continue;
     }
     const where =
       `process_uuid >= 'pid:${pid}:' AND process_uuid < 'pid:${pid};' AND thread_id IS NULL ` +
-      `AND feedback_log_body LIKE '%app_server.connection_id=%'`;
+      `AND ${serverEvidence}`;
     // Unprompted, SQLite walks idx_logs_thread_id over every thread-less row
     // (7-20ms on Train2); the partial per-process index takes 0.04-2ms.
     const output =
@@ -989,7 +994,7 @@ async function findInProcessTuis(pids: readonly string[]): Promise<Set<string>> 
       `(process_uuid >= 'pid:${pid}:' AND process_uuid < 'pid:${pid};')`).join(' OR ');
     const since = Math.floor((Date.now() - THREAD_CANDIDATE_WINDOW_MS) / 1000);
     const where = `ts >= ${since} AND (${processFilter}) AND thread_id IS NOT NULL ` +
-      `AND feedback_log_body LIKE '%app_server.connection_id=%'`;
+      `AND ${serverEvidence}`;
     const output = (await querySqlite(dbPath, [
       `SELECT DISTINCT process_uuid FROM logs INDEXED BY idx_logs_ts WHERE ${where}`,
     ])) ?? (await querySqlite(dbPath, [`SELECT DISTINCT process_uuid FROM logs WHERE ${where}`]));

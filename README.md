@@ -315,6 +315,8 @@ until the cause changes or the collector recovers.
 
 Known main panes require process/connection or valid pane-snapshot ownership evidence; missing evidence stays unbound instead of guessing by cwd or launch time. Bound-log appends parse directly without waiting for binding probes; new files, removal and periodic checks still rebind. Cross-file quota scans retain the latest exhaustion signal with unexpired window information.
 
+When connection spans have been pruned, a TUI's own app-server message-processing or outgoing-message log targets still identify its in-process server. Another process's server logs and client-side messages do not qualify. This lets long-running sessions bind again after a HUD reload without relying on a previous renderer's memory.
+
 Overview deduplicates by session ID, preferring a validated live pane binding, and filters subagents before scheduling parsers so eviction cannot resurrect placeholder rows. Native SQLite runs in a Worker with an 8-second deadline; older Node versions retain the asynchronous CLI fallback. Small query results are shared for up to 750 ms, invalidated by database/WAL versions. Process birth-time facts are shared briefly without persisting process command lines.
 
 Notifier failures, launch errors and timeouts are logged with up to 4 KiB of redacted stderr. The 10-second deadline kills the command's process group; HUD shutdown cleans up notifications still running.
