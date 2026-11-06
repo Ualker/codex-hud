@@ -16,6 +16,9 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$TMUX_DIR" "$(dirname "$HELPER_FILE")"
+# The standalone fixture uses ESM like the real HUD, including on Node 22.5
+# before automatic syntax detection became the default.
+printf '%s\n' '{"type":"module"}' > "$TEST_ROOT/package.json"
 
 cat > "$HELPER_FILE" <<'EOF'
 import fs from 'node:fs';

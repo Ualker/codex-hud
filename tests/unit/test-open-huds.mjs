@@ -27,7 +27,7 @@ function withStubTmux(script, body) {
   fs.writeFileSync(stub, `#!/bin/sh\n${script}\n`, 'utf8');
   fs.chmodSync(stub, 0o755);
 
-  const result = spawnSync(process.execPath, ['-e', body], {
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', body], {
     env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
     encoding: 'utf8',
   });

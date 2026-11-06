@@ -18,6 +18,7 @@ function colorized(env) {
   const result = spawnSync(
     process.execPath,
     [
+      '--input-type=module',
       '-e',
       `const { colors } = await import(${JSON.stringify(distColors)});
        process.stdout.write(colors.red('x'));`,

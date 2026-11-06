@@ -54,6 +54,7 @@ function activeAges(codexHome, windowSeconds) {
   const result = spawnSync(
     process.execPath,
     [
+      '--input-type=module',
       '-e',
       `const { findActiveRollouts } = await import(${JSON.stringify(
         path.join(repoRoot, 'dist', 'collectors', 'session-finder.js')
