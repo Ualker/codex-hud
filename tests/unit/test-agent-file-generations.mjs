@@ -4,6 +4,7 @@ import { AgentActivityCollector } from '../../dist/collectors/agent-activity.js'
 import { makeAgentTestRoot, cleanupAgentTestRoot, canonicalSessionMeta, taskStarted, taskComplete,
   legacyAgentStart, rolloutSessionFile } from '../helpers/agent-rollout-fixture.mjs';
 import path from 'node:path';
+import { freezeFileRevision } from '../helpers/frozen-file-revision.mjs';
 
 const root = makeAgentTestRoot();
 const rootId = '10000000-0000-7000-8000-000000000001';
@@ -58,5 +59,27 @@ try {
 
   fs.writeFileSync(main, encode(rootRecords.slice(0, 2)));
   assert.equal((await collector.collect(now + 40000)).visibleAgentCount, 0, 'root replacement discards the previous tree');
+
+  fs.writeFileSync(main, encode(rootRecords));
+  fs.writeFileSync(child, running);
+  const frozenChild = create();
+  assert.equal((await frozenChild.collect(now + 41000)).visibleAgentCount, 1);
+  const restoreChild = freezeFileRevision(child);
+  try {
+    fs.writeFileSync(child, done + ' '.repeat(running.length - done.length));
+    assert.deepEqual(await frozenChild.collect(now + 42000), await create().collect(now + 42000),
+      'unchanged child stat metadata cannot hide rewritten lifecycle events');
+  } finally { restoreChild(); }
+
+  fs.writeFileSync(child, running);
+  const frozenRoot = create();
+  assert.equal((await frozenRoot.collect(now + 43000)).visibleAgentCount, 1);
+  const restoreRoot = freezeFileRevision(main);
+  try {
+    const reduced = encode(rootRecords.slice(0, 2));
+    fs.writeFileSync(main, reduced + ' '.repeat(encode(rootRecords).length - reduced.length));
+    assert.equal((await frozenRoot.collect(now + 44000)).visibleAgentCount, 0,
+      'unchanged root stat metadata cannot retain removed agents');
+  } finally { restoreRoot(); }
   console.log('test-agent-file-generations: PASS');
 } finally { cleanupAgentTestRoot(root); }

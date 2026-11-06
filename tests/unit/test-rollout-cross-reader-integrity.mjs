@@ -6,6 +6,7 @@ import { RolloutParser } from '../../dist/collectors/rollout.js';
 import { peekRolloutMetadata } from '../../dist/collectors/session-finder.js';
 import { buildContextUsage } from '../../dist/context-usage.js';
 import { normalizeRolloutRecord } from '../../dist/protocol/rollout-record.js';
+import { freezeFileRevision } from '../helpers/frozen-file-revision.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-cross-reader-'));
 const file = path.join(root, 'rollout.jsonl');
@@ -19,22 +20,25 @@ const usage = value => record('event_msg', { type: 'token_count', info: {
 } });
 const parserFor = () => { const p = new RolloutParser(); p.setRolloutPath(file); return p; };
 try {
-  for (const change of ['longer', 'shorter', 'same-size']) {
+  for (const change of ['longer', 'shorter', 'same-size', 'same-stat']) {
     const before = encode([meta('session-a'), start('turn-a')]);
     let after = encode([meta('session-b'), start('turn-b'), done('turn-b')]);
     const initial = change === 'longer' ? before : before + ' '.repeat(after.length + 100);
-    if (change === 'same-size') after += ' '.repeat(initial.length - after.length);
+    if (change === 'same-size' || change === 'same-stat') after += ' '.repeat(initial.length - after.length);
     fs.writeFileSync(file, initial);
     const warm = parserFor();
     await warm.parse();
     assert.equal(peekRolloutMetadata(file).sessionId, 'session-a');
     const inode = fs.statSync(file).ino;
-    fs.writeFileSync(file, after);
-    assert.equal(fs.statSync(file).ino, inode);
-    const warmResult = await warm.parse(), coldResult = await parserFor().parse();
-    assert.equal(warmResult.session.id, coldResult.session.id, change);
-    assert.equal(warmResult.turnActivity.phase, coldResult.turnActivity.phase, change);
-    assert.equal(peekRolloutMetadata(file).sessionId, 'session-b', `metadata cache: ${change}`);
+    const restore = change === 'same-stat' ? freezeFileRevision(file) : () => {};
+    try {
+      fs.writeFileSync(file, after);
+      assert.equal(fs.statSync(file).ino, inode);
+      const warmResult = await warm.parse(), coldResult = await parserFor().parse();
+      assert.equal(warmResult.session.id, coldResult.session.id, change);
+      assert.equal(warmResult.turnActivity.phase, coldResult.turnActivity.phase, change);
+      assert.equal(peekRolloutMetadata(file).sessionId, 'session-b', `metadata cache: ${change}`);
+    } finally { restore(); }
   }
   fs.writeFileSync(file, encode([meta('same-session'), start('a'), usage(20000)]));
   const parser = parserFor();
