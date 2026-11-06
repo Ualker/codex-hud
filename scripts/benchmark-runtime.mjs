@@ -14,13 +14,15 @@ const instances = option('--instances', '1,5,20').split(',').map(Number);
 const seconds = Number(option('--seconds', '12'));
 const historyMiB = Number(option('--history-mib', '8'));
 const idleSeconds = Number(option('--idle-seconds', '0'));
+const wakeSeconds = Number(option('--wake-seconds', '0'));
 if (instances.some(n => !Number.isInteger(n) || n < 1 || n > 40) ||
   !Number.isFinite(seconds) || seconds < 5 || seconds > 120 ||
   !Number.isInteger(historyMiB) || historyMiB < 1 || historyMiB > 64 ||
-  !Number.isFinite(idleSeconds) || idleSeconds < 0 || idleSeconds > 120) {
-  throw new Error('instances: 1..40; seconds: 5..120; history-mib: 1..64; idle-seconds: 0..120');
+  !Number.isFinite(idleSeconds) || idleSeconds < 0 || idleSeconds > 7200 ||
+  !Number.isFinite(wakeSeconds) || wakeSeconds < 0 || wakeSeconds > 120) {
+  throw new Error('instances: 1..40; seconds: 5..120; history-mib: 1..64; idle-seconds: 0..7200; wake-seconds: 0..120');
 }
-const sleeperSeconds = Math.ceil(seconds + idleSeconds + 60);
+const sleeperSeconds = Math.ceil(seconds + idleSeconds + wakeSeconds + 60);
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hud-runtime-bench-')));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function stopChild(child) {
@@ -34,7 +36,7 @@ function stopChild(child) {
 const encode = (type, payload) => JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + '\n';
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !/^(CODEX_|CMUX_|TMUX|NODE_OPTIONS|NODE_COMPILE_CACHE)/.test(key)));
-const report = { fixtureVersion: 3, node: process.version, platform: `${process.platform}/${process.arch}`, seconds, idleSeconds, historyMiB, journalMode: 'wal',
+const report = { fixtureVersion: 4, node: process.version, platform: `${process.platform}/${process.arch}`, seconds, idleSeconds, wakeSeconds, historyMiB, journalMode: 'wal',
   note: 'RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.', runs: [] };
 let succeeded = false;
 try {
@@ -99,7 +101,7 @@ try {
         let output = ''; let errors = '';
         child.stdout.on('data', chunk => { output = (output + chunk).slice(-65536); });
         child.stderr.on('data', chunk => { errors = (errors + chunk).slice(-4096); });
-        children.push({ child, metrics, name, id, rollout, output: () => output, errors: () => errors });
+        children.push({ child, metrics, name, id, rollout, output: () => output, clearOutput: () => { output = ''; }, errors: () => errors });
       }
       writer = setInterval(() => {
         appendBatches++;
@@ -112,6 +114,24 @@ try {
       clearInterval(writer);
       const activeMetrics = children.map(item => JSON.parse(fs.readFileSync(item.metrics, 'utf8')));
       if (idleSeconds > 0) await delay(idleSeconds * 1000);
+      const idleMetrics = children.map(item => JSON.parse(fs.readFileSync(item.metrics, 'utf8')));
+      const diagnostics = item => JSON.parse(Buffer.from(tmux(['show-option', '-qv', '-t', item.name, '@codex_hud_diagnostics']), 'base64').toString());
+      const idleCadences = children.map(item => diagnostics(item).cadence);
+      if (idleSeconds >= 630) assert.ok(idleCadences.every(plan => plan?.deepIdle), 'long idle must reach the real ten-minute cadence');
+      fs.writeFileSync(path.join(run, 'idle-phase.json'), JSON.stringify({ metrics: idleMetrics, cadences: idleCadences }));
+      let wakeLatencyMs;
+      if (wakeSeconds > 0) {
+        const started = Date.now();
+        for (const item of children) {
+          item.clearOutput();
+          fs.appendFileSync(item.rollout, encode('event_msg', { type: 'task_started', turn_id: 'wake-probe' }));
+        }
+        while (Date.now() - started < wakeSeconds * 1000 && !children.every(item => /\[me\][^\n]*Thinking/.test(item.output()))) await delay(50);
+        wakeLatencyMs = Date.now() - started;
+        assert.ok(children.every(item => /\[me\][^\n]*Thinking/.test(item.output())), 'every idle HUD must render its own fresh activity after append');
+        for (const item of children) fs.appendFileSync(item.rollout, encode('event_msg', { type: 'task_complete', turn_id: 'wake-probe' }));
+        await delay(1000);
+      }
       for (const item of children) {
         assert.equal(item.child.exitCode, null, item.errors());
         assert.match(item.output(), /project-/, 'real overview must render fixture sessions');
@@ -125,7 +145,7 @@ try {
       clearInterval(writer);
       await Promise.all(children.map(({ child }) => stopChild(child)));
       const metrics = children.map((item, index) => ({ ...JSON.parse(fs.readFileSync(item.metrics, 'utf8')),
-        ...(idleSeconds > 0 ? { activePhase: activeMetrics[index] } : {}) }));
+        ...(idleSeconds > 0 ? { activePhase: activeMetrics[index], idlePhase: idleMetrics[index], idleCadence: idleCadences[index] } : {}) }));
       assert.ok(metrics.every(item => item.probes.ps?.count > 0 && item.probes.sqlite?.count > 0),
         'benchmark must exercise process binding and SQLite, not just render frames');
       assert.ok(metrics.every(item => item.sqlite.failures === 0),
@@ -136,11 +156,15 @@ try {
       report.runs.push({ instances: count, appendBatches, cpuMs: sum('cpuMs'), rssSumMiB: sum('rssMiB'),
         peakRssSumMiB: sum('peakRssMiB'), stdoutWrites: sum('stdoutWrites'),
         worstEventLoopP95Ms: Math.max(...metrics.map(item => item.eventLoopP95Ms)),
-        worstEventLoopMaxMs: Math.max(...metrics.map(item => item.eventLoopMaxMs)), subprocesses, metrics });
+        worstEventLoopMaxMs: Math.max(...metrics.map(item => item.eventLoopMaxMs)), wakeLatencyMs, subprocesses, metrics });
     } finally {
       clearInterval(writer);
       await Promise.all(children.map(({ child }) => stopChild(child)));
       for (const item of children) {
+        try {
+          const encoded = tmux(['show-option', '-qv', '-t', item.name, '@codex_hud_diagnostics']);
+          fs.writeFileSync(path.join(run, `${item.child.pid}.runtime.json`), Buffer.from(encoded, 'base64'));
+        } catch { /* Preserve the other evidence when a pane has already gone. */ }
         fs.writeFileSync(path.join(run, `${item.child.pid}.stdout.log`), item.output());
         fs.writeFileSync(path.join(run, `${item.child.pid}.stderr.log`), item.errors());
         fs.writeFileSync(path.join(run, `${item.child.pid}.exit.json`), JSON.stringify({

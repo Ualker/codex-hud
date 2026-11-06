@@ -12,7 +12,7 @@ export function renderHelp(data: HudData, width: number, maxLines = 5): string[]
       theme.info('HUD help · ? close · Esc: close / return to Codex'),
       `${toggle}: switch view · t: tool text (${toolDetailsMode()}) · d: history/info (${details})`,
       'Overview: j/k, arrows or wheel select · Enter: open · f filter · [me] current',
-      `c: native-status companion (${data.layoutPreset ?? 'standard'}) · saved for this HUD`,
+      `c: native-status companion (${data.layoutPreset ?? 'standard'}) · i: target / diagnostics`,
       'r: rename this HUD · Enter save · Esc cancel · Ctrl+U clear',
     ].map(row => truncateAnsi(row, width));
   }
@@ -25,6 +25,7 @@ export function renderHelp(data: HudData, width: number, maxLines = 5): string[]
     'coexist: companion to native status',
     'Overview: j/k, arrows or wheel select',
     '[me]: current session',
+    'i: target / diagnostics',
     'Enter: open selected session',
     'f: all / attention filter',
     'Esc: close / return to Codex',

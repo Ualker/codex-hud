@@ -97,6 +97,7 @@ try {
 
     assert.equal(parsed.length, 4, 'sessions with no HUD binding are skipped');
     assert.deepEqual(parsed[0], {
+      tmuxPane: '%2',
       tmuxSession: 'codex-hud-a',
       sessionId: 'session-a',
       rolloutPath: '/tmp/a.jsonl',
@@ -105,12 +106,13 @@ try {
     });
     assert.deepEqual(
       parsed[1],
-      { tmuxSession: 'codex-hud-b', sessionId: 'session-b', cwd: '/work/b' },
+      { tmuxSession: 'codex-hud-b', tmuxPane: '%2', sessionId: 'session-b', cwd: '/work/b' },
       'a bound session with no rollout keeps its identity'
     );
     assert.deepEqual(
       parsed[2],
       {
+        tmuxPane: '%2',
         tmuxSession: 'codex-hud-c',
         sessionId: 'session-c',
         cwd: '/work/c',
@@ -122,6 +124,7 @@ try {
     assert.deepEqual(
       parsed[3],
       {
+        tmuxPane: '%2',
         tmuxSession: 'codex-hud-d',
         sessionId: 'session-d',
         rolloutPath: '/tmp/d.jsonl',
@@ -162,7 +165,7 @@ try {
       )
     );
     assert.deepEqual(parsed, [
-      { tmuxSession: 'codex-hud-b', sessionId: 'session-b' },
+      { tmuxSession: 'codex-hud-b', tmuxPane: '%2', sessionId: 'session-b' },
     ]);
   }
 
@@ -203,7 +206,7 @@ try {
     );
     assert.deepEqual(
       parsed,
-      [{ tmuxSession: 'codex-hud-slow', sessionId: 'session-slow' }],
+      [{ tmuxSession: 'codex-hud-slow', tmuxPane: '%2', sessionId: 'session-slow' }],
       'a three-second tmux still reports its bindings'
     );
   }

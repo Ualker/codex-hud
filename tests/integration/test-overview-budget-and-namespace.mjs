@@ -53,6 +53,27 @@ try {
     assert.ok(collector.getDiagnostics().parsedLastRefresh <= 8);
   }
   assert.equal(observed.size, 32, 'background sessions must not starve behind priority rows');
+
+  rows.length = 0;
+  const busyBacklog = add('busy-backlog');
+  const hotFiles = Array.from({ length: 8 }, (_, i) => add(`hot-${i}`));
+  const busyCollector = new OverviewCollector({ shared: false, now: () => now });
+  await busyCollector.refresh();
+  now++;
+  await busyCollector.refresh();
+  fs.appendFileSync(busyBacklog, filler.repeat(Math.ceil(4.5 * 1024 * 1024 / filler.length)) + encode([taskComplete()]));
+  now += 100;
+  assert.equal((await busyCollector.refresh()).sessions.find(row => row.id === 'busy-backlog').refreshing, true);
+  let drained = false;
+  for (let i = 0; i < 12; i++) {
+    for (const hotFile of hotFiles) fs.appendFileSync(hotFile, encode([taskStarted(), taskComplete()]));
+    now += 1000;
+    const snapshot = await busyCollector.refresh();
+    const row = snapshot.sessions.find(row => row.id === 'busy-backlog');
+    drained ||= row.turnActivity?.phase === 'idle' && !row.refreshing;
+    assert.ok(busyCollector.getDiagnostics().parsedLastRefresh <= 8);
+  }
+  assert.ok(drained, 'an existing backlog must advance even while eight peers append continuously');
   console.log('test-overview-budget-and-namespace: PASS');
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in oldEnv)) delete process.env[key];

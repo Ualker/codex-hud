@@ -51,6 +51,7 @@ import {
 import { hudDetailsExpanded } from './detail-level.js';
 import { compactSessionTitle } from './session-title.js';
 import { renderHelp } from './help.js';
+import { renderInspection } from './inspection.js';
 import { renderLabelEditor } from './label-editor.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
@@ -227,7 +228,7 @@ function renderExpandedLayout(
     if (title(SESSION_TITLE_WIDTH)) {
       const gap = visualLength(separator);
       const fixed = visualLength(join([identityLine, suffix])) + 2 * gap;
-      const titleMinimum = Math.min(12, visualLength(title(SESSION_TITLE_WIDTH) ?? ''));
+      const titleMinimum = Math.min(24, visualLength(title(SESSION_TITLE_WIDTH) ?? ''));
       const projectBudget = headingWidth - fixed - titleMinimum;
       if (projectBudget >= Math.min(12, visualLength(sanitizeTerminalText(data.project.projectName)))) {
         const project = renderProjectLine(data, { includeFileStats: false, maxWidth: projectBudget, emphasizeName: false });
@@ -657,6 +658,8 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
     rows = renderLabelEditor(data.labelDraft, width);
   } else if (data.helpVisible) {
     rows = renderHelp(data, width, options.maxLines);
+  } else if (data.inspectionVisible) {
+    rows = renderInspection(data, width, options.maxLines);
   } else if (data.displayMode === 'overview') {
     rows = renderOverviewLayout(data,layout,Math.max(1,width-Math.min(7,options.reservedRow1Width ?? 0)),options.maxLines ?? Infinity);
   } else if (data.layoutPreset === 'coexist') {

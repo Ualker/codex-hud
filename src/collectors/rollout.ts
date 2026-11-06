@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'node:path';
 import { KNOWN_TOP_LEVEL_TYPES, KNOWN_RESPONSE_TYPES, KNOWN_EVENT_TYPES, normalizeRolloutRecord } from '../protocol/rollout-record.js';
-import { fileWasReplaced, sameFile, sameFileVersion, type FileVersion } from '../utils/file-version.js';
+import { readFileVersion, fileWasReplaced, sameFileVersion, type FileVersion } from '../utils/file-version.js';
 import type {
   RolloutLine,
   ResponseItemPayload,
@@ -1512,7 +1512,7 @@ export class RolloutParser {
     const generation = this.generation;
     const rolloutPath = this.rolloutPath;
 
-    const version = await fs.promises.stat(rolloutPath);
+    const version = readFileVersion(rolloutPath, this.fileVersion);
     if (generation !== this.generation) return this.cachedResult;
     if (this.fileVersion && fileWasReplaced(this.fileVersion, version)) {
       this.lastOffset = 0;
@@ -1546,10 +1546,9 @@ export class RolloutParser {
 
     if (generation !== this.generation) return this.cachedResult;
 
-    const afterRead = await fs.promises.stat(rolloutPath);
+    const afterRead = readFileVersion(rolloutPath, version);
     if (generation !== this.generation) return this.cachedResult;
-    if (!sameFile(version, afterRead) || afterRead.size < version.size ||
-      (afterRead.size === version.size && !sameFileVersion(version, afterRead))) {
+    if (fileWasReplaced(version, afterRead)) {
       // A rotation during an asynchronous read must never publish mixed state.
       this.fileVersion = version;
       throw new Error('Rollout changed identity while being read; retrying.');

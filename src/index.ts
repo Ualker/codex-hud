@@ -221,6 +221,8 @@ function noteWakeSignal(): void {
 
 let uiPreferences = normalizePreferences({});
 let helpVisible = false;
+let inspectionVisible = false;
+let inspectionPage = 0;
 let labelEditor: LabelEditor | undefined;
 let helpPage = 0;
 let overviewSelectionId: string | undefined;
@@ -237,13 +239,15 @@ function showUiNotice(message: string): void {
 }
 
 function showModeNotice(): void {
-  showUiNotice(`This HUD: ${displayMode} · info ${hudDetailsExpanded() ? 'full' : 'compact'} · tools ${toolDetailsMode()} · ${uiPreferences.layout}`);
+  const actions = uiPreferences.label ? 'i info' : 'r rename · i info';
+  showUiNotice(`This HUD: ${displayMode} · ${actions} · info ${hudDetailsExpanded() ? 'full' : 'compact'} · tools ${toolDetailsMode()} · ${uiPreferences.layout}`);
 }
 
 function toggleDisplayMode(): void {
   noteWakeSignal();
   displayMode = displayMode === 'single' ? 'overview' : 'single';
   helpVisible = false;
+  inspectionVisible = false;
   persistUi();
   showModeNotice();
   if (displayMode === 'overview') {
@@ -443,7 +447,8 @@ const accountLimitsCache = new AsyncSnapshotCache<AccountRateLimits | null>(
     if (shared) {
       return shared;
     }
-    const fresh = await findLatestAccountRateLimits();
+    const boundPath = sessionFinder.getCurrentSession()?.path;
+    const fresh = await findLatestAccountRateLimits(boundPath ? [boundPath] : []);
     if (fresh) {
       writeSharedSnapshot(ACCOUNT_LIMITS_SHARE, {
         limits: fresh.limits,
@@ -741,6 +746,10 @@ function collectData(): HudData {
     labelDraft: labelEditor?.value,
     helpVisible,
     helpPage,
+    inspectionVisible,
+    inspectionPage,
+    hudSession: HUD_TMUX_SESSION,
+    bindingInfo: sessionFinder.getDiagnostics(),
     uiNotice: Date.now() < uiNoticeUntil ? uiNotice : undefined,
     overviewFilter: uiPreferences.filter,
     overviewSelectionId,
@@ -1019,13 +1028,13 @@ async function mainLoop(): Promise<void> {
     fitPaneHeight(wantedRows, height);
     delete collectorHealth.renderer;
     observeNotifications(data);
+    const plan = computeCadence();
     publishDiagnostics(HUD_TMUX_SESSION, {namespace:getCodexDataNamespace(),binding:sessionFinder.getDiagnostics(),
       probes:getProbeDiagnostics(),sqlite:getSqliteDiagnostics(),overview:overviewCollector.getDiagnostics(),
       rollout:rolloutParser.getDiagnostics(),cliVersion:data.session?.cliVersion,
       collectors:data.collectorHealth,protocol:data.protocolHealth,
       quota:{source:data.rateLimitsSource,observedAt:data.rateLimitsObservedAt},
-      preferences:uiPreferences,mainPane:process.env.CODEX_HUD_MAIN_PANE});
-    const plan = computeCadence();
+      cadence:plan,preferences:uiPreferences,mainPane:process.env.CODEX_HUD_MAIN_PANE});
     sessionFinder.setDeepIdle(plan.deepIdle);
     scheduleMainLoop(plan.renderMs);
   } catch (error) {
@@ -1234,21 +1243,31 @@ function setupKeyListener(): void {
     if (input === '\u001b[O') return;
     if (input === 'r' || input === 'R') {
       helpVisible = false;
+      inspectionVisible = false;
       uiNoticeUntil = 0;
       labelEditor = new LabelEditor(uiPreferences.label);
       process.stdout.write('\x1b[?2004h');
       renderNow();
       return;
     }
+    if (input === 'i' || input === 'I') {
+      inspectionVisible = !inspectionVisible;
+      inspectionPage = 0;
+      helpVisible = false;
+      renderNow();
+      return;
+    }
     if (input === '?') {
+      inspectionVisible = false;
       helpVisible = !helpVisible;
       helpPage = 0;
       renderNow();
       return;
     }
     if (input === '\u001b') {
-      if (helpVisible) {
+      if (helpVisible || inspectionVisible) {
         helpVisible = false;
+        inspectionVisible = false;
         renderNow();
       } else {
         void focusSession(HUD_TMUX_SESSION).then(ok => {
@@ -1259,8 +1278,9 @@ function setupKeyListener(): void {
     }
     const navigation = ['j', 'k', '\u001b[A', '\u001b[B'].includes(input);
     const direction = input === 'j' || input === '\u001b[B' ? 1 : -1;
-    if (helpVisible && navigation) {
-      helpPage += direction;
+    if ((helpVisible || inspectionVisible) && navigation) {
+      if (inspectionVisible) inspectionPage += direction;
+      else helpPage += direction;
       renderNow();
       return;
     }
@@ -1324,12 +1344,12 @@ function setupKeyListener(): void {
       editLabel(keys);
     } else if (mouse.handled) {
       if (mouse.click) toggleDisplayMode();
-      else if (mouse.wheel && (helpVisible || displayMode === 'overview')) handleKey(mouse.wheel > 0 ? 'j' : 'k');
+      else if (mouse.wheel && (helpVisible || inspectionVisible || displayMode === 'overview')) handleKey(mouse.wheel > 0 ? 'j' : 'k');
       else showModeNotice();
     }
     // A transport read can contain several key presses. Only recognize a
     // complete stream of HUD keys; arbitrary pasted text is never a command.
-    const tokens = keys.match(/\u001b\[[ABIO]|[?cdtfjkrCDTFJKR\r\n\u0003\u0014]/g) ?? [];
+    const tokens = keys.match(/\u001b\[[ABIO]|[?cdtfjkriCDTFJKRI\r\n\u0003\u0014]/g) ?? [];
     if (!editing && tokens.join('') === keys) {
       for (let index = 0; index < tokens.length; index++) {
         if (labelEditor) { editLabel(tokens.slice(index).join('')); break; }
@@ -1402,6 +1422,17 @@ async function main(): Promise<void> {
   });
 
   hudFileWatcher.onRolloutChange(async (rolloutPath, event) => {
+    const wakingOverview = displayMode === 'overview' && computeCadence().deepIdle;
+    overviewCollector.noteRolloutChanged();
+    if (wakingOverview) {
+      noteWakeSignal();
+      // Wake the data cache as well as the render timer. A refresh already
+      // in flight may precede this append, so consume one queued invalidation.
+      void overviewCache.refresh(true).then(async () => {
+        if (overviewCollector.hasPendingChanges()) await overviewCache.refresh(true);
+        renderNow();
+      }).catch(() => undefined);
+    }
     const generation = bindingGeneration;
     const currentPath = sessionFinder.getCurrentSession()?.path;
     const trackedAgent = agentActivityCollector.noteRolloutChanged(rolloutPath);

@@ -8,7 +8,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-sqlite-worker-'));
 process.env.HOME = root;
 process.env.XDG_STATE_HOME = path.join(root, 'state');
 process.env.CODEX_HUD_LOG_FILE = path.join(root, 'hud.log');
-const { querySqlite } = await import('../../dist/collectors/sqlite.js');
+const { querySqlite, releaseIdleSqliteWorker, getSqliteWorkerResources } = await import('../../dist/collectors/sqlite.js');
 const { getSqliteDiagnostics } = await import('../../dist/utils/sqlite-probe.js');
 const file = path.join(root, 'test.sqlite');
 try {
@@ -53,6 +53,9 @@ try {
   } finally { clearInterval(timer); }
   if (statementsBefore > 0) assert.equal(getSqliteDiagnostics().statements, statementsBefore + 1, 'simultaneous identical reads share one query');
   assert.ok(beats >= 3, `UI heartbeat must continue during SQL; got ${beats}`);
+  await releaseIdleSqliteWorker();
+  assert.equal(getSqliteWorkerResources().active, false, 'idle worker releases its heap and database handles');
+  assert.equal(await querySqlite(file, ['SELECT value FROM facts WHERE 1=1']), 'first-c', 'a query recreates the worker after retirement');
   const next = path.join(root, 'next.sqlite');
   executeSql(next, "CREATE TABLE facts (value TEXT); INSERT INTO facts VALUES ('replacement');");
   fs.renameSync(next, file);

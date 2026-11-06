@@ -11,6 +11,7 @@ import { logHudError } from '../utils/hud-log.js';
 const exec = promisify(execFile);
 const TIMEOUT_MS = 8000;
 const CACHE_MS = 750;
+const WORKER_IDLE_MS = 30_000;
 interface Reply { value: string | null; supported: boolean }
 interface Pending { resolve: (reply: Reply) => void; timer: NodeJS.Timeout }
 let worker: Worker | undefined;
@@ -28,6 +29,27 @@ interface WorkerResources {
   handles: number;
 }
 let workerResources: WorkerResources | undefined;
+let idleTimer: NodeJS.Timeout | undefined;
+let idleRetirement: Promise<unknown> | undefined;
+
+/** Called only without outstanding queries; a later query starts a fresh worker. */
+export async function releaseIdleSqliteWorker(): Promise<void> {
+  if (!worker || pending.size > 0) return;
+  const idleWorker = worker;
+  worker = undefined;
+  workerResources = undefined;
+  clearTimeout(idleTimer);
+  const retirement = idleWorker.terminate();
+  idleRetirement = retirement;
+  try { await retirement; }
+  finally { if (idleRetirement === retirement) idleRetirement = undefined; }
+}
+
+function scheduleIdleRelease(): void {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { void releaseIdleSqliteWorker(); }, WORKER_IDLE_MS);
+  idleTimer.unref();
+}
 
 /** Optional resource sampling for diagnostics/benchmarks, never query work. */
 export function getSqliteWorkerResources(refresh: boolean = false) {
@@ -50,7 +72,9 @@ function releaseWorker(failedWorker: Worker): void {
   });
 }
 
-function queryWorker(file: string, statements: string[]): Promise<Reply> {
+async function queryWorker(file: string, statements: string[]): Promise<Reply> {
+  if (idleRetirement) await idleRetirement;
+  clearTimeout(idleTimer);
   // Native work may finish before thread termination takes effect. Never
   // accumulate replacement workers behind a stuck read-only statement.
   if (retiringWorker) return Promise.resolve({ value: null, supported: true });
@@ -70,7 +94,7 @@ function queryWorker(file: string, statements: string[]): Promise<Reply> {
       clearTimeout(request.timer);
       mergeSqliteDiagnostics(message.diagnostics);
       request.resolve(message);
-      if (pending.size === 0) created.unref();
+      if (pending.size === 0) { created.unref(); scheduleIdleRelease(); }
     });
     created.on('error', error => { logHudError('sqlite-worker', error); releaseWorker(created); });
     created.on('exit', () => releaseWorker(created));

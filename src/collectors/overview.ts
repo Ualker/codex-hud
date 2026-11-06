@@ -8,7 +8,7 @@ import { readSharedSnapshot, writeSharedSnapshot } from '../utils/shared-snapsho
 import { withDetectorPhases } from '../utils/detector-phases.js';
 import { sessionTitle } from '../utils/privacy.js';
 import { isSubagentSessionSource } from './agent-activity.js';
-import { findActiveRollouts, peekRolloutMetadata, type SessionFile } from './session-finder.js';
+import { findActiveRollouts, peekRolloutMetadata, type SessionFile } from './rollout-discovery.js';
 import { listOpenHudBindings, type OpenHudBinding } from './open-huds.js';
 import { compareOverviewSessions } from './overview-order.js';
 import { RolloutParser } from './rollout.js';
@@ -49,10 +49,16 @@ function reviveOverview(value: unknown): SessionOverview | null {
 export class OverviewCollector {
   private parsers = new Map<string, RolloutParser>();
   private checkedAt = new Map<string, number>();
+  private checkedVersions = new Map<string, { size: number; modifiedAt: number }>();
+  private changeGeneration = 0;
+  private collectedGeneration = 0;
   private previous: SessionOverview = { sessions: [], updatedAt: new Date(0) };
   private lastParseCount = 0;
 
   constructor(private options: { shared?: boolean; now?: () => number } = {}) {}
+
+  noteRolloutChanged(): void { this.changeGeneration++; }
+  hasPendingChanges(): boolean { return this.changeGeneration !== this.collectedGeneration; }
 
   getDiagnostics(): { parserCount: number; parsedLastRefresh: number; sessionCount: number } {
     return { parserCount: this.parsers.size, parsedLastRefresh: this.lastParseCount, sessionCount: this.previous.sessions.length };
@@ -60,13 +66,15 @@ export class OverviewCollector {
 
   async refresh(priorityIds: readonly string[] = []): Promise<SessionOverview> {
     const now = (this.options.now ?? Date.now)();
+    const generation = this.changeGeneration;
     const namespace = getCodexDataNamespace();
     // Scope snapshots to the tmux server as well: panes from a private test
     // socket or another user's server are never valid navigation targets here.
     const server = process.env.TMUX?.split(',')[0] ?? process.env.TMUX_TMPDIR ?? 'default';
     const privacy = process.env.CODEX_HUD_HIDE_TITLES === '1' ? '-private' : '';
     const cacheKey = `overview-${namespace}-${createHash('sha256').update(server).digest('hex').slice(0, 12)}${privacy}`;
-    const shared = this.options.shared === false ? null : readSharedSnapshot(cacheKey, 1500, reviveOverview, now);
+    const shared = this.options.shared === false || this.hasPendingChanges()
+      ? null : readSharedSnapshot(cacheKey, 1500, reviveOverview, now);
     if (shared?.namespace === namespace && shared.updatedAt > this.previous.updatedAt) {
       this.previous = shared;
       this.lastParseCount = 0;
@@ -108,9 +116,14 @@ export class OverviewCollector {
     const interval = (id: string): number => priority.has(id) || previousById.get(id)?.unavailable ||
       ['awaiting-approval', 'failed', 'interrupted'].includes(previousById.get(id)?.turnActivity?.phase ?? '') ? 5000 : 30_000;
     const urgency = (file: typeof files[number]): number => {
-      if (this.parsers.get(file.path)?.getCached()?.hasMore) return 100;
       const checked = this.checkedAt.get(file.path);
       if (checked === undefined) return priority.has(file.sessionId) ? 1000 : 999;
+      const version = this.checkedVersions.get(file.path);
+      if (this.parsers.get(file.path)?.getCached()?.hasMore ||
+        version?.size !== file.size || version.modifiedAt !== file.modifiedAt.getTime()) {
+        // Appends and existing backlogs share an age tier, so neither can starve peers.
+        return 100 + (now - checked) / interval(file.sessionId);
+      }
       return (now - checked) / interval(file.sessionId);
     };
     files.sort((a, b) => urgency(b) - urgency(a));
@@ -124,6 +137,7 @@ export class OverviewCollector {
       // visible until this file has actually been read successfully.
       let unavailable = previous?.unavailable ?? false;
       let deferred = urgency(file) >= 1;
+      let parsed = false;
       if (deferred && this.lastParseCount < PARSES_PER_REFRESH &&
         (this.lastParseCount === 0 || performance.now() - started < WORK_BUDGET_MS)) {
         if (!parser) {
@@ -135,22 +149,26 @@ export class OverviewCollector {
         while (this.parsers.size > PARSER_LIMIT) this.parsers.delete(this.parsers.keys().next().value!);
         this.lastParseCount++;
         this.checkedAt.set(file.path, now);
+        this.checkedVersions.set(file.path, { size: file.size, modifiedAt: file.modifiedAt.getTime() });
         try {
           await parser.parse();
           unavailable = false;
+          parsed = true;
         } catch { unavailable = true; }
         deferred = false;
       }
       const result = parser?.getCached();
       const binding = byId.get(file.sessionId);
       const identityMismatch = Boolean(result?.session && result.session.id !== file.sessionId);
-      if (!result?.session || identityMismatch) {
+      // A shared row may be newer than this HUD's dormant parser. Skipping
+      // parsing must not publish that old local state with a fresh timestamp.
+      if (!result?.session || identityMismatch || (!parsed && previous)) {
         sessions.push({
           ...previous, id: file.sessionId,
           cwd: previous?.cwd ?? binding?.cwd,
           projectName: previous?.projectName ?? (binding?.cwd ? path.basename(binding.cwd) : undefined),
           title: sessionTitle(previous?.title, binding?.label), label: binding?.label,
-          tmuxSession: binding?.tmuxSession,
+          tmuxSession: binding?.tmuxSession, tmuxPane: binding?.tmuxPane,
           unavailable: unavailable || identityMismatch || (!deferred && !previous),
           refreshing: deferred,
         });
@@ -161,7 +179,7 @@ export class OverviewCollector {
       const context = usage ? buildContextUsage(usage, result.compactCount, result.lastCompactTime ?? undefined) : undefined;
       sessions.push({
         id: result.session.id, cwd: result.session.cwd,
-        projectName: path.basename(result.session.cwd), tmuxSession: binding?.tmuxSession,
+        projectName: path.basename(result.session.cwd), tmuxSession: binding?.tmuxSession, tmuxPane: binding?.tmuxPane,
         title: sessionTitle(result.session.title, binding?.label), label: binding?.label, model: result.session.model,
         turnActivity: withDetectorPhases(result.turnActivity, binding?.approvalNeeded === true,
           binding?.likelyInterrupted === true, binding?.codexExited === true, result.lastEventTime ?? undefined),
@@ -175,16 +193,18 @@ export class OverviewCollector {
       sessions.push({
         id: binding.sessionId, cwd: binding.cwd,
         projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
-        tmuxSession: binding.tmuxSession, title: binding.label, label: binding.label,
+        tmuxSession: binding.tmuxSession, tmuxPane: binding.tmuxPane, title: binding.label, label: binding.label,
         neverStarted: !binding.rolloutPath,
         ...(binding.rolloutPath ? { unavailable: true } : {}),
       });
     }
     const activePaths = new Set(files.map(file => file.path));
     for (const file of this.checkedAt.keys()) if (!activePaths.has(file)) this.checkedAt.delete(file);
+    for (const file of this.checkedVersions.keys()) if (!activePaths.has(file)) this.checkedVersions.delete(file);
     for (const file of this.parsers.keys()) if (!activePaths.has(file)) this.parsers.delete(file);
     sessions.sort(compareOverviewSessions);
     this.previous = { sessions, updatedAt: new Date(now), namespace };
+    this.collectedGeneration = generation;
     if (this.options.shared !== false) writeSharedSnapshot(cacheKey, this.previous, now);
     return this.previous;
   }

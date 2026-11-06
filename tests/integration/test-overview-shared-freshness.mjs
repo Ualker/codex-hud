@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { OverviewCollector } from '../../dist/collectors/overview.js';
+import { getCodexDataNamespace } from '../../dist/utils/codex-path.js';
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-overview-fresh-'));
+process.env.HOME = root;
+process.env.CODEX_HOME = path.join(root, '.codex');
+process.env.CODEX_SESSIONS_PATH = path.join(process.env.CODEX_HOME, 'sessions');
+delete process.env.TMUX;
+fs.mkdirSync(process.env.CODEX_SESSIONS_PATH, { recursive: true });
+fs.mkdirSync(path.join(root, 'bin'));
+const file = path.join(root, 'root.jsonl');
+const bindings = path.join(root, 'bindings');
+const record = (type, payload) => JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + '\n';
+fs.writeFileSync(file, record('session_meta', { id: 'root', cwd: root }) + record('event_msg', { type: 'task_complete', turn_id: 'old' }));
+fs.writeFileSync(bindings, `hud-root %2 0 %2 ${Buffer.from(JSON.stringify({ namespace: getCodexDataNamespace(), tmuxSession: 'hud-root', sessionId: 'root', rolloutPath: file })).toString('base64')}`);
+process.env.HUD_TEST_BINDINGS = bindings;
+process.env.PATH = path.join(root, 'bin') + path.delimiter + process.env.PATH;
+fs.writeFileSync(path.join(root, 'bin', 'tmux'), '#!/bin/sh\ncat "$HUD_TEST_BINDINGS"\n', { mode: 0o755 });
+let now = Date.now();
+const a = new OverviewCollector({ now: () => now }), b = new OverviewCollector({ now: () => now });
+const phase = snapshot => snapshot.sessions[0].turnActivity.phase;
+try {
+  assert.equal(phase(await a.refresh(['root'])), 'idle');
+  now += 1600;
+  assert.equal(phase(await b.refresh(['root'])), 'idle', 'both collectors now have an idle local parser');
+  fs.appendFileSync(file, record('event_msg', { type: 'task_started', turn_id: 'fresh' }));
+  now += 100;
+  a.noteRolloutChanged();
+  assert.equal(phase(await a.refresh(['root'])), 'thinking', 'a changed file bypasses shared TTL and the local five-second parse cadence');
+  assert.equal(phase(await b.refresh(['root'])), 'thinking', 'another HUD adopts the fresh snapshot');
+  now += 1600;
+  assert.equal(phase(await b.refresh(['root'])), 'thinking', 'an old local parser cannot downgrade an adopted shared row');
+  fs.appendFileSync(file, record('event_msg', { type: 'task_complete', turn_id: 'fresh' }));
+  now += 100;
+  b.noteRolloutChanged();
+  assert.equal(phase(await b.refresh(['root'])), 'idle', 'completion also bypasses the stale shared row');
+  assert.equal(phase(await a.refresh(['root'])), 'idle');
+  console.log('test-overview-shared-freshness: PASS');
+} finally { fs.rmSync(root, { recursive: true, force: true }); }

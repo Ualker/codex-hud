@@ -217,6 +217,7 @@ session_project_slug() {
 
 # Keep the legacy hash-only prefix discoverable so sessions created before this
 # update remain attachable and killable.
+SESSION_CWD="$(pwd -P)"
 PROJECT_SLUG="$(session_project_slug "$PWD")"
 SESSION_HASH="$(hash_cwd "$PWD")"
 LEGACY_SESSION_PREFIX="codex-hud-${SESSION_HASH}"
@@ -617,6 +618,34 @@ session_data_namespace() {
     node "$HUD_DIR/dist/namespace.js" "$home" "$sessions" "$user_home" "$cwd"
 }
 
+# Runtime cwd is authoritative after /resume or a worktree switch. Older HUDs
+# without that option retain their launch-name compatibility path.
+session_matches_current_directory() {
+    local name="$1" stored canonical
+    [[ "$name" == codex-hud-* ]] || return 1
+    if [[ -z "$DATA_NAMESPACE" ]]; then
+        DATA_NAMESPACE=$(node "$HUD_DIR/dist/namespace.js" "${CODEX_HOME:-}" "${CODEX_SESSIONS_PATH:-}" "$HOME" "$PWD") || return 1
+    fi
+    [[ "$(session_data_namespace "$name")" == "$DATA_NAMESPACE" ]] || return 1
+    stored=$(tmux show-option -qv -t "$name" @codex_hud_cwd 2>/dev/null || true)
+    if [[ -n "$stored" ]]; then
+        canonical=$(cd "$stored" 2>/dev/null && pwd -P) || canonical="$stored"
+        [[ "$canonical" == "$SESSION_CWD" ]]
+        return
+    fi
+    case "$name" in
+        "$SESSION_PREFIX"-*|"$LEGACY_SESSION_PREFIX"-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+sessions_in_current_directory() {
+    local name
+    while IFS= read -r name; do
+        if session_matches_current_directory "$name"; then printf '%s\n' "$name"; fi
+    done
+}
+
 # Claim the oldest detached session in this directory and data namespace. The synchronous tmux
 # if-shell -F check and set run in one server command queue, closing the race
 # between multiple launchers reading the same list-sessions snapshot.
@@ -628,10 +657,7 @@ claim_detached_session() {
             | LC_ALL=C sort -t '|' -k1,1n -k2.2,2n) || rows=""
         pending=0
         while IFS='|' read -r created id attached owner name; do
-            case "$name" in
-                "$SESSION_PREFIX"-*|"$LEGACY_SESSION_PREFIX"-*) ;;
-                *) continue ;;
-            esac
+            session_matches_current_directory "$name" || continue
             [[ "$id" =~ ^\$[0-9]+$ && "$attached" == "0" ]] || continue
             [[ "$(session_data_namespace "$id")" == "$DATA_NAMESPACE" ]] || continue
             pending=1
@@ -696,7 +722,7 @@ resolve_control_session() {
             return 0
         fi
     fi
-    candidates=$(printf '%s\n' "$sessions" | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" | sort || true)
+    candidates=$(printf '%s\n' "$sessions" | sessions_in_current_directory | sort)
     count=$(printf '%s\n' "$candidates" | grep -c . || true)
     if [[ "$count" == "1" ]]; then
         printf '%s\n' "$candidates"
@@ -1332,6 +1358,7 @@ main() {
     # Get current working directory
     local cwd
     cwd=$(get_cwd "${codex_args[@]}") || error "Unable to resolve Codex working directory."
+    SESSION_CWD="$cwd"
     PROJECT_SLUG=$(session_project_slug "$cwd")
     SESSION_HASH=$(hash_cwd "$cwd")
     LEGACY_SESSION_PREFIX="codex-hud-${SESSION_HASH}"
@@ -1582,7 +1609,7 @@ list_sessions() {
     panes=$(tmux list-panes -a -F "#{pane_id}|#{?pane_dead,dead,live}|#{pane_pid}|#{pane_current_path}" 2>/dev/null) || panes=""
     # Recency is informational; automatic attachment selects detached sessions.
     local newest_here
-    newest_here=$(printf '%s\n' "$rows" | cut -d'|' -f1 | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" | sort | tail -n1)
+    newest_here=$(printf '%s\n' "$rows" | cut -d'|' -f1 | sessions_in_current_directory | sort | tail -n1)
     process_table=$(ps -axww -o pid=,ppid=,etime=,comm=,command= 2>/dev/null) || process_table=""
     dist_mtime=$(file_mtime_epoch "$HUD_DIR/dist/index.js") || dist_mtime=""
     now=$(date +%s)
@@ -1618,7 +1645,7 @@ list_sessions() {
 # Every codex-hud session for this directory (current and legacy names).
 find_all_hud_sessions() {
     tmux list-sessions -F "#{session_name}" 2>/dev/null \
-        | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" \
+        | sessions_in_current_directory \
         | sort
 }
 

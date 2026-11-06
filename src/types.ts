@@ -125,6 +125,7 @@ export interface SessionOverviewItem {
    * the rollout scan alone.
    */
   tmuxSession?: string;
+  tmuxPane?: string;
   /** First prompt of the session; see SessionInfo.title. */
   title?: string;
   /** Explicit user label, safe to retain when prompt titles are hidden. */
@@ -647,6 +648,10 @@ export interface HudData {
   labelDraft?: string;
   helpVisible?: boolean;
   helpPage?: number;
+  inspectionVisible?: boolean;
+  inspectionPage?: number;
+  hudSession?: string;
+  bindingInfo?: { source: string; error: string | null };
   uiNotice?: string;
   overviewFilter?: 'all' | 'attention';
   overviewSelectionId?: string;

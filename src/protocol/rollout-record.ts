@@ -8,6 +8,37 @@ function stringFields(record: JsonRecord, keys: string[]): boolean {
   return keys.every(key => record[key] == null || typeof record[key] === 'string');
 }
 
+function nonNegativeNumbers(record: JsonRecord, keys: string[]): boolean {
+  return keys.every(key => record[key] == null ||
+    (typeof record[key] === 'number' && Number.isFinite(record[key]) && record[key] >= 0));
+}
+
+/** Only validate fields the HUD consumes; keep unknown protocol additions. */
+export function validRateLimits(value: unknown): boolean {
+  const limits = asRecord(value);
+  if (!limits || !stringFields(limits, ['limit_id', 'limit_name', 'plan_type', 'rate_limit_reached_type'])) return false;
+  if (limits.spend_control_reached != null && typeof limits.spend_control_reached !== 'boolean') return false;
+  for (const key of ['primary', 'secondary']) {
+    if (limits[key] == null) continue;
+    const window = asRecord(limits[key]);
+    if (!window || !nonNegativeNumbers(window, ['used_percent', 'window_minutes', 'resets_at'])) return false;
+  }
+  return true;
+}
+
+function validTokenInfo(value: unknown): boolean {
+  const info = asRecord(value);
+  if (!info || !nonNegativeNumbers(info, ['model_context_window'])) return false;
+  for (const key of ['last_token_usage', 'total_token_usage']) {
+    if (info[key] == null) continue;
+    const usage = asRecord(info[key]);
+    if (!usage || !nonNegativeNumbers(usage, [
+      'input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens',
+    ])) return false;
+  }
+  return true;
+}
+
 function textBlocks(value: unknown): boolean {
   return Array.isArray(value) && value.every(block => {
     const record = asRecord(block);
@@ -66,7 +97,9 @@ function validPayload(type: string, payload: JsonRecord): boolean {
     for (const key of ['info', 'rate_limits', 'invocation', 'duration']) {
       if (payload[key] != null && !asRecord(payload[key])) return false;
     }
-    if (payload.model_context_window != null && typeof payload.model_context_window !== 'number') return false;
+    if (payload.type === 'token_count' && payload.info != null && !validTokenInfo(payload.info)) return false;
+    if (payload.rate_limits != null && !validRateLimits(payload.rate_limits)) return false;
+    if (!nonNegativeNumbers(payload, ['model_context_window'])) return false;
   }
   return true;
 }

@@ -14,6 +14,43 @@ Real-time statusline HUD for [OpenAI Codex CLI](https://github.com/openai/codex)
 ![Codex HUD — Single Session](./doc/fig/single.svg)
 
 
+## Quick Start
+
+### macOS/Linux (this fork)
+
+```bash
+git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
+cd codex-hud
+./bin/codex-hud-install
+
+# Refresh your shell, then just type:
+codex
+```
+
+This fork is maintained on `integrate/upstream-main-20260714` for macOS/Linux. Use `74server` when container polling compatibility is needed; that branch retains `CHOKIDAR_USEPOLLING=1`. Windows/WSL belongs to an upstream branch and is not a verified install path for this fork.
+
+For an existing checkout, `codex-hud-upgrade` updates its current tracking branch; `codex-hud-sync` only builds the current source and refreshes aliases. Install/sync preserves RC symlinks, file modes and user overrides after the managed block; repeated runs do not accumulate blank lines. After building, use `codex-hud --reload --target EXACT_SESSION_NAME` for one HUD, or `--reload --all` for every HUD in the current directory. Reload checks that the HUD Node process starts and stays alive; any failure, including partial failure, returns nonzero. Main Codex panes are preserved.
+
+If runtime activation fails after the source fast-forward, upgrade attempts to restore the old dependencies and build. If recovery also fails, it retains the staging directory and backups, reports their paths and prints guarded restore commands. Resolve the filesystem error and recover the missing directories before running `codex-hud-sync`.
+
+### Management Commands
+
+After the first install, these are available in your shell:
+
+| Command | Description |
+|---------|-------------|
+| `codex-hud-sync` | Rebuild and refresh aliases for the current checkout |
+| `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
+| `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
+| `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases, and print the most recent HUD diagnostics |
+| `codex-hud --kill` | Kill the current tmux session, or the unique session in this directory when outside tmux (`--all`: every session here) |
+| `codex-hud --reload` | Rebuild when needed, then restart the current/unique HUD pane; `--target NAME` or `--target %ID` selects explicitly |
+| `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
+| `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
+| `codex-hud --cycle-details` | Cycle the tool-detail level without moving focus |
+| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory is marked `(newest here)` |
+| `codex-hud --hud-version` | Print the package version and checkout revision |
+
 ## Interaction and recovery
 
 HUD keys work while the HUD pane has focus. `Prefix+H` still switches views from the main pane.
@@ -21,11 +58,13 @@ HUD keys work while the HUD pane has focus. `Prefix+H` still switches views from
 | Key | Action |
 | --- | --- |
 | `?` | Open/close help; use `j/k` to page on narrow panes |
-| `Esc` | Close help, or return to the main Codex pane |
+| `i` | Open/close target and diagnostic details; `j/k` or wheel changes pages |
+| `r` | Rename this HUD; `Enter` saves, `Esc` cancels, `Ctrl+U` clears |
+| `Esc` | Close help/info, or return to the main Codex pane |
 | `Ctrl+T` | Switch single/overview |
 | `t` / `d` | Cycle tool detail / toggle full HUD detail |
 | `c` | Switch `standard` / `coexist` layout |
-| `j` / `k`, arrows | Select a navigable overview row; selection is underlined and stays visible |
+| `j` / `k`, arrows | Select a navigable overview row; selection is underlined, retains status colors and stays visible |
 | `Enter` | Open the selected session's main pane after revalidating its binding |
 | `f` | Filter overview to sessions needing attention, or show all |
 
@@ -38,7 +77,7 @@ codex-hud --doctor --json
 npm run bench
 ```
 
-Compact permissions use short cells such as `Approval: ask · [workspace-write]`; `d` retains the full permission and environment inventory. Mode/detail/tool/layout changes show brief feedback, as does focus when the terminal supports focus events. Help reflects the installed toggle key and pages on narrow panes.
+Compact permissions use short cells such as `Approval: ask · [workspace-write]`; `d` retains the full permission and environment inventory. Mode/detail/tool/layout changes show brief feedback, as does focus when the terminal supports focus events. Help reflects the installed toggle key and pages on narrow panes. Compact overview addresses use live pane IDs (for example `%11`), which also work with `--target`; full details retain session names. Press `i` to inspect the full selected target, binding status, collector errors, log backlog and quota age. Warning rows also point to this key.
 
 `--cd DIR` / `-C DIR` sets the HUD project, Git status and session directory as well as Codex’s working directory. Original Codex arguments retain their relative-path meaning. A validated runtime directory change, including a managed worktree, refreshes project/Git data and the directory used on HUD reload. Controls also work when the HUD is in another window of the same tmux session.
 
@@ -46,23 +85,11 @@ HUD options precede Codex arguments or control commands. `--layout standard` ret
 
 Protocol warnings are grouped by type in compact detail; `d` exposes the type names and unreadable-record count. Full details also identify the quota source and observation age. `--doctor --json` includes live binding evidence, CLI/Node versions, parser offsets/backlog, collector health and preferences. Runtime snapshots refresh at most every 10 seconds; the report marks dead owners or old snapshots as not fresh. It does not include prompt bodies or authentication data.
 
-Codex 0.164.0 `additional_tools` records are recognized as tool definitions. They do not trigger compatibility warnings or count as tool executions; other unknown record types still produce diagnostics.
+Quota discovery includes recently active indexed rollouts and live bindings, even when their creation directory is old. Quota notifications are shared across HUD processes for the same data scope, quota window and notification command; windowless limits use a daily scope. The first observation still seeds silently. A delivery failure is logged and does not automatically repeat the same claimed window.
 
-Codex 0.165.0 `configuration_update` records update the displayed reasoning effort without changing tool or turn activity. The setting also survives a HUD reload with a large session log; invalid consumed fields and other unknown record types still produce diagnostics.
+Reattachment and directory-scoped controls follow the saved current working directory and data scope; older sessions without a saved directory retain launch-name compatibility. Explicit `--target` selects an exact session or pane.
 
-Rollout reads discard stale work after rebinding, validate record envelopes, and replay large backlogs in bounded batches. `Catching up` identifies pending data. Notifications wait until the first bound log snapshot is caught up and remain suppressed while bytes are pending. Turn events are scoped by session/turn; quota alerts are scoped by data scope/window, so a new turn cannot repeat an unchanged quota alert. An explicit unavailable `CODEX_HOME` reports an error instead of reading another profile.
-
-Daemon binding preserves identified connections of surviving TUI processes even after hours without request logs. Connect-line evidence takes priority; overlapping startup evidence stays unbound instead of guessing by launch order. Shared history retains connections belonging to live clients. `/side` conversations (temporary in-memory forks) and known helper threads do not replace the main session, including when `/side` closes; a normal persisted fork, `/new`, or `/resume` still updates the binding. After rebuilding, reload the HUD panes with `codex-hud --reload --target <tmux-session>`; the main Codex process keeps running.
-
-Automatic reattachment, bindings, overview and shared quota use one data scope derived from canonical `CODEX_HOME` and `CODEX_SESSIONS_PATH` directories. Symlink aliases share a scope; different accounts in the same project do not. The overview shows session and attention counts plus the current filter; the scope identifier remains in diagnostics. Enter on a selection that disappeared reports it unavailable instead of opening another task. Legacy HUDs without scope metadata stay out of the overview until reloaded; `--doctor --json` marks their scope as unverified.
-
-The overview retains at most 20 parsers and advances at most 8 per refresh, with a 100 ms scheduling budget (an already-started bounded batch finishes). Current, selected and actionable sessions receive priority; other rows rotate at a slower cadence and retain their last snapshot. Queued or catching-up rows say `Updating`. HUDs on the same data scope and tmux server share short-lived snapshots. Native and CLI SQLite probes are timed; native statements exceeding 50 ms log a query digest, row count and query plan without SQL literals.
-
-In full details, `Skills enabled: enabled/discovered` describes filesystem inventory and inspected configuration, **not skills loaded in the current turn**. Sources include repository and user `~/.agents/skills`, `/etc/codex/skills`, legacy `.codex/skills`, and explicit system/admin roots. Canonical `SKILL.md` paths deduplicate symlinks; `[[skills.config]] enabled=false` in `CODEX_HOME/config.toml` disables entries. The HUD does not reproduce Codex's project trust or complete profile merge; runtime loaded count remains unknown.
-
-Unexpected global exceptions stop the renderer. The wrapper restarts only that process with a capped backoff (three retries per crash burst), leaving Codex running; ordinary exits and startup configuration errors do not restart. Uninstall likewise stops only the HUD panes owned by this checkout and preserves main panes. Alias backups retain their original RC paths and shell dialects; newer user aliases and ambiguous legacy flat backups are preserved rather than overwritten.
-
-The offline [performance benchmark](./docs/PERFORMANCE.md) covers frame rendering and four concurrent long-log readers. `npm run bench:runtime` also exercises 1/5/20 full HUD processes, process binding, SQLite, tmux, Git, watchers and continuous log appends. Supported tmux tests and runtime benchmarks use private servers or substitutes. Legacy manual tmux/install entry points are retired. Runtime benchmarks clean up on success; failures retain per-HUD metrics, bounded stdout/stderr and exit details, and print their diagnostics directory.
+See [runtime and recovery details](./docs/RUNTIME.md) for protocol compatibility, binding evidence, collector budgets and failure handling.
 
 ## Why Codex HUD?
 
@@ -120,48 +147,11 @@ Control commands prefer the current tmux pane's session. Outside tmux, they auto
 
 Overview retains the address, phase and numeric context before decorative columns, and abbreviates optional titles to fit. Failed scans retain the last successful rows with a warning; unreadable sessions keep their identity with `Unknown` state. Missing/dead HUD panes no longer count as open bindings. Quota snapshots and burn-rate baselines are shared only between the same resolved `CODEX_HOME` and sessions directory; the first reading after upgrading starts a fresh baseline.
 
-## Quick Start
-
-### macOS/Linux (this fork)
-
-```bash
-git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
-cd codex-hud
-./bin/codex-hud-install
-
-# Refresh your shell, then just type:
-codex
-```
-
-This fork is maintained on `integrate/upstream-main-20260714` for macOS/Linux. Use `74server` when container polling compatibility is needed; that branch retains `CHOKIDAR_USEPOLLING=1`. Windows/WSL belongs to an upstream branch and is not a verified install path for this fork.
-
-For an existing checkout, `codex-hud-upgrade` updates its current tracking branch; `codex-hud-sync` only builds the current source and refreshes aliases. Install/sync preserves RC symlinks, file modes and user overrides after the managed block; repeated runs do not accumulate blank lines. After building, use `codex-hud --reload --target EXACT_SESSION_NAME` for one HUD, or `--reload --all` for every HUD in the current directory. Reload checks that the HUD Node process starts and stays alive; any failure, including partial failure, returns nonzero. Main Codex panes are preserved.
-
-If runtime activation fails after the source fast-forward, upgrade attempts to restore the old dependencies and build. If recovery also fails, it retains the staging directory and backups, reports their paths and prints guarded restore commands. Resolve the filesystem error and recover the missing directories before running `codex-hud-sync`.
-
-### Management Commands
-
-After the first install, these are available in your shell:
-
-| Command | Description |
-|---------|-------------|
-| `codex-hud-sync` | Rebuild and refresh aliases for the current checkout |
-| `codex-hud-upgrade` | Build the current tracking-branch update in isolation, then fast-forward and refresh aliases |
-| `codex-hud-uninstall` | Remove aliases and stop HUD sessions |
-| `codex-hud --doctor` | Check Codex, Node, tmux, build output, and aliases, and print the most recent HUD diagnostics |
-| `codex-hud --kill` | Kill the current tmux session, or the unique session in this directory when outside tmux (`--all`: every session here) |
-| `codex-hud --reload` | Rebuild when needed, then restart the current/unique HUD pane; `--target NAME` or `--target %ID` selects explicitly |
-| `codex-hud --reload --all` | Same, but reload every codex-hud session in this directory |
-| `codex-hud --toggle-mode` | Toggle single/overview mode without moving focus |
-| `codex-hud --cycle-details` | Cycle the tool-detail level without moving focus |
-| `codex-hud --list` | List every codex-hud session with its working directory, attach state, and whether its HUD pane is still alive — a HUD process older than the build on disk is marked `HUD: outdated`, and the newest session of the current directory is marked `(newest here)` |
-| `codex-hud --hud-version` | Print the package version and checkout revision |
-
 ## What's on the HUD?
 
 The default view uses the terminal foreground with a cyan accent, bold task titles, and quieter project/address labels, with completed tool history collapsed by default. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. At 5/8/12 rows, approval, failure and exhausted quota precede environment and history. `t` changes tool text, `d` expands history, environment inventory, Git file counts, token breakdown and session identity, and `c` switches standard/native-status-companion layouts; choices are saved for this HUD. Press `r` to rename the current HUD: `Enter` saves, `Esc` cancels, and `Ctrl+U` clears the label. An empty label restores the task title. The shell command `codex-hud --label NAME --reload --target SESSION_NAME` remains available; `--label` alone is a launch option. A four-second confirmation naming the changed setting and current HUD appears in the header even when both modes show the same rows. Titles in both views shorten absolute paths to their project/file names and use more space in wide windows; useful task text takes priority over uptime and long branches. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
 
-Previews: [light terminal](./doc/fig/single-light.svg) · [60-column pane](./doc/fig/single-narrow.svg) · [overview selection](./doc/fig/overview-narrow.svg) · [light overview](./doc/fig/overview-light.svg) · [inline rename](./doc/fig/label-edit.svg) · [paged help](./doc/fig/help-narrow.svg) · [5-row coexist with critical context](./doc/fig/coexist-pressure.svg). These are generated by the actual renderer with `npm run docs:previews`.
+Previews: [target and diagnostics](./doc/fig/inspection.svg) · [light terminal](./doc/fig/single-light.svg) · [60-column pane](./doc/fig/single-narrow.svg) · [overview selection](./doc/fig/overview-narrow.svg) · [light overview](./doc/fig/overview-light.svg) · [inline rename](./doc/fig/label-edit.svg) · [paged help](./doc/fig/help-narrow.svg) · [5-row coexist with critical context](./doc/fig/coexist-pressure.svg). These are generated by the actual renderer with `npm run docs:previews`.
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
@@ -413,6 +403,8 @@ The previews above use synthetic data rendered by the current HUD. Regenerate th
 
 ## Development
 
+See [runtime and recovery details](./docs/RUNTIME.md) for protocol compatibility, binding evidence, collector budgets and failure handling.
+
 ```bash
 npm ci                         # Install dependencies
 npm run typecheck              # Typecheck only
@@ -449,7 +441,7 @@ npm run test:render            # Run the render examples
 
 ## License
 
-MIT
+[MIT](./LICENSE)
 
 ## Credits
 

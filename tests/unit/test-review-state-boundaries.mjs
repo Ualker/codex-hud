@@ -9,6 +9,7 @@ import { HudNotifier, rateLimitNotificationScope } from '../../dist/notify.js';
 import { selectedSession } from '../../dist/ui/state.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-state-boundaries-'));
+process.env.HOME = root;
 const now = Date.now();
 const record = (type, payload) => JSON.stringify({ timestamp: new Date(now - 20000).toISOString(), type, payload }) + '\n';
 try {
@@ -53,13 +54,13 @@ try {
   const calls = [];
   const notifier = new HudNotifier({ command: 'stub', runCommand: async (_, payload) => calls.push(JSON.parse(payload)) });
   const quota = { limit_id: 'codex', primary: { used_percent: 100, window_minutes: 300, resets_at: 2000000000 } };
-  const quotaScope = rateLimitNotificationScope('account-a', quota);
+  const quotaScope = rateLimitNotificationScope(root, quota);
   const context = { sessionId: 'one-session', cwd: root, quotaScope };
   notifier.observe(quiet, { ...context, turnId: 'turn-1' }, now);
   for (let i = 1; i <= 3; i++) notifier.observe({ ...quiet, 'limit-reached': true }, { ...context, turnId: `turn-${i}` }, now + i * 1000);
   assert.equal(calls.length, 1, 'turn changes do not reset account quota cooldown');
   notifier.observe({ ...quiet, 'limit-reached': true }, { ...context,
-    quotaScope: rateLimitNotificationScope('account-a', { ...quota, primary: { ...quota.primary, resets_at: 2000018000 } }) }, now + 4000);
+    quotaScope: rateLimitNotificationScope(root, { ...quota, primary: { ...quota.primary, resets_at: 2000018000 } }) }, now + 4000);
   assert.equal(calls.length, 2, 'a different quota window is an independent alert');
   notifier.observe({ ...quiet, 'turn-completed': true }, { ...context, turnId: 'one' }, now + 5000);
   notifier.observe({ ...quiet, 'turn-completed': true }, { ...context, turnId: 'two' }, now + 6000);
