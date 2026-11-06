@@ -1164,7 +1164,9 @@ function startCollectorTimers(): void {
       return;
     }
     lastOverviewRefreshMs = now;
-    void overviewCache.refresh().catch(() => {
+    // The cadence already throttles this timer. A second success-based TTL
+    // can reject the next tick by a few milliseconds and double the interval.
+    void overviewCache.refresh(true).catch(() => {
       // Keep the previous overview snapshot.
     });
   }, 1000);
