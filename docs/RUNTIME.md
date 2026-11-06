@@ -2,7 +2,7 @@
 
 Source boundaries: `rollout-discovery.ts` handles canonical files and metadata; `session-finder.ts` resolves pane/process ownership. SQLite only supplies discovery/binding evidence; quota and rendered activity still come from JSONL. Directory-scoped wrapper operations share `session_matches_current_directory`.
 
-Changed JSONL files check a bounded header and the previous append boundary, including same-inode growing rewrites. Consumed token/quota numbers must be finite and non-negative; malformed records preserve the last valid state and are counted. SQLite workers retire after 30 seconds without queries and restart on demand. No pending query is retired.
+JSONL revision checks read a bounded header and the previous append boundary, including same-inode growing rewrites and same-size rewrites with unchanged timestamps. Unchanged files read at most 1 KiB of guard bytes; append checks read at most 1.5 KiB. Consumed token/quota numbers must be finite and non-negative; malformed records preserve the last valid state and are counted. SQLite workers retire after 30 seconds without queries and restart on demand. No pending query is retired.
 
 ## English
 
@@ -49,7 +49,7 @@ daemon 绑定会保留仍存活 TUI 的已确认连接，即使数小时没有�
 
 日志变化会使旧的总览共享快照失效，并越过普通的单行解析间隔。深度空闲后的唤醒同时刷新画面和数据缓存；已接收的新快照不会再被旧的本地解析结果覆盖。已有积压与新追加日志按等待时间一起调度，持续繁忙的其他会话不会让积压一直排不到解析机会。
 
-改写的 JSONL 会检查有界文件头与上次追加边界，覆盖同一 inode 上变长的重写。实际消费的 token／额度数值必须有限且非负；坏记录计入诊断并保留上一次有效状态。SQLite Worker 连续 30 秒没有查询时退出，下次查询按需恢复；有未完成查询时不会回收。
+JSONL 版本检查会读取有界文件头与上次追加边界，覆盖同一 inode 上变长的重写，以及容器内时间戳完全不变的等长改写。未变化文件的校验读取最多 1 KiB，追加时最多 1.5 KiB。实际消费的 token／额度数值必须有限且非负；坏记录计入诊断并保留上一次有效状态。SQLite Worker 连续 30 秒没有查询时退出，下次查询按需恢复；有未完成查询时不会回收。
 
 完整详情里的 `Skills enabled: 已启用/已发现` 是文件与已检查配置的清单，**不是本轮已加载数**。包括项目各级与用户 `~/.agents/skills`、管理目录 `/etc/codex/skills`、旧 `.codex/skills` 和显式系统/管理目录；按真实 `SKILL.md` 路径去重，遵循 `CODEX_HOME/config.toml` 的 `[[skills.config]] enabled=false`。HUD 不模拟 Codex 的项目信任和完整 profile 合并；实际运行时加载数未知。
 

@@ -73,7 +73,7 @@ interface RolloutCwdCacheEntry {
 }
 
 // Appends cannot change session_meta, but rotation/replacement can. Keep the
-// cheap stat check so a same-path replacement cannot inherit another identity.
+// bounded content check so a same-path replacement cannot inherit another identity.
 const rolloutCwdCache = new Map<string, RolloutCwdCacheEntry>();
 const ROLLOUT_CWD_CACHE_LIMIT = 8192;
 
