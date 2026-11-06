@@ -434,7 +434,7 @@ ensure_bashrc_sourced() {
 build_project_at() {
     local project_dir="$1"
     step "Installing Node.js dependencies..."
-    (cd "$project_dir" && npm install) || return 1
+    (cd "$project_dir" && npm ci) || return 1
     
     step "Building TypeScript project..."
     (cd "$project_dir" && npm run build) || return 2

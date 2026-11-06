@@ -105,7 +105,7 @@ export class OverviewCollector {
 
     const previousById = new Map(this.previous.sessions.map(row => [row.id, row]));
     const priority = new Set(priorityIds);
-    const interval = (id: string): number => priority.has(id) ||
+    const interval = (id: string): number => priority.has(id) || previousById.get(id)?.unavailable ||
       ['awaiting-approval', 'failed', 'interrupted'].includes(previousById.get(id)?.turnActivity?.phase ?? '') ? 5000 : 30_000;
     const urgency = (file: typeof files[number]): number => {
       if (this.parsers.get(file.path)?.getCached()?.hasMore) return 100;
@@ -119,7 +119,10 @@ export class OverviewCollector {
     this.lastParseCount = 0;
     for (const file of files) {
       let parser = this.parsers.get(file.path);
-      let unavailable = false;
+      const previous = previousById.get(file.sessionId);
+      // Skipping a read is not evidence of recovery. Keep the last failure
+      // visible until this file has actually been read successfully.
+      let unavailable = previous?.unavailable ?? false;
       let deferred = urgency(file) >= 1;
       if (deferred && this.lastParseCount < PARSES_PER_REFRESH &&
         (this.lastParseCount === 0 || performance.now() - started < WORK_BUDGET_MS)) {
@@ -132,12 +135,14 @@ export class OverviewCollector {
         while (this.parsers.size > PARSER_LIMIT) this.parsers.delete(this.parsers.keys().next().value!);
         this.lastParseCount++;
         this.checkedAt.set(file.path, now);
-        try { await parser.parse(); } catch { unavailable = true; }
+        try {
+          await parser.parse();
+          unavailable = false;
+        } catch { unavailable = true; }
         deferred = false;
       }
       const result = parser?.getCached();
       const binding = byId.get(file.sessionId);
-      const previous = previousById.get(file.sessionId);
       const identityMismatch = Boolean(result?.session && result.session.id !== file.sessionId);
       if (!result?.session || identityMismatch) {
         sessions.push({

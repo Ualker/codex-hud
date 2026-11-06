@@ -40,6 +40,8 @@ npm run bench
 
 Compact permissions use short cells such as `Approval: ask · [workspace-write]`; `d` retains the full permission and environment inventory. Mode/detail/tool/layout changes show brief feedback, as does focus when the terminal supports focus events. Help reflects the installed toggle key and pages on narrow panes.
 
+`--cd DIR` / `-C DIR` sets the HUD project, Git status and session directory as well as Codex’s working directory. Original Codex arguments retain their relative-path meaning. A validated runtime directory change, including a managed worktree, refreshes project/Git data and the directory used on HUD reload. Controls also work when the HUD is in another window of the same tmux session.
+
 HUD options precede Codex arguments or control commands. `--layout standard` retains the regular layout. `coexist` prioritizes work, agents and warnings alongside Codex's native footer; calm context metrics move to full details, while context pressure stays visible. Static full-access badges use the information accent, distinct from yellow action warnings. The optional `blue-purple` style coordinates HUD accents with the selected tmux session, keeping yellow warnings and red errors. `--tmux-style default` restores the default accents and clears those local tmux overrides. `CODEX_HUD_THEME=blue-purple` sets HUD accents independently and takes precedence over the tmux style. The session style survives reload from a shell without the style variable. Environment equivalents are `CODEX_HUD_LABEL`, `CODEX_HUD_LAYOUT`, and `CODEX_HUD_TMUX_STYLE`.
 
 Protocol warnings are grouped by type in compact detail; `d` exposes the type names and unreadable-record count. Full details also identify the quota source and observation age. `--doctor --json` includes live binding evidence, CLI/Node versions, parser offsets/backlog, collector health and preferences. Runtime snapshots refresh at most every 10 seconds; the report marks dead owners or old snapshots as not fresh. It does not include prompt bodies or authentication data.
@@ -81,11 +83,11 @@ Yes. Click the visible `[view]` button, or run `codex-hud --toggle-mode` from th
 `Prefix+H` toggles it from the Codex pane too — the wrapper installs that
 binding whenever the key is unbound (`CODEX_HUD_BIND_TOGGLE=0` skips it, `1`
 forces it), and the hint line names what this session actually has. The HUD
-reports mouse events itself, so scrolling over it leaves the display mode unchanged
-and does not enter tmux copy-mode or freeze the view. Overview lists sessions worked
+reports mouse events itself: the wheel selects rows in overview and turns help pages,
+without changing display modes or entering tmux copy-mode. Overview lists sessions worked
 in the last 30 minutes — not only those mid-turn at that instant — sorted by
 live phase, then by how recently each was touched, with context remaining as the
-tiebreak. It marks the session this HUD is bound to with `▸`, and keeps that row
+tiebreak. It marks the session this HUD is bound to with `[me]`, and keeps that row
 visible even when there are more sessions than rows. Pane findings the owning
 HUD confirms — an approval wait, a stream-error-interrupted turn, an exited
 Codex — travel with its published binding, so every dashboard shows
@@ -157,9 +159,9 @@ After the first install, these are available in your shell:
 
 ## What's on the HUD?
 
-The default view uses the terminal foreground with a cyan accent, bold task titles, and quieter project/address labels, with completed tool history collapsed by default. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. At 5/8/12 rows, approval, failure and exhausted quota precede environment and history. `t` changes tool text, `d` expands history, environment inventory, Git file counts, token breakdown and session identity, and `c` switches standard/native-status-companion layouts; choices are saved for this HUD. Rename an existing session with `codex-hud --label NAME --reload --target SESSION_NAME`; `--label` alone is a launch option. A four-second confirmation naming the changed setting and current HUD appears in the header even when both modes show the same rows. Titles in both views shorten absolute paths to their project/file names and use more space in wide windows; useful task text takes priority over uptime and long branches. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
+The default view uses the terminal foreground with a cyan accent, bold task titles, and quieter project/address labels, with completed tool history collapsed by default. Yellow marks permissions, approval waits or capacity pressure; red marks errors or critical capacity. Overview columns align with whitespace. At 5/8/12 rows, approval, failure and exhausted quota precede environment and history. `t` changes tool text, `d` expands history, environment inventory, Git file counts, token breakdown and session identity, and `c` switches standard/native-status-companion layouts; choices are saved for this HUD. Press `r` to rename the current HUD: `Enter` saves, `Esc` cancels, and `Ctrl+U` clears the label. An empty label restores the task title. The shell command `codex-hud --label NAME --reload --target SESSION_NAME` remains available; `--label` alone is a launch option. A four-second confirmation naming the changed setting and current HUD appears in the header even when both modes show the same rows. Titles in both views shorten absolute paths to their project/file names and use more space in wide windows; useful task text takes priority over uptime and long branches. Narrow panes shed the gauge and equivalent token count before the remaining percentage or bold compact count, and the header reserves space for `[view]`.
 
-Previews: [light terminal](./doc/fig/single-light.svg) · [60-column pane](./doc/fig/single-narrow.svg) · [paged help](./doc/fig/help-narrow.svg) · [5-row coexist with critical context](./doc/fig/coexist-pressure.svg). These are generated by the actual renderer with `npm run docs:previews`.
+Previews: [light terminal](./doc/fig/single-light.svg) · [60-column pane](./doc/fig/single-narrow.svg) · [overview selection](./doc/fig/overview-narrow.svg) · [light overview](./doc/fig/overview-light.svg) · [inline rename](./doc/fig/label-edit.svg) · [paged help](./doc/fig/help-narrow.svg) · [5-row coexist with critical context](./doc/fig/coexist-pressure.svg). These are generated by the actual renderer with `npm run docs:previews`.
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
@@ -336,7 +338,7 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 |----------|---------|-------------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD pane position (`top` / `bottom`) |
 | `CODEX_HUD_HEIGHT` | adaptive `5–12` | One sixth of terminal height, or an explicit fixed row count |
-| `CODEX_HUD_MOUSE` | `1` | Enable tmux mouse mode for the session; click `[view]` to switch views; the HUD consumes wheel events without changing modes |
+| `CODEX_HUD_MOUSE` | `1` | Enable tmux mouse mode for the session; click `[view]` to switch views; wheel selects overview rows or turns help pages without changing modes |
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | Tool detail: `off`, `targets`, or `full`; press `t` with the HUD focused |
 | `CODEX_HUD_DETAILS` | `compact` | HUD density: `compact` or `full`; press `d` with the HUD focused |
 
@@ -358,11 +360,12 @@ shell's, so the wrapper bakes every consumed variable into the pane command.
 | `CODEX_HUD_ANIMATION` | `1` | Set `0` for static activity glyphs; text status still updates |
 | `CODEX_HUD_MODE` | `single` | Initial display mode: `single` or `overview` |
 | `CODEX_HUD_THEME` | follows `CODEX_HUD_TMUX_STYLE` | HUD accents: `default` / `blue-purple` (dark terminals); respects `NO_COLOR` |
+| `CODEX_HUD_HIGH_CONTRAST` | `0` | `1` uses the terminal foreground for auxiliary text instead of dim styling; selected overview rows use reverse video and retain a `>` marker with `NO_COLOR` |
 | `CODEX_HUD_HIDE_TITLES` | `0` | `1` hides prompt-derived session titles and uses separate overview snapshots without those titles; explicit `--label` values remain visible. Persists on reload; set `0` explicitly to disable |
 | `CODEX_HUD_LOG_FILE` | per-user default | Append HUD diagnostics (watcher/render/tracking errors) to this file. Defaults to `~/Library/Logs/codex-hud/hud.log` on macOS, `$XDG_STATE_HOME/codex-hud/hud.log` elsewhere; set `off` to discard them |
 | `CODEX_HUD_NO_ATTACH` | `0` | Deprecated: force a new session instead of attaching |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | Legacy compatibility; `.agents` is included in Codex inventory, not counted separately |
-| `CODEX_HUD_NOTIFY_CMD` | (unset) | Shell command run when a session starts needing a human — an approval wait, an interrupted turn, or a hit limit (`approval-needed` / `turn-interrupted` / `limit-reached`) — or finishes a turn of three minutes or longer (`turn-completed`, whose payload carries `turnDurationMs`; shorter turns end with you already watching); a turn Codex ends on an error fires `turn-failed` instead, whatever its length, with `turnDurationMs` and the provider's `error` (`code`, `message`) in the payload. The event JSON arrives on stdin and in `CODEX_HUD_EVENT_JSON`, the bare name in `CODEX_HUD_EVENT`. Fires on transitions only — the first observation after start or rebind seeds silently, and a flapping state is limited to one notification per five minutes. Example: `CODEX_HUD_NOTIFY_CMD='osascript -e "display notification \"$CODEX_HUD_EVENT\" with title \"codex-hud\""'` |
+| `CODEX_HUD_NOTIFY_CMD` | (unset) | Shell command run when a session starts needing a human — an approval wait, an interrupted turn, or a hit limit (`approval-needed` / `turn-interrupted` / `limit-reached`) — or finishes a turn of three minutes or longer (`turn-completed`, whose payload carries `turnDurationMs`; shorter turns end with you already watching); a turn Codex ends on an error fires `turn-failed` instead, whatever its length, with `turnDurationMs` and the provider's `error` (`code`, `message`) in the payload. The event JSON arrives on stdin and in `CODEX_HUD_EVENT_JSON`, the bare name in `CODEX_HUD_EVENT`. Fires on transitions only — the first observation after start or rebind seeds silently, and repeated observations of the same approval are limited to one notification per five minutes. Different pending calls/prompts in the same turn have independent approval identities. Example: `CODEX_HUD_NOTIFY_CMD='osascript -e "display notification \"$CODEX_HUD_EVENT\" with title \"codex-hud\""'` |
 | `CODEX_HUD_ASCII` | `0` | Use ASCII progress and status glyphs |
 | `NO_COLOR` | (unset) | Disable ANSI colors when set |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | Running-agent presentation timeout; positive safe integer milliseconds only |
@@ -411,7 +414,7 @@ The previews above use synthetic data rendered by the current HUD. Regenerate th
 ## Development
 
 ```bash
-npm install                    # Install dependencies
+npm ci                         # Install dependencies
 npm run typecheck              # Typecheck only
 npm run test:unit              # Build and run unit tests
 npm run test:integration       # Build and run isolated integration tests

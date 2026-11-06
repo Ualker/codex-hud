@@ -34,7 +34,7 @@ try {
   assert.equal(path.dirname(retained), fs.realpathSync(os.tmpdir()));
   assert.ok(path.basename(retained).startsWith('hud-runtime-bench-'));
   assert.match(fs.readFileSync(path.join(retained, 'failure.txt'), 'utf8'), /sqlite3.*ENOENT/);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(retained, 'partial-report.json'), 'utf8')).fixtureVersion, 2);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(retained, 'partial-report.json'), 'utf8')).fixtureVersion, 3);
   console.log('test-review-diagnostic-safety: PASS (retired scripts, retained benchmark failure)');
 } finally {
   if (retained && path.dirname(retained) === fs.realpathSync(os.tmpdir()) && path.basename(retained).startsWith('hud-runtime-bench-')) {

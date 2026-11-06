@@ -1453,6 +1453,11 @@ export class SessionFinder {
     this.targetStartTime = targetStartTime ?? null;
   }
 
+  /** A validated bound rollout may move into a managed worktree. */
+  setTargetCwd(cwd: string): void {
+    this.targetCwd = normalizePath(cwd) ?? this.targetCwd;
+  }
+
   /**
    * Start watching for session changes
    */

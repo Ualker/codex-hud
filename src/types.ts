@@ -355,6 +355,7 @@ export interface EventMsgPayload {
 }
 
 export interface TurnContextPayload {
+  cwd?: string;
   approval_policy?: string;
   sandbox_policy?: {
     type?: string;
@@ -643,6 +644,7 @@ export interface SessionInfo {
 export interface HudData {
   layoutPreset?: 'standard' | 'coexist';
   sessionLabel?: string;
+  labelDraft?: string;
   helpVisible?: boolean;
   helpPage?: number;
   uiNotice?: string;

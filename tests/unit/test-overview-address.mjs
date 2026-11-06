@@ -194,7 +194,7 @@ const view = (sessions, selfSessionId) =>
     ],
     self
   );
-  const marked = lines.find((line) => line.includes('▸'));
+  const marked = lines.find((line) => line.includes('[me]'));
   assert.ok(marked, 'the bound row is still marked');
   assert.ok(marked.includes('codex-hud-b-2'), 'and it names its own address');
 }

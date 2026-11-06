@@ -2,8 +2,8 @@
  * SGR mouse reports from the HUD pane: ESC [ < button ; column ; row M
  * (press) or m (release).
  *
- * A click on the displayed [view] button toggles the view and the wheel cycles tool details (down forward,
- * up back), so neither needs the pane focused and a key. Motion, releases and
+ * A click on the displayed [view] button toggles the view. The caller maps
+ * the wheel to overview selection or help paging. Motion, releases and
  * other buttons are ignored; several wheel reports in one read (terminals
  * scale a notch) count once.
  */

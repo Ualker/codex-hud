@@ -32,7 +32,17 @@ function database(file: string): Database {
   return db;
 }
 
-parentPort!.on('message', ({ id, file, statements }: { id: number; file: string; statements: string[] }) => {
+parentPort!.on('message', (message: { type?: string; id: number; file: string; statements: string[] }) => {
+  if (message.type === 'resources') {
+    const memory = process.memoryUsage();
+    parentPort!.postMessage({ type: 'resources', resources: {
+      sampledAt: Date.now(), heapUsedMiB: memory.heapUsed / 1048576,
+      heapTotalMiB: memory.heapTotal / 1048576, externalMiB: memory.external / 1048576,
+      arrayBuffersMiB: memory.arrayBuffers / 1048576, handles: handles.size,
+    } });
+    return;
+  }
+  const { id, file, statements } = message;
   const before = getSqliteDiagnostics();
   let value: string | null = null;
   try {

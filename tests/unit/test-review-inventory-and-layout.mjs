@@ -74,7 +74,9 @@ try {
   assert.match(overview, /All 2.*1 need attention/);
   assert.doesNotMatch(overview, /private|scope/);
   const help = Array.from({ length: 30 }, (_, helpPage) => renderHelp({ ...data, helpPage }, 32, 5).map(stripAnsi).join(' ')).join(' ');
-  assert.match(help, /codex-hud --label NAME --reload --target SESSION/);
+  assert.match(help, /r: rename this HUD/);
+  assert.match(help, /Enter: save/);
+  assert.match(help, /Ctrl\+U: clear/);
   process.env.CODEX_HUD_ANIMATION = '0';
   const still = getSpinnerFrame();
   advanceSpinnerFrame(); advanceSpinnerFrame();

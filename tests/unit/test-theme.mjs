@@ -17,3 +17,12 @@ assert.deepEqual(render({ CODEX_HUD_TMUX_STYLE: 'blue-purple' }), themed);
 assert.deepEqual(render({ CODEX_HUD_THEME: 'blue-purple', NO_COLOR: '1' }), ['model', 'info', 'warning', 'error']);
 assert.match(render({ CODEX_HUD_THEME: 'default' })[0], /\x1b\[36m/);
 console.log('test-theme: PASS');
+
+const contrast = spawnSync(process.execPath, ['--input-type=module', '-e', `
+  const {colors} = await import('./dist/render/colors.js');
+  console.log(JSON.stringify([colors.dim('address'), colors.inverse(colors.bold('selection'))]));
+`], { env: { ...process.env, TERM: 'xterm-256color', NO_COLOR: '', CODEX_HUD_HIGH_CONTRAST: '1' }, encoding: 'utf8' });
+assert.equal(contrast.status, 0, contrast.stderr);
+const [address, selected] = JSON.parse(contrast.stdout);
+assert.equal(address, 'address', 'high contrast uses the terminal foreground for auxiliary text');
+assert.match(selected, /\x1b\[7m/, 'selection uses reverse video without a theme-specific background');

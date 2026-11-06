@@ -57,7 +57,7 @@ cat > "$FAKE_BIN_DIR/ps" <<FAKE
 #!/usr/bin/env bash
 if [[ -n "\${STUB_QUERY_LOG:-}" ]]; then printf 'ps %s\n' "\${1:-}" >> "\$STUB_QUERY_LOG"; fi
 case "\${1:-}" in
-  -axo)
+  -axww)
     if [[ -n "\${STUB_PS_TABLE:-}" ]]; then
       printf '%s\n' "\$STUB_PS_TABLE"
     fi

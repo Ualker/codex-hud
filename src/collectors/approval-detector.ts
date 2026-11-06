@@ -9,6 +9,8 @@
  */
 
 import { execFile } from 'child_process';
+import { createHash } from 'node:crypto';
+import { stripAnsi } from '../render/colors.js';
 
 import { startProbe } from '../utils/probe-latency.js';
 
@@ -28,6 +30,30 @@ export interface ApprovalProbeInput {
 }
 
 type CapturePane = (pane: string) => Promise<string | null>;
+
+const APPROVAL_TITLES = [
+  /Would you like to run the following command\?/i,
+  /Do you want to approve network access to\s+["“][^\n"”]+["”]\?/i,
+  /Would you like to grant these permissions\?/i,
+  /Would you like to make the following edits\?/i,
+  /[^\n]{1,100}\s+needs your approval\./i,
+  /\bApproval needed in\s+[^\n]+/i,
+];
+
+/** Only the prompt body and pending calls identify an approval. Cursor/choice
+ * changes and unrelated transcript text must not create another notification. */
+function approvalIdentity(screen: string, input: ApprovalProbeInput): string {
+  const lines = stripAnsi(screen).split('\n');
+  const start = lines.findIndex(line => APPROVAL_TITLES.some(pattern => pattern.test(line)));
+  const prompt: string[] = [];
+  for (const line of lines.slice(Math.max(0, start))) {
+    if (/^\s*(?:[>›]\s*)?(?:\d+\.\s*)?(?:Yes|No)\b/i.test(line) || /\bto confirm\b|\/agent\s+to switch threads\b/i.test(line)) break;
+    prompt.push(line.trim());
+  }
+  const calls = (input.toolActivity?.runningCalls ?? input.toolActivity?.recentCalls ?? [])
+    .filter(call => call.status === 'running').map(call => call.id).sort();
+  return createHash('sha256').update(JSON.stringify([input.turnActivity?.turnId, calls, prompt])).digest('hex');
+}
 
 export interface ApprovalDetectorOptions {
   mainPane?: string;
@@ -99,13 +125,7 @@ export function containsApprovalPrompt(screen: string): boolean {
     return true;
   }
 
-  const hasTitle = [
-    /Would you like to run the following command\?/i,
-    /Do you want to approve network access to\s+["“][^\n"”]+["”]\?/i,
-    /Would you like to grant these permissions\?/i,
-    /Would you like to make the following edits\?/i,
-    /[^\n]{1,100}\s+needs your approval\./i,
-  ].some((pattern) => pattern.test(screen));
+  const hasTitle = APPROVAL_TITLES.slice(0, -1).some((pattern) => pattern.test(screen));
   if (!hasTitle) {
     return false;
   }
@@ -143,6 +163,7 @@ export class ApprovalDetector {
   private readonly probeIntervalMs: number;
   private readonly capturePane: CapturePane;
   private approvalNeeded = false;
+  private approvalId: string | undefined;
   private lastProbeAtMs = Number.NEGATIVE_INFINITY;
   private probeInFlight = false;
   private generation = 0;
@@ -159,10 +180,17 @@ export class ApprovalDetector {
     return this.approvalNeeded;
   }
 
+  getApprovalId(): string | undefined {
+    // Keep the last identity while the prompt is absent: clearing it would
+    // reset the notifier's cooldown when the same prompt briefly flaps.
+    return this.approvalId;
+  }
+
   reset(): boolean {
     const changed = this.approvalNeeded;
     this.generation++;
     this.approvalNeeded = false;
+    this.approvalId = undefined;
     this.lastProbeAtMs = Number.NEGATIVE_INFINITY;
     return changed;
   }
@@ -206,10 +234,12 @@ export class ApprovalDetector {
         return false;
       }
       const next = containsApprovalPrompt(screen);
-      if (next === this.approvalNeeded) {
+      const nextId = next ? approvalIdentity(screen, input) : this.approvalId;
+      if (next === this.approvalNeeded && nextId === this.approvalId) {
         return false;
       }
       this.approvalNeeded = next;
+      this.approvalId = nextId;
       return true;
     } finally {
       this.probeInFlight = false;

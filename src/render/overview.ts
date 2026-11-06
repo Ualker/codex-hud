@@ -1,7 +1,7 @@
 /** Overview rows, column budgets and selection visibility. */
 import type { HudData, LayoutConfig, SessionOverviewItem } from '../types.js';
 import { filteredSessions, needsAttention } from '../ui/state.js';
-import { colors, theme, icons, remainingBar, getContextColor, padEnd,
+import { colors, theme, stripAnsi, remainingBar, getContextColor, padEnd,
   sanitizeTerminalText, truncate, truncateAnsi, truncateStart, visualLength } from './colors.js';
 import { renderHealthLine, renderRateLimitLine } from './lines/index.js';
 import { hudDetailsExpanded } from './detail-level.js';
@@ -101,6 +101,13 @@ export function renderOverviewLayout(
     protocolHealth: undefined,
     collectorHealth: { overview: data.collectorHealth?.overview },
   }, width);
+  const now = Date.now();
+  const quotaAlert = renderRateLimitLine(data, width, now);
+  const emptyStateWarnings = [
+    ...(quotaAlert ? [quotaAlert] : []),
+    ...(summaryLine ? [truncateAnsi(summaryLine, width)] : []),
+    ...(healthLine ? [healthLine] : []),
+  ];
   let allSessions = data.overview?.sessions;
   let scanning = false;
   if (!allSessions || allSessions.length === 0) {
@@ -114,24 +121,22 @@ export function renderOverviewLayout(
       scanning = true;
     } else {
       return [
-        ...(summaryLine ? [truncateAnsi(summaryLine, width)] : []),
-        healthLine ?? colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…'),
+        ...emptyStateWarnings,
+        ...(!healthLine ? [colors.dim(scanned ? 'No active sessions' : 'Looking for sessions…')] : []),
       ];
     }
   }
 
   allSessions = filteredSessions(allSessions, data.overviewFilter ?? 'all');
   if (!allSessions.length) return [
-    ...(summaryLine ? [truncateAnsi(summaryLine, width)] : []),
-    colors.dim('No sessions need attention · f: show all'),
+    ...emptyStateWarnings,
+    colors.dim(healthLine ? 'No matching cached sessions · f: show all' : 'No sessions need attention · f: show all'),
   ];
 
   // The weekly quota is the one number that describes the whole fleet rather
   // than any single row, and the overview is where the fleet is. Pressure
   // takes a row from the session list the way it does in the single view;
   // a calm reading only fills a row nothing else wanted.
-  const now = Date.now();
-  const quotaAlert = renderRateLimitLine(data, width, now);
   const quotaCalm = renderRateLimitLine(data, width, now, {
     includeBelowPressure: true,
   });
@@ -206,7 +211,7 @@ export function renderOverviewLayout(
       sanitizeTerminalText(
         session.projectName ?? session.cwd ?? shortId
       ) || shortId;
-    return truncate(project, 24);
+    return session.id === data.overviewSelfSessionId ? `[me] ${truncate(project, 19)}` : truncate(project, 24);
   });
   const desiredProjectWidth = Math.max(
     ...projectNames.map((name) => visualLength(name))
@@ -320,13 +325,9 @@ export function renderOverviewLayout(
     // Mark the row this HUD is bound to; the address column tells the rows
     // apart, but not which one you are already looking at.
     const selected = session.id === data.overviewSelectionId && Boolean(session.tmuxSession);
-    const marker = selected ? theme.info('> ') :
-      data.overviewSelfSessionId !== undefined &&
-      session.id === data.overviewSelfSessionId
-        ? theme.info(`${icons.bullet} `)
-        : session.tmuxSession ? colors.dim(process.env.CODEX_HUD_ASCII === '1' ? ': ' : '› ') : '  ';
+    const marker = selected ? theme.info('> ') : '  ';
     const row = truncateAnsi(marker + parts.join(columnSeparator), width);
-    return selected ? colors.underline(row.replace(/\x1b\[0m/g, '\x1b[0m\x1b[4m')) : row;
+    return selected ? colors.inverse(padEnd(stripAnsi(row), width)) : row;
   });
 
   if (scanningNote) {

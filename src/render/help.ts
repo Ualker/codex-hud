@@ -11,9 +11,9 @@ export function renderHelp(data: HudData, width: number, maxLines = 5): string[]
     return [
       theme.info('HUD help · ? close · Esc: close / return to Codex'),
       `${toggle}: switch view · t: tool text (${toolDetailsMode()}) · d: history/info (${details})`,
-      'Overview: j/k or arrows select · Enter: open selected · f all/attention',
+      'Overview: j/k, arrows or wheel select · Enter: open · f filter · [me] current',
       `c: native-status companion (${data.layoutPreset ?? 'standard'}) · saved for this HUD`,
-      'Rename: codex-hud --label NAME --reload --target SESSION',
+      'r: rename this HUD · Enter save · Esc cancel · Ctrl+U clear',
     ].map(row => truncateAnsi(row, width));
   }
   const entries = [
@@ -23,12 +23,13 @@ export function renderHelp(data: HudData, width: number, maxLines = 5): string[]
     `d: history/info (${details})`,
     `c: layout (${data.layoutPreset ?? 'standard'})`,
     'coexist: companion to native status',
-    'Overview: j/k or arrows select',
+    'Overview: j/k, arrows or wheel select',
+    '[me]: current session',
     'Enter: open selected session',
     'f: all / attention filter',
     'Esc: close / return to Codex',
-    'Rename a session from your shell:',
-    'codex-hud --label NAME --reload --target SESSION',
+    'r: rename this HUD',
+    'Enter: save · Ctrl+U: clear label',
     'Choices saved for this HUD',
   ].flatMap(entry => {
     // Wrap commands rather than truncating away required control arguments.
@@ -49,6 +50,6 @@ export function renderHelp(data: HudData, width: number, maxLines = 5): string[]
   return [
     theme.info(`HUD help ${page + 1}/${pages} · ? close`),
     ...entries.slice(page * pageSize, (page + 1) * pageSize),
-    theme.dim('j/k: help pages · Esc close'),
+    theme.dim('j/k or wheel: pages · Esc close'),
   ].map(row => truncateAnsi(row, width));
 }

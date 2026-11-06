@@ -1,6 +1,6 @@
 import { isRootRolloutForCwd } from './utils/rollout-wake.js';
 import { publishDiagnostics } from './utils/diagnostics.js';
-import { loadPreferences, savePreferences, normalizePreferences, filteredSessions, moveSelection, selectedSession, focusSession } from './ui/state.js';
+import { loadPreferences, savePreferences, saveWorkingDirectory, normalizePreferences, filteredSessions, moveSelection, selectedSession, focusSession } from './ui/state.js';
 import { installFatalHandlers } from './utils/fatal-error.js';
 /**
  * Codex HUD - Main entry point
@@ -11,6 +11,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import * as crypto from 'crypto';
+import { StringDecoder } from 'node:string_decoder';
+import { LabelEditor } from './ui/label-editor.js';
 import {
   collectGitStatusAsync,
   emptyGitStatus,
@@ -144,14 +146,16 @@ const PROJECT_CACHE_TTL_MS = 60_000;
 const OVERVIEW_CACHE_TTL_MS = 5000;
 
 // Current working directory for the HUD
-const HUD_CWD = process.env.CODEX_HUD_CWD || process.cwd();
-const HUD_CWD_REAL = (() => {
+const LAUNCH_CWD = process.env.CODEX_HUD_CWD || process.cwd();
+let HUD_CWD = LAUNCH_CWD;
+function realWorkingDirectory(cwd: string): string {
   try {
-    return fs.realpathSync(HUD_CWD);
+    return fs.realpathSync(cwd);
   } catch {
-    return HUD_CWD;
+    return cwd;
   }
-})();
+}
+let HUD_CWD_REAL = realWorkingDirectory(HUD_CWD);
 
 // Optional HUD session start time (for session isolation)
 const HUD_SESSION_START = (() => {
@@ -217,6 +221,7 @@ function noteWakeSignal(): void {
 
 let uiPreferences = normalizePreferences({});
 let helpVisible = false;
+let labelEditor: LabelEditor | undefined;
 let helpPage = 0;
 let overviewSelectionId: string | undefined;
 let uiNotice: string | undefined;
@@ -328,6 +333,7 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
     // The overview degrades to the mtime scan; never fail a binding on this.
   });
   agentActivityCollector.setRootSession(rolloutSession);
+  hudFileWatcher.setAgentRolloutPaths([]);
   cachedAgentActivity = undefined;
   delete collectorHealth.rollout;
   delete collectorHealth.agents;
@@ -373,11 +379,12 @@ const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
     collectedAt: new Date(0),
   },
   async () => {
+    const cwd = HUD_CWD;
     const forceAssetRefresh = forceNextAssetRefresh;
     forceNextAssetRefresh = false;
     try {
       const snapshot = await collectSlowProjectSnapshot(
-        HUD_CWD,
+        cwd,
         {
           runtimeHookOverrides: sessionFinder.getRuntimeHookOverrides(),
           runtimeHooksEnabled: sessionFinder.getRuntimeHooksEnabled(),
@@ -385,7 +392,7 @@ const slowProjectCache = new AsyncSnapshotCache<SlowProjectSnapshot>(
         },
         lastGoodConfig
       );
-      if (!snapshot.configError) {
+      if (cwd === HUD_CWD && !snapshot.configError) {
         lastGoodConfig = snapshot.config;
       }
       return snapshot;
@@ -455,11 +462,9 @@ const quotaTrend = new QuotaTrendTracker({
   stateFilePath: resolveHudStateFile(`quota-trend-${CODEX_DATA_NAMESPACE}.json`),
 });
 // One `git status` per repository per cadence across HUDs, not per HUD.
-const GIT_SHARE = `git-${crypto
-  .createHash('md5')
-  .update(HUD_CWD_REAL)
-  .digest('hex')
-  .slice(0, 12)}`;
+function gitShareKey(cwd: string): string {
+  return `git-${crypto.createHash('md5').update(cwd).digest('hex').slice(0, 12)}`;
+}
 function reviveGitStatus(raw: unknown): GitStatus | null {
   if (typeof raw !== 'object' || raw === null) {
     return null;
@@ -474,12 +479,14 @@ function reviveGitStatus(raw: unknown): GitStatus | null {
 const gitCache = new AsyncSnapshotCache(
   emptyGitStatus(),
   async () => {
-    const shared = readSharedSnapshot(GIT_SHARE, GIT_CACHE_TTL_MS, reviveGitStatus);
+    const cwd = HUD_CWD;
+    const shareKey = gitShareKey(HUD_CWD_REAL);
+    const shared = readSharedSnapshot(shareKey, GIT_CACHE_TTL_MS, reviveGitStatus);
     if (shared) {
       return shared;
     }
-    const fresh = await collectGitStatusAsync(HUD_CWD);
-    writeSharedSnapshot(GIT_SHARE, fresh);
+    const fresh = await collectGitStatusAsync(cwd);
+    writeSharedSnapshot(shareKey, fresh);
     return fresh;
   },
   {
@@ -491,6 +498,20 @@ const gitCache = new AsyncSnapshotCache(
     staleAfterMs: GIT_SLOW_MS * 1.5,
   }
 );
+
+function updateWorkingDirectory(cwd: string): void {
+  if (!path.isAbsolute(cwd) || cwd === HUD_CWD) return;
+  HUD_CWD = cwd;
+  HUD_CWD_REAL = realWorkingDirectory(cwd);
+  sessionFinder.setTargetCwd(HUD_CWD_REAL);
+  gitCache.reset(emptyGitStatus());
+  slowProjectCache.reset({ config: lastGoodConfig,
+    project: { ...initialProject, cwd, projectName: path.basename(cwd) }, collectedAt: new Date(0) });
+  void Promise.allSettled([
+    gitCache.refresh(true), refreshSlowProject(true),
+    saveWorkingDirectory(HUD_TMUX_SESSION, cwd), publishCurrentHudBinding(),
+  ]).then(() => renderNow());
+}
 
 const overviewCollector = new OverviewCollector();
 async function refreshOverviewData(): Promise<SessionOverview> {
@@ -634,6 +655,8 @@ async function refreshRolloutOnly(): Promise<boolean> {
   try {
     await parseRolloutSafely();
     if (generation !== bindingGeneration) return false;
+    const parsedSession = rolloutParser.getCached()?.session;
+    if (parsedSession?.id === session.sessionId && parsedSession.cwd) updateWorkingDirectory(parsedSession.cwd);
     recordCollectorSuccess('rollout');
     if (rolloutParser.getCached()?.pendingBytes === 0) notificationBaselineReady = true;
   } catch (error) {
@@ -674,6 +697,7 @@ function refreshAgents(): Promise<void> {
     try {
       const activity = await agentActivityCollector.collect(Date.now());
       if (generation !== bindingGeneration) return;
+      hudFileWatcher.setAgentRolloutPaths(agentActivityCollector.getTrackedRolloutPaths());
       cachedAgentActivity = activity;
       recordCollectorSuccess('agents');
     } catch (error) {
@@ -714,6 +738,7 @@ function collectData(): HudData {
   const baseData = {
     layoutPreset: uiPreferences.layout,
     sessionLabel: uiPreferences.label,
+    labelDraft: labelEditor?.value,
     helpVisible,
     helpPage,
     uiNotice: Date.now() < uiNoticeUntil ? uiNotice : undefined,
@@ -970,6 +995,7 @@ function observeNotifications(data: HudData): void {
     {
       sessionId: sessionFinder.getCurrentSession()?.sessionId,
       turnId: data.turnActivity?.turnId,
+      approvalId: approvalDetector.getApprovalId(),
       quotaScope: rateLimitNotificationScope(CODEX_DATA_NAMESPACE, data.rateLimits),
       tmuxSession: HUD_TMUX_SESSION,
       cwd: HUD_CWD,
@@ -1177,6 +1203,21 @@ function setupKeyListener(): void {
   // copy-mode over it, which froze the frame on screen.
   enableMouseReporting();
   const parseInput = createMouseInputParser(isViewToggleClick);
+  const decoder = new StringDecoder('utf8');
+  const editLabel = (input: string): void => {
+    const action = labelEditor?.input(input);
+    if (action === 'shutdown') { void shutdown(); return; }
+    if (action) {
+      if (action === 'save') {
+        uiPreferences = normalizePreferences({ ...uiPreferences, label: labelEditor?.value ?? '' });
+        persistUi();
+        void publishCurrentHudBinding().catch(() => undefined);
+      }
+      labelEditor = undefined;
+      process.stdout.write('\x1b[?2004l');
+      showUiNotice(action === 'save' ? 'Label saved · current HUD' : 'Rename cancelled');
+    } else renderNow();
+  };
   const handleKey = (input: string): void => {
     // Raw mode suppresses the terminal's SIGINT; handle Ctrl+C explicitly so
     // the pane stays killable and the cursor is restored on the way out.
@@ -1191,6 +1232,14 @@ function setupKeyListener(): void {
       return;
     }
     if (input === '\u001b[O') return;
+    if (input === 'r' || input === 'R') {
+      helpVisible = false;
+      uiNoticeUntil = 0;
+      labelEditor = new LabelEditor(uiPreferences.label);
+      process.stdout.write('\x1b[?2004h');
+      renderNow();
+      return;
+    }
     if (input === '?') {
       helpVisible = !helpVisible;
       helpPage = 0;
@@ -1268,20 +1317,30 @@ function setupKeyListener(): void {
   process.stdin.on('data', (data: Buffer) => {
     noteWakeSignal();
     if (escapeTimer) clearTimeout(escapeTimer);
-    const { mouse, keys } = parseInput(data.toString('utf8'));
+    const { mouse, keys } = parseInput(decoder.write(data));
     revealStatusHint();
-    if (mouse.handled) {
+    const editing = labelEditor !== undefined;
+    if (editing) {
+      editLabel(keys);
+    } else if (mouse.handled) {
       if (mouse.click) toggleDisplayMode();
+      else if (mouse.wheel && (helpVisible || displayMode === 'overview')) handleKey(mouse.wheel > 0 ? 'j' : 'k');
       else showModeNotice();
     }
     // A transport read can contain several key presses. Only recognize a
     // complete stream of HUD keys; arbitrary pasted text is never a command.
-    const tokens = keys.match(/\u001b\[[ABIO]|[?cdtfjkCDTFJK\r\n\u0003\u0014]/g) ?? [];
-    if (tokens.join('') === keys) {
-      for (const key of tokens) handleKey(key);
+    const tokens = keys.match(/\u001b\[[ABIO]|[?cdtfjkrCDTFJKR\r\n\u0003\u0014]/g) ?? [];
+    if (!editing && tokens.join('') === keys) {
+      for (let index = 0; index < tokens.length; index++) {
+        if (labelEditor) { editLabel(tokens.slice(index).join('')); break; }
+        handleKey(tokens[index]);
+      }
     }
     escapeTimer = setTimeout(() => {
-      if (parseInput.flush() === '\u001b') handleKey('\u001b');
+      if (parseInput.flush() === '\u001b') {
+        if (labelEditor) editLabel('\u001b');
+        else handleKey('\u001b');
+      }
     }, 80);
   });
 }
@@ -1298,7 +1357,8 @@ async function main(): Promise<void> {
   const inactivityTimeoutMs = parseAgentInactivityTimeoutMs(
     process.env[AGENT_INACTIVITY_TIMEOUT_ENV]
   );
-  agentActivityCollector = new AgentActivityCollector({ inactivityTimeoutMs });
+  agentActivityCollector = new AgentActivityCollector({ inactivityTimeoutMs, idleCheckIntervalMs: 5000 });
+  await publishHudBinding(HUD_TMUX_SESSION, null, null, HUD_CWD);
 
   // Set up signal handlers
   process.on('SIGINT', () => void shutdown());
@@ -1344,17 +1404,18 @@ async function main(): Promise<void> {
   hudFileWatcher.onRolloutChange(async (rolloutPath, event) => {
     const generation = bindingGeneration;
     const currentPath = sessionFinder.getCurrentSession()?.path;
-    const candidate = rolloutPath !== currentPath && await isRootRolloutForCwd(rolloutPath,HUD_CWD_REAL);
+    const trackedAgent = agentActivityCollector.noteRolloutChanged(rolloutPath);
+    const candidate = !trackedAgent && rolloutPath !== currentPath && await isRootRolloutForCwd(rolloutPath,HUD_CWD_REAL);
     if (candidate) sessionFinder.setDeepIdle(false);
     // Parsing the bound file must not wait for unrelated process/SQLite
     // probes. Add/unlink and other identity evidence still recheck binding.
-    if (rolloutPath !== currentPath || event !== 'change') {
+    if (!trackedAgent && (rolloutPath !== currentPath || event !== 'change')) {
       await sessionFinder.noteRolloutAppeared(rolloutPath);
       await sessionFinder.check(candidate || event === 'unlink');
     }
     const relevant = generation !== bindingGeneration ||
       rolloutPath === sessionFinder.getCurrentSession()?.path ||
-      agentActivityCollector.isTrackedRollout(rolloutPath);
+      trackedAgent;
     if (relevant || candidate || displayMode === 'overview') noteWakeSignal();
     if (relevant) {
       await refreshRolloutAndAgents();

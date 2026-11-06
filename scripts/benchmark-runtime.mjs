@@ -13,11 +13,14 @@ const option = (key, fallback) => args.includes(key) ? args[args.indexOf(key) + 
 const instances = option('--instances', '1,5,20').split(',').map(Number);
 const seconds = Number(option('--seconds', '12'));
 const historyMiB = Number(option('--history-mib', '8'));
+const idleSeconds = Number(option('--idle-seconds', '0'));
 if (instances.some(n => !Number.isInteger(n) || n < 1 || n > 40) ||
   !Number.isFinite(seconds) || seconds < 5 || seconds > 120 ||
-  !Number.isInteger(historyMiB) || historyMiB < 1 || historyMiB > 64) {
-  throw new Error('instances: 1..40; seconds: 5..120; history-mib: 1..64');
+  !Number.isInteger(historyMiB) || historyMiB < 1 || historyMiB > 64 ||
+  !Number.isFinite(idleSeconds) || idleSeconds < 0 || idleSeconds > 120) {
+  throw new Error('instances: 1..40; seconds: 5..120; history-mib: 1..64; idle-seconds: 0..120');
 }
+const sleeperSeconds = Math.ceil(seconds + idleSeconds + 60);
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hud-runtime-bench-')));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function stopChild(child) {
@@ -31,7 +34,7 @@ function stopChild(child) {
 const encode = (type, payload) => JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + '\n';
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !/^(CODEX_|CMUX_|TMUX|NODE_OPTIONS|NODE_COMPILE_CACHE)/.test(key)));
-const report = { fixtureVersion: 2, node: process.version, platform: `${process.platform}/${process.arch}`, seconds, historyMiB, journalMode: 'wal',
+const report = { fixtureVersion: 3, node: process.version, platform: `${process.platform}/${process.arch}`, seconds, idleSeconds, historyMiB, journalMode: 'wal',
   note: 'RSS is summed per process and includes shared pages; CPU excludes subprocess CPU. Event-loop p95 is the worst per-HUD p95. Startup and continuous appends are included.', runs: [] };
 let succeeded = false;
 try {
@@ -52,7 +55,7 @@ try {
     let writer;
     let appendBatches = 0;
     try {
-      tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'bootstrap', 'exec sleep 180']);
+      tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'bootstrap', `exec sleep ${sleeperSeconds}`]);
       const serverPid = tmux(['display-message', '-p', '#{pid}']);
       const sqlQuote = value => `'${String(value).replaceAll("'", "''")}'`;
       const sql = (file, statement) => execFileSync('sqlite3', [path.join(codexHome, file), statement], { stdio: 'pipe' });
@@ -75,9 +78,9 @@ try {
         const name = `codex-hud-benchmark-${i}`;
         // A harmless sleeper with Codex's argv[0] exercises the live-process
         // cache; an ordinary sleep would benchmark a permanently exited CLI.
-        const main = tmux(['new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}', "exec /bin/bash -c 'exec -a codex sleep 180'"]);
+        const main = tmux(['new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}', `exec /bin/bash -c 'exec -a codex sleep ${sleeperSeconds}'`]);
         const mainPid = tmux(['display-message', '-p', '-t', main, '#{pane_pid}']);
-        const pane = tmux(['split-window', '-d', '-t', name, '-P', '-F', '#{pane_id}', 'exec sleep 180']);
+        const pane = tmux(['split-window', '-d', '-t', name, '-P', '-F', '#{pane_id}', `exec sleep ${sleeperSeconds}`]);
         tmux(['set-option', '-t', name, '@codex_hud_pane', pane]);
         tmux(['set-option', '-t', name, '@codex_hud_main_pane', main]);
         sql('state_5.sqlite', `INSERT INTO threads VALUES (${sqlQuote(id)},${sqlQuote(rollout)},'cli',0);`);
@@ -106,6 +109,9 @@ try {
           encode('event_msg', { type: 'task_complete', turn_id: `turn-${appendBatches}` }));
       }, 200);
       await delay(seconds * 1000);
+      clearInterval(writer);
+      const activeMetrics = children.map(item => JSON.parse(fs.readFileSync(item.metrics, 'utf8')));
+      if (idleSeconds > 0) await delay(idleSeconds * 1000);
       for (const item of children) {
         assert.equal(item.child.exitCode, null, item.errors());
         assert.match(item.output(), /project-/, 'real overview must render fixture sessions');
@@ -118,7 +124,8 @@ try {
       }
       clearInterval(writer);
       await Promise.all(children.map(({ child }) => stopChild(child)));
-      const metrics = children.map(item => JSON.parse(fs.readFileSync(item.metrics, 'utf8')));
+      const metrics = children.map((item, index) => ({ ...JSON.parse(fs.readFileSync(item.metrics, 'utf8')),
+        ...(idleSeconds > 0 ? { activePhase: activeMetrics[index] } : {}) }));
       assert.ok(metrics.every(item => item.probes.ps?.count > 0 && item.probes.sqlite?.count > 0),
         'benchmark must exercise process binding and SQLite, not just render frames');
       assert.ok(metrics.every(item => item.sqlite.failures === 0),

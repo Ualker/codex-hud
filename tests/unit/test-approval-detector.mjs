@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { HudNotifier } from '../../dist/notify.js';
 
 import {
   ApprovalDetector,
@@ -177,5 +178,42 @@ assert.equal(
   'a tool completion invalidates a pane capture that was already running'
 );
 assert.equal(resolvedCallDetector.isApprovalNeeded(), false);
+
+// Exercise detector identities through the real notification cooldown.
+let identityScreen = commandApproval;
+const identityDetector = new ApprovalDetector({ mainPane: '%10', probeIntervalMs: 0,
+  capturePane: async () => identityScreen });
+const notifier = new HudNotifier({ command: 'fixture', runCommand: async () => {} });
+const observe = time => notifier.observe({
+  'approval-needed': identityDetector.isApprovalNeeded(), 'turn-interrupted': false,
+  'limit-reached': false, 'turn-completed': false, 'turn-failed': false,
+}, { sessionId: 'fixture', turnId: 'same-turn', cwd: '/fixture', approvalId: identityDetector.getApprovalId() }, time);
+observe(now);
+await identityDetector.refresh(stalled, now);
+const firstIdentity = identityDetector.getApprovalId();
+assert.deepEqual(observe(now + 1), ['approval-needed']);
+identityScreen = 'ordinary transcript before the prompt\n' + commandApproval.replace('> 1.', '  1.');
+assert.equal(await identityDetector.refresh(stalled, now + 2), false);
+assert.equal(identityDetector.getApprovalId(), firstIdentity, 'cursor and preceding transcript are not approval identity');
+assert.deepEqual(observe(now + 2), []);
+identityScreen = 'ordinary transcript';
+await identityDetector.refresh(stalled, now + 3);
+observe(now + 3);
+identityScreen = commandApproval;
+await identityDetector.refresh(stalled, now + 4);
+assert.deepEqual(observe(now + 4), [], 'a reappearing identical prompt retains its cooldown');
+await identityDetector.refresh({ ...stalled, turnActivity: { ...stalled.turnActivity, phase: 'thinking' } }, now + 5);
+observe(now + 5);
+await identityDetector.refresh(stalled, now + 6);
+assert.deepEqual(observe(now + 6), [], 'a structural candidate flap also retains cooldown');
+identityScreen = commandApproval.replace('$ npm test', '$ npm run build');
+await identityDetector.refresh(stalled, now + 7);
+assert.notEqual(identityDetector.getApprovalId(), firstIdentity);
+assert.deepEqual(observe(now + 7), ['approval-needed'], 'a changed prompt can notify in the same turn');
+await identityDetector.refresh({ ...stalled, toolActivity: { ...stalled.toolActivity,
+  recentCalls: stalled.toolActivity.recentCalls.map(call => ({ ...call, id: 'call-2' })) } }, now + 8);
+assert.deepEqual(observe(now + 8), ['approval-needed'], 'a different call can notify with the same prompt');
+identityDetector.reset();
+assert.equal(identityDetector.getApprovalId(), undefined, 'rebind discards the previous session identity');
 
 console.log('test-approval-detector: PASS');

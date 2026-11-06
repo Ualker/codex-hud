@@ -264,6 +264,7 @@ export class HudFileWatcher {
   private shellSnapshotWatcher: FileWatcher | null = null;
   private rolloutWatcher: FileWatcher | null = null;
   private currentRolloutPath: string | null = null;
+  private agentRolloutPaths = new Set<string>();
 
   private onConfigChangeCallbacks: (() => void | Promise<void>)[] = [];
   private onRolloutChangeCallbacks: FileChangeCallback[] = [];
@@ -341,11 +342,15 @@ export class HudFileWatcher {
     this.onRolloutChangeCallbacks.push(callback);
   }
 
+  setAgentRolloutPaths(paths: readonly string[]): void {
+    this.agentRolloutPaths = new Set(paths);
+  }
+
   private startSessionWatcher(): void {
     this.sessionWatcher = createSessionWatcher();
     this.sessionWatcher.onChange((filePath, event) => {
       // New rollout file added - could be a new session starting
-      if (event === 'add' && filePath.includes('rollout-')) {
+      if ((event === 'add' && filePath.includes('rollout-')) || this.agentRolloutPaths.has(filePath)) {
         // Notify so the main app can check if this is a more recent session
         this.notifyRolloutChange(filePath, event);
       }
