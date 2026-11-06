@@ -23,8 +23,16 @@ try {
   assert.equal(fs.readFileSync(rc, 'utf8'), before, 'legacy tests leave shell configuration intact');
   assert.equal(fs.existsSync(marker), false, 'legacy tests never connect to tmux');
 
-  // A harmless tmux substitute gets the benchmark to its missing-SQLite
-  // failure path. No real tmux server or user database is involved.
+  // Preserve the SQLite fallback when Node needs it, but leave Git absent.
+  // The dependency failure must retain evidence without touching user tmux.
+  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+    const cli = path.join(directory, 'sqlite3');
+    try {
+      fs.accessSync(cli, fs.constants.X_OK);
+      fs.symlinkSync(cli, path.join(root, 'sqlite3'));
+      break;
+    } catch { /* Built-in SQLite does not require the CLI. */ }
+  }
   fs.writeFileSync(path.join(root, 'tmux'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const failed = spawnSync(process.execPath, [path.join(repo, 'scripts/benchmark-runtime.mjs'),
     '--instances', '1', '--seconds', '5', '--history-mib', '1'], { env, encoding: 'utf8', timeout: 10000 });
@@ -33,7 +41,7 @@ try {
   assert.ok(retained, failed.stderr);
   assert.equal(path.dirname(retained), fs.realpathSync(os.tmpdir()));
   assert.ok(path.basename(retained).startsWith('hud-runtime-bench-'));
-  assert.match(fs.readFileSync(path.join(retained, 'failure.txt'), 'utf8'), /sqlite3.*ENOENT/);
+  assert.match(fs.readFileSync(path.join(retained, 'failure.txt'), 'utf8'), /git.*ENOENT/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(retained, 'partial-report.json'), 'utf8')).fixtureVersion, 4);
   console.log('test-review-diagnostic-safety: PASS (retired scripts, retained benchmark failure)');
 } finally {

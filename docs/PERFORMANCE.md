@@ -21,7 +21,7 @@
 
 ## 2026-10-15：完整运行时基准
 
-运行 `npm run bench:runtime`；参数示例：`node scripts/benchmark-runtime.mjs --instances 1,5,20 --seconds 12 --history-mib 8`。需要 tmux、Git 和 sqlite3。每组启动真实 HUD 进程、私有 tmux server、临时 Git 仓库和 SQLite 数据库；模拟主进程只运行 `sleep`，不调用 Codex，也不读取用户会话。每份合成 rollout 含约 8 MiB 历史，测量期间每 200 ms 追加一次状态，每组共 59 次。日志模式为 WAL，与本机 Codex 的 logs/state 数据库一致。
+运行 `npm run bench:runtime`；参数示例：`node scripts/benchmark-runtime.mjs --instances 1,5,20 --seconds 12 --history-mib 8`。需要 tmux、Git，以及 Node 内置 SQLite 或 sqlite3 CLI。每组启动真实 HUD 进程、私有 tmux server、临时 Git 仓库和 SQLite 数据库；模拟主进程只运行 `sleep`，不调用 Codex，也不读取用户会话。每份合成 rollout 含约 8 MiB 历史，测量期间每 200 ms 追加一次状态，每组共 59 次。日志模式为 WAL，与本机 Codex 的 logs/state 数据库一致。
 
 本机 macOS arm64、Node v24.21.0；测试套件结束后单独采样，包含冷启动、进程绑定、SQLite、Git、watcher 和 Overview。原始汇总见 [performance-2026-10-15.json](./performance-2026-10-15.json)。
 
