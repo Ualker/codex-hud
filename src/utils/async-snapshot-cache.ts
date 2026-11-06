@@ -27,6 +27,7 @@ export class AsyncSnapshotCache<T> {
   private lastSuccessAtMs = 0;
   private lastError: string | undefined;
   private inFlight: Promise<T> | null = null;
+  private generation = 0;
   private readonly now: () => number;
   private readonly staleAfterMs: number;
   private readonly errorRetryMs: number;
@@ -47,6 +48,17 @@ export class AsyncSnapshotCache<T> {
 
   get(): T {
     return this.value;
+  }
+
+  /** Drop data from a previous identity without letting its in-flight load
+   * overwrite the replacement (for example, when Codex enters a worktree). */
+  reset(initialValue: T): void {
+    this.generation++;
+    this.value = initialValue;
+    this.lastAttemptAtMs = 0;
+    this.lastSuccessAtMs = 0;
+    this.lastError = undefined;
+    this.inFlight = null;
   }
 
   refresh(force: boolean = false): Promise<T> {
@@ -70,15 +82,17 @@ export class AsyncSnapshotCache<T> {
     }
 
     this.lastAttemptAtMs = now;
+    const generation = this.generation;
     const request = this.loader()
       .then((value) => {
+        if (generation !== this.generation) return this.value;
         this.value = value;
         this.lastSuccessAtMs = this.now();
         this.lastError = undefined;
         return value;
       })
       .catch((error: unknown) => {
-        this.lastError = errorSummary(error);
+        if (generation === this.generation) this.lastError = errorSummary(error);
         throw error;
       })
       .finally(() => {

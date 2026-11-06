@@ -497,7 +497,7 @@ build_hud() {
     # Check if node_modules exists
     if [[ ! -d "$HUD_DIR/node_modules" ]]; then
         step "Installing dependencies..."
-        (cd "$HUD_DIR" && npm install) || error "Failed to install dependencies"
+        (cd "$HUD_DIR" && npm ci) || error "Failed to install dependencies"
     fi
     
     # Check if we need to build
@@ -515,13 +515,32 @@ build_hud() {
 
 # Get the current working directory for Codex
 get_cwd() {
-    pwd
+    local directory="$PWD"
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --) break ;;
+            -C|--cd)
+                [[ "$#" -ge 2 ]] || return 1
+                directory="$2"
+                shift 2
+                ;;
+            --cd=*) directory="${1#--cd=}"; shift ;;
+            -C?*) directory="${1#-C}"; directory="${directory#=}"; shift ;;
+            -c|--config|-p|--profile|-m|--model|-s|--sandbox|-a|--ask-for-approval|\
+            -i|--image|--enable|--disable|--local-provider|--add-dir|--remote|--remote-auth-token-env)
+                [[ "$#" -ge 2 ]] || return 1
+                shift 2
+                ;;
+            *) shift ;;
+        esac
+    done
+    (cd -- "$directory" && pwd)
 }
 
 # Get the first pane ID in the session
 get_primary_pane_id() {
     local session_name="${1:-$SESSION_NAME}"
-    tmux list-panes -t "$session_name" -F "#{pane_id}" 2>/dev/null | head -n1
+    tmux list-panes -s -t "$session_name" -F "#{pane_id}" 2>/dev/null | head -n1
 }
 
 # Return 0 if a pane belongs to a session
@@ -533,7 +552,7 @@ pane_exists_in_session() {
         return 1
     fi
 
-    tmux list-panes -t "$session_name" -F "#{pane_id}" 2>/dev/null | grep -Fx "$pane_id" >/dev/null
+    tmux list-panes -s -t "$session_name" -F "#{pane_id}" 2>/dev/null | grep -Fx "$pane_id" >/dev/null
 }
 
 # Get the main Codex pane ID for a session
@@ -551,7 +570,7 @@ get_main_pane_id_for_session() {
 
     hud_pane=$(tmux show-option -t "$session_name" -qv @codex_hud_pane)
     if [[ -n "$hud_pane" ]]; then
-        fallback_main=$(tmux list-panes -t "$session_name" -F "#{pane_id}" 2>/dev/null | grep -v "^${hud_pane}$" | head -n1 || true)
+        fallback_main=$(tmux list-panes -s -t "$session_name" -F "#{pane_id}" 2>/dev/null | grep -v "^${hud_pane}$" | head -n1 || true)
         if [[ -n "$fallback_main" ]]; then
             echo "$fallback_main"
             return 0
@@ -929,6 +948,7 @@ HUD_PASSTHROUGH_ENV_VARS=(
     CODEX_HUD_LAYOUT
     CODEX_HUD_LABEL
     CODEX_HUD_THEME
+    CODEX_HUD_HIGH_CONTRAST
     CODEX_HUD_TMUX_STYLE
     CODEX_HUD_HIDE_TITLES
     CODEX_HUD_HEIGHT_FIT
@@ -1012,7 +1032,9 @@ create_session() {
     local codex_args=("$@")
     local cwd_escaped
     local bind_toggle
-    cwd_escaped=$(printf "%q" "$cwd")
+    # Keep argv relative to the caller. Codex applies --cd itself exactly once;
+    # only the HUD and session identity use the effective working directory.
+    cwd_escaped=$(printf "%q" "$PWD")
     bind_toggle=$(resolve_bind_toggle) || return 1
     local hud_history_limit="${CODEX_HUD_HISTORY_LIMIT:-10000}"
     if ! [[ "$hud_history_limit" =~ ^[0-9]+$ ]] || [[ "$hud_history_limit" -lt 100 ]]; then
@@ -1296,12 +1318,25 @@ main() {
     
     # Build HUD if needed
     build_hud
+    # Both panes must resolve relative data roots from the original caller,
+    # even when --cd makes the HUD start in another directory.
+    local data_var
+    for data_var in "${CODEX_DATA_ENV_VARS[@]}"; do
+        if [[ -n "${!data_var:-}" && "${!data_var}" != /* ]]; then
+            export "$data_var=$PWD/${!data_var}"
+        fi
+    done
     DATA_NAMESPACE=$(node "$HUD_DIR/dist/namespace.js" "${CODEX_HOME:-}" "${CODEX_SESSIONS_PATH:-}" "$HOME" "$PWD")
     [[ "$DATA_NAMESPACE" =~ ^[a-f0-9]{16}$ ]] || error "Unable to resolve Codex data namespace."
     
     # Get current working directory
     local cwd
-    cwd=$(get_cwd)
+    cwd=$(get_cwd "${codex_args[@]}") || error "Unable to resolve Codex working directory."
+    PROJECT_SLUG=$(session_project_slug "$cwd")
+    SESSION_HASH=$(hash_cwd "$cwd")
+    LEGACY_SESSION_PREFIX="codex-hud-${SESSION_HASH}"
+    SESSION_PREFIX="codex-hud-${PROJECT_SLUG}-${SESSION_HASH}"
+    SESSION_NAME="${SESSION_PREFIX}-$(date +%Y%m%d%H%M%S)-$$"
     
     local has_codex_args="0"
     if [[ "${#codex_args[@]}" -gt 0 ]]; then
@@ -1383,6 +1418,8 @@ Options:
 HUD Pane Mouse and Keys:
   Click [view]        Toggle single/overview; clicks on content only focus the pane
   d (HUD focused)     Toggle compact/full HUD details (independent of tool details)
+  r (HUD focused)     Rename this HUD; Enter saves, Esc cancels, Ctrl+U clears
+  Wheel               Select overview rows or turn help pages
   Prefix+H            Toggle the view from the Codex pane (installed while the
                       key is unbound; CODEX_HUD_BIND_TOGGLE=0 skips, 1 forces)
   Ctrl+T / t          The same two actions from the keyboard once the pane is focused
@@ -1428,6 +1465,7 @@ Environment Variables:
                       name in CODEX_HUD_EVENT. Transitions only. (default: unset)
   CODEX_HUD_SHOW_OTHER_AGENT_SKILLS Show non-Codex .agents skill count (default: 0)
   CODEX_HUD_ASCII      Use ASCII status glyphs (default: 0)
+  CODEX_HUD_HIGH_CONTRAST Use terminal foreground instead of dim metadata (default: 0)
   NO_COLOR             Disable ANSI colors when set
 
 Requirements:
@@ -1545,7 +1583,7 @@ list_sessions() {
     # Recency is informational; automatic attachment selects detached sessions.
     local newest_here
     newest_here=$(printf '%s\n' "$rows" | cut -d'|' -f1 | grep -E "^(${SESSION_PREFIX}|${LEGACY_SESSION_PREFIX})-" | sort | tail -n1)
-    process_table=$(ps -axo pid=,ppid=,etime=,comm=,command= 2>/dev/null) || process_table=""
+    process_table=$(ps -axww -o pid=,ppid=,etime=,comm=,command= 2>/dev/null) || process_table=""
     dist_mtime=$(file_mtime_epoch "$HUD_DIR/dist/index.js") || dist_mtime=""
     now=$(date +%s)
 
@@ -1663,14 +1701,14 @@ resolve_hud_node_pid() {
     local session_name="$1"
     local hud_pane="$2"
     local pane_pid
-    pane_pid=$(tmux list-panes -t "$session_name" -F "#{pane_id} #{pane_pid}" 2>/dev/null \
+    pane_pid=$(tmux list-panes -s -t "$session_name" -F "#{pane_id} #{pane_pid}" 2>/dev/null \
         | awk -v target="$hud_pane" '$1 == target { print $2; exit }')
     if ! [[ "$pane_pid" =~ ^[0-9]+$ ]]; then
         return 1
     fi
 
     local process_row
-    process_row=$(ps -axo pid=,ppid=,etime=,comm=,command= 2>/dev/null | hud_process_from_table "$pane_pid") || return 1
+    process_row=$(ps -axww -o pid=,ppid=,etime=,comm=,command= 2>/dev/null | hud_process_from_table "$pane_pid") || return 1
     [[ -n "$process_row" ]] || return 1
     printf '%s\n' "${process_row%% *}"
 }

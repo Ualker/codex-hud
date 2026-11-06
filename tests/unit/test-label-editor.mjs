@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import { LabelEditor } from '../../dist/ui/label-editor.js';
+import { renderLabelEditor } from '../../dist/render/label-editor.js';
+import { visualLength } from '../../dist/render/colors.js';
+
+const editor = new LabelEditor('old');
+editor.input('\x15');
+editor.input('任务 👨‍👩‍👧‍👦');
+editor.input('\x7f');
+assert.equal(editor.value, '任务 ', 'backspace removes one whole grapheme');
+editor.input('\x1b[20');
+editor.input('0~jkt\n\x1b[31m新名称\x1b[0m\x1b[20');
+assert.equal(editor.value, '任务 ', 'partial paste is not a command');
+editor.input('1~');
+assert.equal(editor.value, '任务 jkt 新名称');
+assert.equal(editor.input('\r'), 'save');
+const cancelled = new LabelEditor('kept');
+assert.equal(cancelled.input('\x1b'), 'cancel');
+const bounded = new LabelEditor('');
+bounded.input('😀'.repeat(100));
+assert.equal(Array.from(bounded.value).length, 80);
+for (const width of [16, 28, 80]) assert.ok(renderLabelEditor(bounded.value, width).every(line => visualLength(line) <= width));
+console.log('test-label-editor: PASS');

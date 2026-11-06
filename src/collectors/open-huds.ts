@@ -17,6 +17,8 @@ import { execFile } from 'child_process';
 
 import { startProbe } from '../utils/probe-latency.js';
 import { getCodexDataNamespace } from '../utils/codex-path.js';
+import { getProcessStartTimesMs } from './process-start-times.js';
+import { isProcessAlive } from './codex-liveness.js';
 
 /**
  * Matches the pane-probe timeout in session-finder, for the same measured
@@ -53,6 +55,7 @@ interface BoundPayload {
   tmuxSession: string;
   sessionId: string;
   ownerPid?: number;
+  ownerStartedAt?: number;
   rolloutPath?: string;
   cwd?: string;
   approvalNeeded?: boolean;
@@ -118,12 +121,45 @@ function tmux(args: readonly string[]): Promise<string | null> {
 // a rebind could still land after it, leaving a stale advertisement behind.
 let publishQueue: Promise<unknown> = Promise.resolve();
 const publishedValues = new Map<string, string>();
+let ownerStart: Promise<number | undefined> | undefined;
+
+function getOwnerStart(): Promise<number | undefined> {
+  return ownerStart ??= getProcessStartTimesMs([String(process.pid)]).then(starts => starts.get(String(process.pid)));
+}
+
+interface OwnerIdentity {
+  ownerPid?: number;
+  ownerStartedAt?: number;
+}
+type DecodedBinding = OpenHudBinding & OwnerIdentity & { namespace?: string };
+
+async function liveOwners(bindings: readonly OwnerIdentity[]): Promise<Set<OwnerIdentity>> {
+  const alive = bindings.filter(binding => binding.ownerPid && isProcessAlive(String(binding.ownerPid)));
+  const starts = await getProcessStartTimesMs(alive
+    .filter(binding => binding.ownerStartedAt !== undefined && binding.ownerPid !== process.pid)
+    .map(binding => String(binding.ownerPid)));
+  // This process cannot reuse its own PID while running. Reuse its birth
+  // time instead of spawning ps every time a one-HUD overview refreshes.
+  if (alive.some(binding => binding.ownerPid === process.pid && binding.ownerStartedAt !== undefined)) {
+    const selfStart = await getOwnerStart();
+    if (selfStart !== undefined) starts.set(String(process.pid), selfStart);
+  }
+  return new Set(alive.filter(binding => binding.ownerStartedAt === undefined ||
+    starts.get(String(binding.ownerPid)) === binding.ownerStartedAt));
+}
+
+/** Also used when activating a cached overview row. */
+export async function isHudBindingOwnerAlive(binding: OwnerIdentity): Promise<boolean> {
+  if (binding.ownerPid === undefined) return true; // Legacy publisher.
+  if (!Number.isInteger(binding.ownerPid) || binding.ownerPid <= 0) return false;
+  return (await liveOwners([binding])).has(binding);
+}
 
 /**
  * Publish this HUD's binding onto its own tmux session. Called on every
  * binding change; a missing tmux session name simply makes it a no-op.
  */
-export function publishHudBinding(
+export async function publishHudBinding(
   tmuxSession: string | undefined,
   sessionId: string | null,
   rolloutPath: string | null,
@@ -135,8 +171,11 @@ export function publishHudBinding(
   label?: string
 ): Promise<void> {
   if (!tmuxSession) {
-    return Promise.resolve();
+    return;
   }
+
+  // Resolve once, including unbind calls, so concurrent calls keep their order.
+  const ownerStartedAt = await getOwnerStart();
 
   const payload: BoundPayload | null = sessionId
     ? {
@@ -144,6 +183,7 @@ export function publishHudBinding(
         namespace: getCodexDataNamespace(),
         sessionId,
         ownerPid: process.pid,
+        ...(ownerStartedAt !== undefined ? { ownerStartedAt } : {}),
         ...(label ? { label } : {}),
         ...(rolloutPath ? { rolloutPath } : {}),
         ...(cwd ? { cwd } : {}),
@@ -158,16 +198,24 @@ export function publishHudBinding(
     : '';
 
   const previous = publishedValues.get(tmuxSession);
-  if (!payload && !previous) return Promise.resolve();
   if (payload) publishedValues.set(tmuxSession, value);
   else publishedValues.delete(tmuxSession);
-  const next = publishQueue.then(() => {
+  const next = publishQueue.then(async () => {
     if (payload) return tmux(['set-option', '-t', tmuxSession, '-q', BOUND_OPTION, value]);
+    let expected = previous;
+    if (!expected) {
+      // A killed predecessor cannot run its shutdown handler. A fresh,
+      // unbound HUD may remove that advertisement, but never a live owner's.
+      expected = (await tmux(['show-option', '-qv', '-t', tmuxSession, BOUND_OPTION]))?.trim();
+      if (!expected) return;
+      const old = decodeBinding(expected);
+      if (!old?.ownerPid || (await liveOwners([old])).has(old)) return;
+    }
     // A slow shutdown may overlap a new HUD in the same pane. Compare and
     // clear in one tmux command, so the old process cannot erase its successor.
     const target = tmuxSession.replace(/'/g, "'\\''");
     return tmux(['if-shell', '-F', '-t', tmuxSession,
-      `#{==:#{${BOUND_OPTION}},${previous}}`,
+      `#{==:#{${BOUND_OPTION}},${expected}}`,
       `set-option -q -t '${target}' ${BOUND_OPTION} ''`]);
   });
   // Keep the chain alive even if one publish fails.
@@ -175,7 +223,7 @@ export function publishHudBinding(
   return next.then(() => undefined);
 }
 
-function decodeBinding(encoded: string): (OpenHudBinding & { namespace?: string }) | null {
+function decodeBinding(encoded: string): DecodedBinding | null {
   try {
     const parsed: unknown = JSON.parse(
       Buffer.from(encoded, 'base64').toString('utf8')
@@ -194,6 +242,8 @@ function decodeBinding(encoded: string): (OpenHudBinding & { namespace?: string 
       freshPrompt,
       label,
       namespace,
+      ownerPid,
+      ownerStartedAt,
     } = parsed as Record<string, unknown>;
     if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
       return null;
@@ -205,6 +255,8 @@ function decodeBinding(encoded: string): (OpenHudBinding & { namespace?: string 
       tmuxSession,
       sessionId,
       ...(typeof namespace === 'string' ? { namespace } : {}),
+      ...(typeof ownerPid === 'number' && Number.isInteger(ownerPid) && ownerPid > 0 ? { ownerPid } : {}),
+      ...(typeof ownerStartedAt === 'number' && Number.isFinite(ownerStartedAt) ? { ownerStartedAt } : {}),
       ...(typeof label === 'string' ? {label} : {}),
       ...(typeof rolloutPath === 'string' && rolloutPath
         ? { rolloutPath }
@@ -236,6 +288,7 @@ export async function listOpenHudBindings(options: { strict?: boolean; namespace
   }
 
   const bindings: OpenHudBinding[] = [];
+  const candidates: DecodedBinding[] = [];
   const expectedNamespace = options.namespace ?? getCodexDataNamespace();
   const seen = new Set<string>();
   for (const line of stdout.split('\n')) {
@@ -250,8 +303,15 @@ export async function listOpenHudBindings(options: { strict?: boolean; namespace
     if (!decoded || decoded.namespace !== expectedNamespace) {
       continue;
     }
-    const { namespace: _namespace, ...binding } = decoded;
-    if (binding.tmuxSession !== match[1]) continue;
+    if (decoded.tmuxSession !== match[1]) continue;
+    candidates.push(decoded);
+  }
+  const owners = await liveOwners(candidates);
+  for (const decoded of candidates) {
+    // Older publishers without ownership metadata remain readable during a
+    // rolling upgrade. New payloads must match a live process incarnation.
+    if (decoded.ownerPid && !owners.has(decoded)) continue;
+    const { namespace: _namespace, ownerPid: _pid, ownerStartedAt: _started, ...binding } = decoded;
     // The same Codex session can be bound by more than one pane; the dashboard
     // shows a session once.
     if (seen.has(binding.sessionId)) {

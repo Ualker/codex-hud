@@ -19,9 +19,26 @@ let nativeSupported = Number(process.versions.node.split('.')[0]) >= 22;
 let sequence = 0;
 const pending = new Map<number, Pending>();
 
+interface WorkerResources {
+  sampledAt: number;
+  heapUsedMiB: number;
+  heapTotalMiB: number;
+  externalMiB: number;
+  arrayBuffersMiB: number;
+  handles: number;
+}
+let workerResources: WorkerResources | undefined;
+
+/** Optional resource sampling for diagnostics/benchmarks, never query work. */
+export function getSqliteWorkerResources(refresh: boolean = false) {
+  if (refresh && worker) worker.postMessage({ type: 'resources' });
+  return { active: Boolean(worker), pending: pending.size, ...(worker ? workerResources : {}) };
+}
+
 function releaseWorker(failedWorker: Worker): void {
   if (worker !== failedWorker) return;
   worker = undefined;
+  workerResources = undefined;
   retiringWorker = failedWorker;
   for (const request of pending.values()) {
     clearTimeout(request.timer);
@@ -43,6 +60,10 @@ function queryWorker(file: string, statements: string[]): Promise<Reply> {
     const created = new Worker(new URL('./sqlite-worker.js', import.meta.url), { execArgv: [], stdout: true, stderr: true });
     worker = created;
     created.on('message', message => {
+      if (message.type === 'resources') {
+        if (worker === created) workerResources = message.resources;
+        return;
+      }
       const request = pending.get(message.id);
       if (!request || worker !== created) return;
       pending.delete(message.id);

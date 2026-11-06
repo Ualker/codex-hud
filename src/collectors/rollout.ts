@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'node:path';
 import { KNOWN_TOP_LEVEL_TYPES, KNOWN_RESPONSE_TYPES, KNOWN_EVENT_TYPES, normalizeRolloutRecord } from '../protocol/rollout-record.js';
 import { fileWasReplaced, sameFile, sameFileVersion, type FileVersion } from '../utils/file-version.js';
 import type {
@@ -1078,6 +1079,7 @@ export async function parseRolloutFile(
 
     if (entry.type === 'turn_context') {
       const payload = entry.payload as TurnContextPayload;
+      if (session && typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd)) session.cwd = payload.cwd;
       const contextModel =
         payload.model ?? payload.collaboration_mode?.settings?.model;
       const reasoningEffort =

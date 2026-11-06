@@ -25,6 +25,16 @@ try {
  tmux(['set-option','-t','hud-one','@codex_hud_main_pane',main]);tmux(['set-option','-t','hud-one','@codex_hud_pane',hud]);
  const capture=()=>tmux(['capture-pane','-p','-t',hud]);
  await waitFor(()=>capture().includes('Runtime label'),'real renderer paints label');
+ tmux(['send-keys','-t',hud,'r']);
+ await waitFor(()=>capture().includes('Rename this HUD'),'inline rename opens');
+ tmux(['send-keys','-t',hud,'C-u']);
+ tmux(['send-keys','-l','-t',hud,'交互修复']);
+ tmux(['send-keys','-t',hud,'Enter']);
+ await waitFor(()=>capture().includes('交互修复')&&!capture().includes('Rename this HUD'),'inline rename saves');
+ tmux(['send-keys','-t',hud,'r']);await waitFor(()=>capture().includes('Rename this HUD'),'rename reopens');
+ tmux(['send-keys','-t',hud,'C-u']);tmux(['send-keys','-l','-t',hud,'discarded']);tmux(['send-keys','-t',hud,'Escape']);
+ await waitFor(()=>!capture().includes('Rename this HUD'),'Escape cancels rename');
+ assert.ok(capture().includes('交互修复')&&!capture().includes('discarded'),'cancel preserves saved label');
  tmux(['send-keys','-t',hud,'?']);await waitFor(()=>capture().includes('HUD help'),'help opens');
  tmux(['send-keys','-t',hud,'Escape']);await waitFor(()=>!capture().includes('HUD help'),'Escape closes help');
  tmux(['send-keys','-t',hud,'c','d','t','C-t']);
@@ -34,6 +44,7 @@ try {
  await waitFor(()=>capture().includes('No active sessions'),'overview survives renderer reload');
  const saved=JSON.parse(Buffer.from(tmux(['show-option','-qv','-t','hud-one','@codex_hud_ui']),'base64'));
  assert.equal(saved.preferences.details,'full');assert.equal(saved.preferences.tools,'full');assert.equal(saved.preferences.layout,'coexist');
+ assert.equal(saved.preferences.label,'交互修复','inline label survives reload without changing the launch seed');
  assert.equal(tmux(['display-message','-p','-t',main,'#{pane_pid}']),mainPid,'main process unchanged');
  // A real client is needed for switch-client. It only attaches to this private server.
  client=spawn('tmux',['-C','attach-session','-t','hud-one'],{env,stdio:['pipe','pipe','pipe']});client.stdout.on('data',()=>{});client.stderr.on('data',()=>{});
@@ -51,7 +62,8 @@ try {
  tmux(['set-option','-t',second,'@codex_hud_bound',Buffer.from(JSON.stringify({namespace:getCodexDataNamespace(env),tmuxSession:second,sessionId:thread,rolloutPath:rollout,cwd:root,label:'Target label'})).toString('base64')]);
  tmux(['send-keys','-t',hud,'C-t','C-t']);
  await waitFor(()=>capture().includes('Target label'),'other HUD label arrives in overview');
- tmux(['send-keys','-t',hud,'f','j']);
+ tmux(['send-keys','-t',hud,'f']);
+ tmux(['send-keys','-l','-t',hud,'\x1b[<65;5;3M']);
  await waitFor(()=>capture().includes('> '),'selected overview row is visible');
  tmux(['send-keys','-t',hud,'Enter']);
  await waitFor(()=>tmux(['list-clients','-F','#{session_name}']).includes(second),'Enter switches the real client to selected session');

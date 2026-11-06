@@ -3,7 +3,12 @@ import { promisify } from 'node:util';
 import type { SessionOverviewItem, HudDisplayMode } from '../types.js';
 import { sanitizeTerminalText } from '../render/colors.js';
 import { getCodexDataNamespace } from '../utils/codex-path.js';
+import { isHudBindingOwnerAlive } from '../collectors/open-huds.js';
 const exec = promisify(execFile);
+export async function saveWorkingDirectory(session: string | undefined, cwd: string): Promise<void> {
+  if (!session) return;
+  await exec('tmux', ['set-option', '-q', '-t', session, '@codex_hud_cwd', cwd], { timeout: 1500 });
+}
 export type OverviewFilter = 'all' | 'attention';
 export interface UiPreferences {
   mode: HudDisplayMode;
@@ -26,7 +31,7 @@ export function normalizePreferences(raw: unknown): UiPreferences {
       Object.assign(defaults, { [key]: values[key] });
   }
   if (typeof values.label === 'string')
-    defaults.label = sanitizeTerminalText(values.label).replace(/\s+/g, ' ').trim().slice(0, 80);
+    defaults.label = Array.from(sanitizeTerminalText(values.label)).slice(0, 80).join('');
   return defaults;
 }
 function seeds(): Record<string, string | undefined> { return Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, process.env[v]])); }
@@ -98,7 +103,7 @@ export async function focusSession(tmuxSession: string | undefined, expectedSess
       const bound = await exec('tmux', ['show-option', '-qv', '-t', tmuxSession, '@codex_hud_bound'], { timeout: 1500 });
       const value = JSON.parse(Buffer.from(bound.stdout.trim(), 'base64').toString('utf8'));
       if (value.sessionId !== expectedSessionId || value.tmuxSession !== tmuxSession ||
-        value.namespace !== getCodexDataNamespace())
+        value.namespace !== getCodexDataNamespace() || !await isHudBindingOwnerAlive(value))
         return false;
     }
     const target = await exec('tmux', ['display-message', '-p', '-t', pane, '#{session_name}|#{pane_dead}'], { timeout: 1500 });

@@ -72,7 +72,7 @@ if [[ "${1:-}" == "--version" ]]; then
 fi
 printf '%s %s\n' "$PWD" "$*" >> "${NPM_LOG:?}"
 case "${1:-}" in
-  install)
+  ci)
     if [[ "${FAKE_NPM_FAIL:-}" == "install" ]]; then
       echo 'simulated dependency installation failure' >&2
       exit 41
@@ -380,7 +380,7 @@ if [[ ! -f "$SUCCESS_ZSHRC" ]] \
   exit 1
 fi
 
-install_runs="$(grep -c ' install$' "$NPM_LOG" || true)"
+install_runs="$(grep -c ' ci$' "$NPM_LOG" || true)"
 build_runs="$(grep -c ' run build$' "$NPM_LOG" || true)"
 if [[ "$install_runs" -ne 8 || "$build_runs" -ne 7 ]]; then
   echo "unexpected staged npm counts: install=$install_runs build=$build_runs" >&2

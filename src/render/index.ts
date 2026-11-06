@@ -27,7 +27,7 @@ const SHOW_CURSOR = '\x1b[?25h';
 // the view on its last frame, indistinguishable from a dead HUD. The events
 // let [view] toggle the view; wheel reports are consumed without changing modes.
 const MOUSE_ON = '\x1b[?1000h\x1b[?1006h\x1b[?1004h';
-const MOUSE_OFF = '\x1b[?1004l\x1b[?1006l\x1b[?1000l';
+const MOUSE_OFF = '\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1000l';
 
 let lastStdoutFrame: string | null = null;
 let hasEverRendered = false;

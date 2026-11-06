@@ -12,6 +12,7 @@ import {
 import { scanCompleteJsonl } from '../utils/jsonl-tail.js';
 import { logHudError } from '../utils/hud-log.js';
 import { stat } from 'node:fs/promises';
+import { fileWasReplaced, sameFileVersion, type FileVersion } from '../utils/file-version.js';
 
 export const AGENT_INACTIVITY_TIMEOUT_ENV =
   'CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS';
@@ -482,16 +483,19 @@ export interface AgentActivityCollectorOptions {
   /** Tracking-error retry backoff bounds; 0 disables the backoff (tests). */
   trackingErrorRetryMinMs?: number;
   trackingErrorRetryMaxMs?: number;
+  /** Idle-node fallback; watcher changes bypass this interval. */
+  idleCheckIntervalMs?: number;
 }
 
 interface RootTracker {
   session: SessionFile;
   offset: number;
-  lastObservedSize: number | null;
+  lastObservedVersion: FileVersion | null;
   physicalTurnIds: Set<string>;
   canonicalValidated: boolean;
   forkedFromId: string | null;
   trackingError: string | null;
+  needsReplay: boolean;
 }
 
 interface TrackedAgentNode extends AgentState {
@@ -500,7 +504,8 @@ interface TrackedAgentNode extends AgentState {
   physicalTurnIds: Set<string>;
   canonicalValidated: boolean;
   localBoundaryFound: boolean;
-  lastObservedSize: number | null;
+  lastObservedVersion: FileVersion | null;
+  nextCheckAtMs: number;
   /** Tracking-error retry backoff so failing nodes do not rescan every cycle. */
   nextRetryAtMs: number;
   retryBackoffMs: number;
@@ -670,6 +675,13 @@ function cloneNode(node: TrackedAgentNode): TrackedAgentNode {
   };
 }
 
+function resetNode(node: TrackedAgentNode): TrackedAgentNode {
+  return { ...node, lifecycle: 'starting', activeTurnId: null,
+    lastCompleteLocalRecordAtMs: null, offset: 0,
+    physicalTurnIds: new Set(), canonicalValidated: false,
+    localBoundaryFound: false, lastObservedVersion: null, nextCheckAtMs: 0 };
+}
+
 function defaultTrackingErrorLogger(message: string): void {
   // Tracking failures already surface on the agent rows ("tracking error");
   // stderr would land inside the rendered HUD frame, so diagnostics go to
@@ -683,6 +695,7 @@ export class AgentActivityCollector {
   private readonly logError: TrackingErrorLogger;
   private readonly trackingErrorRetryMinMs: number;
   private readonly trackingErrorRetryMaxMs: number;
+  private readonly idleCheckIntervalMs: number;
   private generation = 0;
   private root: RootTracker | null = null;
   private readonly nodes = new Map<string, TrackedAgentNode>();
@@ -695,6 +708,7 @@ export class AgentActivityCollector {
       options.trackingErrorRetryMinMs ?? MIN_TRACKING_RETRY_MS;
     this.trackingErrorRetryMaxMs =
       options.trackingErrorRetryMaxMs ?? MAX_TRACKING_RETRY_MS;
+    this.idleCheckIntervalMs = options.idleCheckIntervalMs ?? 0;
   }
 
   setRootSession(session: SessionFile | null): void {
@@ -714,11 +728,12 @@ export class AgentActivityCollector {
       ? {
           session,
           offset: 0,
-          lastObservedSize: null,
+          lastObservedVersion: null,
           physicalTurnIds: new Set<string>(),
           canonicalValidated: false,
           forkedFromId: null,
           trackingError: null,
+          needsReplay: false,
         }
       : null;
   }
@@ -746,17 +761,11 @@ export class AgentActivityCollector {
       });
     }
 
-    const queue = [...this.nodes.keys()];
-    const queued = new Set(queue);
-    for (let index = 0; index < queue.length; index++) {
-      await this.collectNode(queue[index], nowMs);
+    // Map iteration visits newly discovered descendants in insertion order.
+    // Each node is visited once, without rescanning all keys for each parent.
+    for (const threadId of this.nodes.keys()) {
+      await this.collectNode(threadId, nowMs);
       if (generation !== this.generation) return this.snapshot(nowMs);
-      for (const threadId of this.nodes.keys()) {
-        if (!queued.has(threadId)) {
-          queued.add(threadId);
-          queue.push(threadId);
-        }
-      }
     }
 
     return deriveAgentActivity({
@@ -771,6 +780,20 @@ export class AgentActivityCollector {
     return [...this.nodes.values()].some(node => node.rolloutPath === filePath);
   }
 
+  getTrackedRolloutPaths(): string[] {
+    return [...this.nodes.values()].flatMap(node => node.rolloutPath ? [node.rolloutPath] : []);
+  }
+
+  noteRolloutChanged(filePath: string): boolean {
+    let tracked = false;
+    for (const node of this.nodes.values()) if (node.rolloutPath === filePath) {
+      node.nextCheckAtMs = 0;
+      node.nextRetryAtMs = 0;
+      tracked = true;
+    }
+    return tracked;
+  }
+
   private snapshot(nowMs: number): AgentActivity {
     return deriveAgentActivity({ rootThreadId: this.root?.session.sessionId ?? '',
       nodes: [...this.nodes.values()], nowMs, inactivityTimeoutMs: this.inactivityTimeoutMs });
@@ -783,28 +806,36 @@ export class AgentActivityCollector {
       return false;
     }
 
-    const observedSize = (await stat(root.session.path)).size;
+    const observedVersion = await stat(root.session.path);
     if (generation !== this.generation) return false;
     if (
       root.canonicalValidated &&
+      !root.needsReplay &&
       root.trackingError === null &&
-      root.lastObservedSize === observedSize
+      root.lastObservedVersion && sameFileVersion(root.lastObservedVersion, observedVersion)
     ) {
       return true;
     }
 
     // Replay into a private candidate. No offsets, seeds or lifecycle state
     // become visible until every complete record in this snapshot validates.
+    const replaced = root.needsReplay || root.trackingError !== null ||
+      (root.lastObservedVersion !== null && fileWasReplaced(root.lastObservedVersion, observedVersion));
+    // A failed transaction leaves the old tree visible, but its file may
+    // have been rewritten again before the retry. Revalidate from the start.
+    root.needsReplay = true;
     const candidate: RootTracker = {
       ...root,
-      physicalTurnIds: new Set(root.physicalTurnIds),
+      needsReplay: false,
+      ...(replaced ? { offset: 0, canonicalValidated: false, forkedFromId: null } : {}),
+      physicalTurnIds: new Set(replaced ? [] : root.physicalTurnIds),
     };
     let inheritedTurnIds: Set<string> | null = null;
-    let eligible = root.canonicalValidated;
+    let eligible = candidate.canonicalValidated;
     let forkError: string | undefined;
     const seeds: AgentSpawnSeed[] = [];
     try {
-      candidate.offset = await scanCompleteJsonl(root.session.path, root.offset, async (record) => {
+      candidate.offset = await scanCompleteJsonl(root.session.path, candidate.offset, async (record) => {
         if (!candidate.canonicalValidated) {
           const payload = requireCanonicalSessionMeta(
             [record], root.session.sessionId, `Root ${root.session.sessionId}`
@@ -852,17 +883,23 @@ export class AgentActivityCollector {
       return false;
     }
 
-    const stagedNodes = this.stageSeeds(seeds, candidate.session.sessionId);
+    if (fileWasReplaced(observedVersion, await stat(root.session.path))) {
+      if (generation !== this.generation) return false;
+      throw new Error('Root rollout changed while reading; retrying.');
+    }
+    if (generation !== this.generation) return false;
+    const stagedNodes = this.stageSeeds(seeds, candidate.session.sessionId, replaced);
+    if (replaced) this.nodes.clear();
     for (const seed of seeds) {
       const existing = this.nodes.get(seed.childThreadId);
       if (existing) {
         this.nodes.set(seed.childThreadId, {
           ...existing,
-          lastObservedSize: null,
+          nextCheckAtMs: 0,
         });
       }
     }
-    candidate.lastObservedSize = observedSize;
+    candidate.lastObservedVersion = observedVersion;
     candidate.trackingError = null;
     this.root = candidate;
     this.applyStagedNodes(stagedNodes);
@@ -904,11 +941,12 @@ export class AgentActivityCollector {
     }
 
     // Failing nodes retry on a backoff instead of rescanning every cycle.
-    // (Idle nodes still get their cheap per-cycle stat: a later task_started
-    // can land in an existing subagent rollout and must be noticed.)
+    // Idle nodes are woken by file events, with a bounded stat fallback for
+    // missed watcher events and resumed agents.
     if (current.trackingError !== null && current.nextRetryAtMs > nowMs) {
       return;
     }
+    if (current.trackingError === null && current.lifecycle === 'idle' && current.nextCheckAtMs > nowMs) return;
 
     const parent =
       current.parentThreadId === root.session.sessionId
@@ -936,7 +974,7 @@ export class AgentActivityCollector {
     try {
       let rolloutPath = current.rolloutPath;
       let resolvedSessionId: string | null = null;
-      const readOffset = current.offset;
+      let readOffset = current.offset;
       if (rolloutPath === null) {
         const resolved = this.resolveRollout(current.threadId, resolveSinceMs);
         if (resolved === null) {
@@ -946,9 +984,9 @@ export class AgentActivityCollector {
         resolvedSessionId = resolved.sessionId;
       }
 
-      let observedSize: number | null = null;
+      let observedVersion: FileVersion | null = null;
       try {
-        observedSize = (await stat(rolloutPath)).size;
+        observedVersion = await stat(rolloutPath);
       } catch (error) {
         // A previously validated rollout can move from active sessions to the
         // archive. Let the existing read/re-resolve path handle ENOENT.
@@ -958,13 +996,21 @@ export class AgentActivityCollector {
       }
       if (
         current.rolloutPath !== null &&
-        observedSize !== null &&
-        current.lastObservedSize === observedSize
+        current.trackingError === null &&
+        observedVersion !== null && current.lastObservedVersion !== null &&
+        sameFileVersion(current.lastObservedVersion, observedVersion)
       ) {
+        current.nextCheckAtMs = nowMs + this.idleCheckIntervalMs;
         return;
       }
 
-      let candidate = cloneNode(current);
+      let replaced = current.trackingError !== null || (current.lastObservedVersion !== null && observedVersion !== null &&
+        fileWasReplaced(current.lastObservedVersion, observedVersion));
+      let candidate = replaced ? resetNode(current) : cloneNode(current);
+      if (replaced) {
+        readOffset = 0;
+        resolvedSessionId = current.threadId;
+      }
       const seeds: AgentSpawnSeed[] = [];
       const replay = async (): Promise<void> => {
         const nextOffset = await scanCompleteJsonl(rolloutPath!, readOffset, (record) => {
@@ -1009,22 +1055,25 @@ export class AgentActivityCollector {
         }
         rolloutPath = resolved.path;
         resolvedSessionId = resolved.sessionId;
-        observedSize = (await stat(rolloutPath)).size;
-        let canonicalValidated = false;
-        await scanCompleteJsonl(rolloutPath, 0, (record) => {
-          if (!canonicalValidated) {
-            validateChildCanonicalMeta([record], resolvedSessionId!, current);
-            canonicalValidated = true;
-          }
-        });
-        if (!canonicalValidated) validateChildCanonicalMeta([], resolvedSessionId, current);
-        candidate = { ...cloneNode(current), canonicalValidated: true, rolloutPath };
+        observedVersion = await stat(rolloutPath);
+        replaced = true;
+        readOffset = 0;
+        candidate = { ...resetNode(current), rolloutPath };
         seeds.length = 0;
         await replay();
       }
-      candidate.lastObservedSize = observedSize ?? (await stat(rolloutPath)).size;
+      const finalVersion = await stat(rolloutPath);
+      if (replaced && current.localBoundaryFound && !candidate.localBoundaryFound) {
+        throw new Error('Agent rollout replacement has no local task_started boundary yet.');
+      }
+      if (observedVersion && fileWasReplaced(observedVersion, finalVersion)) {
+        throw new Error('Agent rollout changed while reading; retrying.');
+      }
+      candidate.lastObservedVersion = observedVersion ?? finalVersion;
+      candidate.nextCheckAtMs = nowMs + this.idleCheckIntervalMs;
       if (generation !== this.generation) return;
-      const stagedNodes = this.stageSeeds(seeds, candidate.threadId);
+      const stagedNodes = this.stageSeeds(seeds, candidate.threadId, replaced);
+      if (replaced) this.removeDescendants(candidate.threadId);
       candidate.trackingError = null;
       this.commitNodeSuccess(current, candidate, stagedNodes);
     } catch (error) {
@@ -1035,13 +1084,14 @@ export class AgentActivityCollector {
 
   private stageSeeds(
     seeds: readonly AgentSpawnSeed[],
-    parentThreadId: string
+    parentThreadId: string,
+    rebuilding: boolean = false
   ): TrackedAgentNode[] {
     const stagedNodes: TrackedAgentNode[] = [];
     const stagedThreadIds = new Set<string>();
     for (const seed of seeds) {
       if (
-        this.nodes.has(seed.childThreadId) ||
+        (!rebuilding && this.nodes.has(seed.childThreadId)) ||
         stagedThreadIds.has(seed.childThreadId)
       ) {
         continue;
@@ -1054,7 +1104,8 @@ export class AgentActivityCollector {
         physicalTurnIds: new Set<string>(),
         canonicalValidated: false,
         localBoundaryFound: false,
-        lastObservedSize: null,
+        lastObservedVersion: null,
+        nextCheckAtMs: 0,
         nextRetryAtMs: 0,
         retryBackoffMs: 0,
       });
@@ -1066,6 +1117,15 @@ export class AgentActivityCollector {
   private applyStagedNodes(stagedNodes: readonly TrackedAgentNode[]): void {
     for (const node of stagedNodes) {
       this.nodes.set(node.threadId, node);
+    }
+  }
+
+  private removeDescendants(parentId: string): void {
+    const removed = new Set([parentId]);
+    // Parents are inserted before their descendants.
+    for (const [id, node] of this.nodes) if (removed.has(node.parentThreadId)) {
+      removed.add(id);
+      this.nodes.delete(id);
     }
   }
 

@@ -153,7 +153,7 @@ codex-hud --self-check       # 환경 진단 실행
 | `CODEX_HUD_HEIGHT_AUTO` | 자동 높이: `1`, 명시 높이: `0` | 좁은 pane에서 최대 3행 추가 |
 | `CODEX_HUD_HEIGHT_MIN` | 자동: `5`, 명시 높이: `CODEX_HUD_HEIGHT` | 자동 모드 최소 높이 |
 | `CODEX_HUD_HEIGHT_MAX` | `12` | 자동 모드 최대 높이 |
-| `CODEX_HUD_AUTO_ATTACH` | `0` | 같은 디렉토리의 최신 세션에 자동 연결 |
+| `CODEX_HUD_AUTO_ATTACH` | `0` | Codex 인수가 있어도 같은 디렉토리에서 가장 오래된 연결 해제 세션부터 재사용 (연결 중이거나 예약된 세션 제외) |
 | `CODEX_HUD_ALTERNATE_SCREEN` | `0` | codex 패인의 tmux alternate-screen |
 | `CODEX_HUD_BIND_TOGGLE` | `0` | tmux server 전체에 `Prefix+H` HUD 전환 키 설치 |
 | `CODEX_HUD_CLEAR_SCROLLBACK` | `0` | 첫 렌더링 시 스크롤백 초기화 |
@@ -190,7 +190,7 @@ enabled = true
 ## 개발
 
 ```bash
-npm install && npm run build   # 빌드
+npm ci && npm run build   # 빌드
 npm run dev                    # 감시 모드
 node dist/index.js             # HUD 직접 실행
 ```

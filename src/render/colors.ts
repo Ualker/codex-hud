@@ -13,6 +13,7 @@ const NO_COLOR = process.env.NO_COLOR;
 const COLOR_ENABLED =
   (NO_COLOR === undefined || NO_COLOR === '') && process.env.TERM !== 'dumb';
 const ASCII_MODE = process.env.CODEX_HUD_ASCII === '1';
+const HIGH_CONTRAST = process.env.CODEX_HUD_HIGH_CONTRAST === '1';
 
 function ansi(code: string, text: string): string {
   return COLOR_ENABLED ? `${ESC}${code}m${text}${RESET}` : text;
@@ -41,10 +42,11 @@ export const colors = {
   brightWhite: (text: string) => ansi('97', text),
   
   // Semantic colors
-  dim: (text: string) => ansi('2', text),
+  dim: (text: string) => HIGH_CONTRAST ? text : ansi('2', text),
   bold: (text: string) => ansi('1', text),
   italic: (text: string) => ansi('3', text),
   underline: (text: string) => ansi('4', text),
+  inverse: (text: string) => ansi('7', text.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')),
 };
 
 // Keep ordinary content neutral. Color signals activity or a state requiring

@@ -243,6 +243,8 @@ try {
     const published = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
     assert.ok(Number.isInteger(published.ownerPid) && published.ownerPid > 0);
     delete published.ownerPid;
+    assert.ok(Number.isFinite(published.ownerStartedAt) && published.ownerStartedAt > 0);
+    delete published.ownerStartedAt;
     assert.equal(published.namespace, getCodexDataNamespace());
     delete published.namespace;
     assert.deepEqual(

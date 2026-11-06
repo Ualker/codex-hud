@@ -24,11 +24,12 @@ const filtered=render({...data,displayMode:'overview',overviewFilter:'attention'
 assert.match(filtered,/> .*Approval/);assert.doesNotMatch(filtered,/Idle/);
 process.env.CODEX_HUD_TOGGLE_KEY = 'Prefix+G';
 for (const width of [28, 48, 120]) {
-  const pages = Array.from({ length: 4 }, (_, helpPage) => render({ ...data, helpVisible: true, helpPage }, width, 5));
+  const pages = Array.from({ length: 10 }, (_, helpPage) => render({ ...data, helpVisible: true, helpPage }, width, 5));
   const text = pages.flat().join('\n');
   assert.match(text, /Prefix\+G: switch view/);
   assert.doesNotMatch(text, /Prefix\+H/);
-  assert.match(text, /Enter: open selected/);
+  assert.match(text, /Enter: open/);
+  assert.match(text, /r: rename this HUD/);
   assert.match(text, /Esc: close/);
   assert.ok(pages.every(rows => rows.length <= 5 && rows.every(row => visualLength(row) <= width)));
 }

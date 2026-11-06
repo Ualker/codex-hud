@@ -123,7 +123,7 @@ const threeSessions = [
     overviewSelfSessionId: '019ff4e2-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
   });
   assert.ok(lines[0].includes('prj'), 'the session this HUD is bound to is listed at once');
-  assert.ok(lines[0].includes('▸'), 'and marked as the current one');
+  assert.ok(lines[0].includes('[me]'), 'and marked as the current one');
   assert.ok(
     lines.some((line) => line.includes('Looking for other sessions')),
     'while the scan for the rest is still described'

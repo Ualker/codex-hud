@@ -115,4 +115,20 @@ assert.equal(
 assert.equal(recoveryCache.get(), 'good-3');
 assert.equal(recoveryCache.getHealth().status, 'fresh');
 
+const pending = [];
+const switching = new AsyncSnapshotCache('initial', () => new Promise((resolve, reject) => pending.push({ resolve, reject })), { ttlMs: 100 });
+const oldRequest = switching.refresh();
+switching.reset('new identity');
+const newRequest = switching.refresh();
+pending[1].resolve('new result');
+await newRequest;
+pending[0].resolve('old result');
+await oldRequest;
+assert.equal(switching.get(), 'new result', 'an old in-flight collector cannot replace a new identity');
+const oldFailure = switching.refresh(true);
+switching.reset('third identity');
+pending[2].reject(new Error('old directory disappeared'));
+await assert.rejects(oldFailure);
+assert.equal(switching.getHealth().status, 'pending', 'an old failure cannot poison a new identity');
+
 console.log('test-async-snapshot-cache: PASS');

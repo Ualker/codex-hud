@@ -38,11 +38,13 @@ codex-hud --doctor --json
 npm run bench
 ```
 
+`--cd DIR` / `-C DIR` 同时决定 HUD 的项目、Git 状态和会话目录，Codex 原始参数中的相对路径含义保持不变。会话记录确认目录变化（包括进入托管 worktree）后，HUD 会刷新项目和 Git 数据，并更新重载时使用的目录。同一 tmux session 切到其他窗口后，控制命令仍能定位原 HUD。
+
 HUD 参数放在 Codex 参数或控制命令前。`standard` 保留常规布局；`coexist` 适合与 Codex 原生底栏共存，优先显示任务、子代理与告警，平静时的 Context 放进完整详情，高占用时仍显示。常驻权限标识改用信息强调色，与黄色即时告警区分。可选的 `blue-purple` 配色同步作用于 HUD 的蓝紫强调色和目标 tmux session；黄色告警、红色错误保持语义。`--tmux-style default` 恢复默认配色和局部 tmux 样式。`CODEX_HUD_THEME=blue-purple` 可单独设置 HUD 配色，优先于 tmux 样式；未设置样式变量的 shell 重载时，沿用该 session 的 tmux 配色。对应环境变量为 `CODEX_HUD_LABEL`、`CODEX_HUD_LAYOUT`、`CODEX_HUD_TMUX_STYLE`。
 
 日常权限行使用 `Approval: ask · [workspace-write]` 等短标识，`d` 保留完整权限与环境清单。切换模式、详情、工具和布局后会显示短暂反馈；终端支持焦点事件时，重新聚焦也显示当前模式。帮助使用实际安装的切换快捷键，窄屏分页后所有命令仍可访问。
 
-任务标题使用加粗文字，项目与地址作为辅助信息；5／8／12 行布局都优先保留审批、失败和额度耗尽，环境清单与历史随后显示。`t` 只调整工具文本，`d` 展开历史与环境信息，`c` 切换常规／原生底栏共存布局，偏好只作用于当前 HUD。改名已有会话使用上面的 `--label NAME --reload --target SESSION_NAME`，单独 `--label` 是启动参数。
+任务标题使用加粗文字，项目与地址作为辅助信息；5／8／12 行布局都优先保留审批、失败和额度耗尽，环境清单与历史随后显示。`t` 只调整工具文本，`d` 展开历史与环境信息，`c` 切换常规／原生底栏共存布局，偏好只作用于当前 HUD。按 `r` 可直接修改当前 HUD 的标签：`Enter` 保存，`Esc` 取消，`Ctrl+U` 清空；空标签恢复任务标题。也可以使用上面的 `--label NAME --reload --target SESSION_NAME`，单独 `--label` 是启动参数。
 
 紧凑详情将协议警告按类型汇总；`d` 展示类型名称及异常记录数量，完整详情也显示额度来源和观测时间。`--doctor --json` 提供绑定依据、CLI/Node 版本、读取位置／积压、采集器健康状态和偏好。运行时快照最多每 10 秒刷新，进程已退出或快照过旧时标记为不新鲜；不包含提示词正文或认证信息。
 
@@ -89,9 +91,9 @@ daemon 绑定会保留仍存活 TUI 的已确认连接，即使数小时没有�
 可以。点击 HUD 中的 `[view]` 按钮，或在主 pane 执行 `codex-hud --toggle-mode`；`Prefix+H`
 也能在 Codex pane 里直接切换——只要这个键没被占用，wrapper 就会安装它
 （`CODEX_HUD_BIND_TOGGLE=0` 跳过，`1` 强制），提示行会显示当前会话实际拥有的那一种。
-HUD 自己接收鼠标事件；滚轮不改变详情级别，也不会进入 tmux copy-mode 让画面冻结。概览列出最近
+HUD 自己接收鼠标事件；滚轮在概览中选择会话、在帮助页中翻页，不改变显示模式，也不会进入 tmux copy-mode 让画面冻结。概览列出最近
 30 分钟内有活动的 session——不只是恰好正在执行回合的那些——先按当前阶段排序，再按
-最近活动时间排序，Context 剩余量作为并列时的次序。概览用 `▸` 标出当前 HUD 绑定的
+最近活动时间排序，Context 剩余量作为并列时的次序。概览用 `[me]` 标出当前 HUD 绑定的
 session，并保证该行在 session 数超过可显示行数时仍然可见。各 HUD 在自己主 pane 上
 确认到的状态——等待审批、被 stream error 打断的回合、Codex 已退出——会随其发布的绑定
 一起传播，所以任何一块面板上都显示 `Approval`/`Interrupted`/`Exited`，而不是陈旧的
@@ -159,7 +161,7 @@ codex
 
 默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。切换 `d` 后，标题行会短暂显示三秒 `Details: compact/full`，即使两种模式当前显示的行相同也有反馈。单会话和概览标题统一将绝对路径缩成项目名或文件名，宽窗口适度增加标题空间，任务文字优先于运行时长和长分支。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
 
-预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg) · [窄屏分页帮助](./doc/fig/help-narrow.svg) · [5 行 coexist 容量告警](./doc/fig/coexist-pressure.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
+预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg) · [概览选中行](./doc/fig/overview-narrow.svg) · [浅色概览](./doc/fig/overview-light.svg) · [面板内改名](./doc/fig/label-edit.svg) · [窄屏分页帮助](./doc/fig/help-narrow.svg) · [5 行 coexist 容量告警](./doc/fig/coexist-pressure.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
@@ -272,7 +274,7 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 |------|--------|------|
 | `CODEX_HUD_POSITION` | `bottom` | HUD 面板位置（`top` / `bottom`） |
 | `CODEX_HUD_HEIGHT` | 自适应 `5–12` | 默认取终端高度的六分之一，也可显式指定固定行数 |
-| `CODEX_HUD_MOUSE` | `1` | 为会话启用 tmux 鼠标模式；点击 `[view]` 切换视图；滚轮由 HUD 接收，不改变显示模式 |
+| `CODEX_HUD_MOUSE` | `1` | 为会话启用 tmux 鼠标模式；点击 `[view]` 切换视图；滚轮选择概览会话或翻阅帮助页，不改变显示模式 |
 | `CODEX_HUD_TOOL_DETAILS` | `targets` | 工具详情：`off` / `targets` / `full`，聚焦后按 `t` 切换 |
 | `CODEX_HUD_DETAILS` | `compact` | HUD 信息量：`compact` / `full`，聚焦后按 `d` 切换 |
 
@@ -294,11 +296,12 @@ HUD 显示类变量在会话创建时从你的 shell 捕获，`codex-hud --reloa
 | `CODEX_HUD_ANIMATION` | `1` | 设为 `0` 固定活动图标，保留文字状态变化 |
 | `CODEX_HUD_MODE` | `single` | 初始显示模式：`single` 或 `overview` |
 | `CODEX_HUD_THEME` | 跟随 `CODEX_HUD_TMUX_STYLE` | HUD 强调色：`default` / `blue-purple`（深色终端）；尊重 `NO_COLOR` |
+| `CODEX_HUD_HIGH_CONTRAST` | `0` | `1` 用终端前景色显示辅助信息，取消淡化；概览选中行使用反显，`NO_COLOR` 下仍保留 `>` 选择标记 |
 | `CODEX_HUD_HIDE_TITLES` | `0` | `1` 隐藏提示词生成的会话标题，使用不含这些标题的独立总览缓存；手动 `--label` 保留。重载沿用，显式设为 `0` 关闭 |
 | `CODEX_HUD_LOG_FILE` | 每用户默认路径 | 将 HUD 诊断信息（watcher/渲染/追踪错误）追加写入该文件。macOS 默认 `~/Library/Logs/codex-hud/hud.log`，其他平台为 `$XDG_STATE_HOME/codex-hud/hud.log`；设为 `off` 则丢弃 |
 | `CODEX_HUD_NO_ATTACH` | `0` | 已废弃：强制新建会话而不复用 |
 | `CODEX_HUD_SHOW_OTHER_AGENT_SKILLS` | `0` | 保留兼容；`.agents` 已计入 Codex skill 清单，不再单列 |
-| `CODEX_HUD_NOTIFY_CMD` | （未设置） | 会话进入需要人来处理的状态——等待审批、回合被打断、撞上限额（`approval-needed` / `turn-interrupted` / `limit-reached`）——或跑完一个三分钟以上的回合（`turn-completed`，payload 带 `turnDurationMs`；更短的回合结束时你多半正看着屏幕）时执行的 shell 命令；被 Codex 以错误结束的回合不论长短都改发 `turn-failed`，payload 带 `turnDurationMs` 与提供方的 `error`（`code`、`message`）。事件 JSON 通过 stdin 与 `CODEX_HUD_EVENT_JSON` 传入，事件名单独放在 `CODEX_HUD_EVENT`。只在状态跃迁时触发——启动或换绑后的首次观察只记基线不通知，抖动的状态每五分钟至多通知一次。示例：`CODEX_HUD_NOTIFY_CMD='osascript -e "display notification \"$CODEX_HUD_EVENT\" with title \"codex-hud\""'` |
+| `CODEX_HUD_NOTIFY_CMD` | （未设置） | 会话进入需要人来处理的状态——等待审批、回合被打断、撞上限额（`approval-needed` / `turn-interrupted` / `limit-reached`）——或跑完一个三分钟以上的回合（`turn-completed`，payload 带 `turnDurationMs`；更短的回合结束时你多半正看着屏幕）时执行的 shell 命令；被 Codex 以错误结束的回合不论长短都改发 `turn-failed`，payload 带 `turnDurationMs` 与提供方的 `error`（`code`、`message`）。事件 JSON 通过 stdin 与 `CODEX_HUD_EVENT_JSON` 传入，事件名单独放在 `CODEX_HUD_EVENT`。只在状态跃迁时触发——启动或换绑后的首次观察只记基线不通知，同一次审批的重复检测每五分钟至多通知一次；同一回合内不同待批调用或审批提示分别通知。示例：`CODEX_HUD_NOTIFY_CMD='osascript -e "display notification \"$CODEX_HUD_EVENT\" with title \"codex-hud\""'` |
 | `CODEX_HUD_ASCII` | `0` | 使用 ASCII 进度条和状态符号 |
 | `NO_COLOR` | （未设置） | 设置任意值后禁用 ANSI 颜色 |
 | `CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS` | `900000` | running agent 的界面 timeout；只接受正 safe integer 毫秒值 |
@@ -343,7 +346,7 @@ enabled = true
 ## 开发
 
 ```bash
-npm install                    # 安装依赖
+npm ci                         # 安装依赖
 npm run typecheck              # 仅类型检查
 npm run test:unit              # 构建并运行单元测试
 npm run test:integration       # 构建并运行隔离集成测试

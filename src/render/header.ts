@@ -51,6 +51,7 @@ import {
 import { hudDetailsExpanded } from './detail-level.js';
 import { compactSessionTitle } from './session-title.js';
 import { renderHelp } from './help.js';
+import { renderLabelEditor } from './label-editor.js';
 
 export function renderCompactAgentSummary(agentActivity: AgentActivity | undefined): string | null {
   if (!agentActivity) {
@@ -652,7 +653,9 @@ export function renderHud(data: HudData, options: RenderOptions): string[] {
   }
   const width = options.width;
   let rows: string[];
-  if (data.helpVisible) {
+  if (data.labelDraft !== undefined) {
+    rows = renderLabelEditor(data.labelDraft, width);
+  } else if (data.helpVisible) {
     rows = renderHelp(data, width, options.maxLines);
   } else if (data.displayMode === 'overview') {
     rows = renderOverviewLayout(data,layout,Math.max(1,width-Math.min(7,options.reservedRow1Width ?? 0)),options.maxLines ?? Infinity);

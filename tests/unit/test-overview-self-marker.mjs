@@ -49,7 +49,7 @@ const marked = renderHud(
 ).map(stripAnsi);
 assert.equal(marked.length, 2, 'one row per session');
 assert.ok(
-  marked[1].startsWith('▸ ') && marked[1].includes('proj-b'),
+  marked[1].startsWith('  [me] ') && marked[1].includes('proj-b'),
   `the bound session row carries the marker: ${marked[1]}`
 );
 assert.ok(

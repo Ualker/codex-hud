@@ -9,6 +9,7 @@ const option = (name, fallback) => {
 };
 const outputDirectory = path.resolve(option('--output-dir', fileURLToPath(new URL('../doc/fig', import.meta.url))));
 process.env.CODEX_HUD_THEME = option('--theme', 'default');
+process.env.CODEX_HUD_HIGH_CONTRAST = option('--high-contrast', '0');
 process.env.CODEX_HUD_ASCII = '0';
 delete process.env.CODEX_HUD_HIDE_TITLES;
 
@@ -67,7 +68,7 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
   const activePalette = light ? lightPalette : palette;
   let body = '';
   for (const [row, line] of raw.split('\n').entries()) {
-    let x = 20, color = foreground, opacity = 1, weight = 400, underline = false;
+    let x = 20, color = foreground, opacity = 1, weight = 400, underline = false, inverse = false;
     for (const segment of line.split(/(\x1b\[[\d;]*m)/)) {
       if (segment.startsWith('\x1b[')) {
         const codes = segment.slice(2, -1).split(';').map(Number);
@@ -78,17 +79,20 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
             i += 4;
             continue;
           }
-          if (code === 0) { color = foreground; opacity = 1; weight = 400; underline = false; }
+          if (code === 0) { color = foreground; opacity = 1; weight = 400; underline = false; inverse = false; }
           else if (code === 1) weight = 700;
           else if (code === 2) opacity = 0.64;
           else if (code === 4) underline = true;
+          else if (code === 7) inverse = true;
+          else if (code === 27) inverse = false;
           else if (activePalette[code]) color = activePalette[code];
         }
       } else if (segment) {
         const length = visualLength(segment) * cell;
         // NBSP keeps terminal cells intact in SVG readers that collapse
         // spaces despite xml:space. Honor bold so the fixture matches the HUD.
-        body += `<text x="${x}" y="${78 + row * 23}" fill="${color}" opacity="${opacity}" font-weight="${weight}" text-decoration="${underline ? 'underline' : 'none'}" textLength="${length}" lengthAdjust="spacingAndGlyphs">${escape(segment).replaceAll(' ', '&#160;')}</text>`;
+        if (inverse) body += `<rect x="${x}" y="${61 + row * 23}" width="${length}" height="23" fill="${color}"/>`;
+        body += `<text x="${x}" y="${78 + row * 23}" fill="${inverse ? background : color}" opacity="${opacity}" font-weight="${weight}" text-decoration="${underline ? 'underline' : 'none'}" textLength="${length}" lengthAdjust="spacingAndGlyphs">${escape(segment).replaceAll(' ', '&#160;')}</text>`;
         x += length;
       }
     }
@@ -102,6 +106,11 @@ function preview(name, title, value, columns = 140, rows = 6, light = false) {
 preview('single', 'Codex HUD / single session / rendered fixture', data);
 preview('overview', 'Codex HUD / overview / rendered fixture', { ...data, displayMode: 'overview', overviewSelfSessionId: sessions[0].id, overviewSelectionId: sessions[1].id, overview: { sessions, updatedAt: ago(0), namespace: 'fixture1234567890' } });
 preview('single-light', 'Codex HUD / light terminal / rendered fixture', data, 140, 6, true);
+const overviewData = { ...data, displayMode: 'overview', overviewSelfSessionId: sessions[0].id, overviewSelectionId: sessions[0].id,
+  overview: { sessions, updatedAt: ago(0), namespace: 'fixture1234567890' } };
+preview('overview-light', 'Codex HUD / selected current session / light terminal', overviewData, 120, 6, true);
+preview('overview-narrow', 'Codex HUD / selected current session / 60 columns', overviewData, 60, 6);
+preview('label-edit', 'Codex HUD / inline rename / 60 columns', { ...data, labelDraft: 'Review session controls' }, 60, 5);
 preview('single-narrow', 'Codex HUD / 60 columns', { ...data, partialHistory: true,
   turnActivity: { ...data.turnActivity, phase: 'awaiting-approval' } }, 60, 6);
 

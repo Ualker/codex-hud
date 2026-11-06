@@ -62,7 +62,7 @@ function view(sessions, selfSessionId) {
   assert.equal(lines.length, HEIGHT);
   const selfRow = lines.find((line) => line.includes('proj-11'));
   assert.ok(selfRow, 'the bound session is listed even when it sorts last');
-  assert.ok(selfRow.includes('▸'), 'and still carries its marker');
+  assert.ok(selfRow.includes('[me]'), 'and still carries its marker');
   assert.equal(
     selfRow.includes('hidden'),
     false,
@@ -95,7 +95,7 @@ function view(sessions, selfSessionId) {
   const lines = view(sessions, sessions[11].id);
   assert.match(lines[0], /proj-0/, 'the working session keeps the top row');
   assert.ok(
-    lines.some((line) => line.includes('proj-11') && line.includes('▸')),
+    lines.some((line) => line.includes('proj-11') && line.includes('[me]')),
     'and the bound session is still rescued below it'
   );
 }
@@ -106,7 +106,7 @@ function view(sessions, selfSessionId) {
   const lines = view(sessions, undefined);
   assert.match(lines[0], /proj-0/);
   assert.equal(
-    lines.some((line) => line.includes('▸')),
+    lines.some((line) => line.includes('[me]')),
     false,
     'an unbound overview marks nothing'
   );
