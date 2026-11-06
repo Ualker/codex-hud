@@ -20,6 +20,8 @@ The overview retains at most 20 parsers and advances at most 8 per refresh, with
 
 Rollout changes invalidate shared overview reuse and bypass the ordinary per-row parse interval. On waking from deep idle, both the renderer and the overview data cache refresh. An older local parser cannot overwrite a newer adopted snapshot; existing backlogs and newly appended files share an age-based queue so continuously busy peers cannot starve catch-up work.
 
+The periodic overview refresh uses the cadence interval directly. It bypasses the separate event-cache TTL, whose success timestamp can otherwise make a scheduled tick arrive slightly too early and double the normal refresh interval. File-event bursts still share the cache TTL.
+
 In full details, `Skills enabled: enabled/discovered` describes filesystem inventory and inspected configuration, **not skills loaded in the current turn**. Sources include repository and user `~/.agents/skills`, `/etc/codex/skills`, legacy `.codex/skills`, and explicit system/admin roots. Canonical `SKILL.md` paths deduplicate symlinks; `[[skills.config]] enabled=false` in `CODEX_HOME/config.toml` disables entries. The HUD does not reproduce Codex's project trust or complete profile merge; runtime loaded count remains unknown.
 
 Unexpected global exceptions stop the renderer. The wrapper restarts only that process with a capped backoff (three retries per crash burst), leaving Codex running; ordinary exits and startup configuration errors do not restart. Uninstall likewise stops only the HUD panes owned by this checkout and preserves main panes. Alias backups retain their original RC paths and shell dialects; newer user aliases and ambiguous legacy flat backups are preserved rather than overwritten.
@@ -48,6 +50,8 @@ daemon 绑定会保留仍存活 TUI 的已确认连接，即使数小时没有�
 总览最多保留 20 个日志解析器，每轮最多推进 8 个，解析调度预算 100 ms（已开始的单批读取会完成）。当前、选中和需处理的会话优先；其他行按较慢节奏轮换，保留最近快照。排队或积压中的行显示 `Updating`；同范围、同 tmux server 的 HUD 可复用短期总览快照。原生 SQLite 在独立 Worker 中执行，兼容旧 Node 的 CLI 查询仍异步执行；查询最多等待 8 秒，超时后重建 Worker。小型查询结果按数据库与 WAL 版本复用最多 750 ms，进程启动时间也只短暂共享，不缓存完整进程命令。原生 SQLite 与 CLI 查询都计时，原生单条查询超过 50 ms 时记录查询摘要、行数和查询计划，不写入原 SQL 参数。
 
 日志变化会使旧的总览共享快照失效，并越过普通的单行解析间隔。深度空闲后的唤醒同时刷新画面和数据缓存；已接收的新快照不会再被旧的本地解析结果覆盖。已有积压与新追加日志按等待时间一起调度，持续繁忙的其他会话不会让积压一直排不到解析机会。
+
+定时总览刷新直接遵循调度间隔，越过文件事件使用的缓存 TTL，避免成功时间比定时器稍晚时多跳过一轮、把正常刷新间隔翻倍。突发文件事件仍受缓存 TTL 限制。
 
 JSONL 版本检查会读取有界文件头与上次追加边界，覆盖同一 inode 上变长的重写，以及容器内时间戳完全不变的等长改写。未变化文件的校验读取最多 1 KiB，追加时最多 1.5 KiB。实际消费的 token／额度数值必须有限且非负；坏记录计入诊断并保留上一次有效状态。SQLite Worker 连续 30 秒没有查询时退出，下次查询按需恢复；有未完成查询时不会回收。
 
