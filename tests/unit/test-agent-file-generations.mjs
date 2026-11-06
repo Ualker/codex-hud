@@ -41,6 +41,9 @@ try {
   fs.writeFileSync(child, running);
   assert.equal((await collector.collect(now + 20000)).rows[0].status, 'running', 'valid replacement recovers after backoff');
 
+  fs.writeFileSync(child, done + ' '.repeat(running.length + 500));
+  assert.deepEqual(await collector.collect(now + 21000), await create().collect(now + 21000), 'growing same-inode rewrite matches a cold tree');
+
   fs.writeFileSync(child, done);
   const idle = create({ idleCheckIntervalMs: 5000 });
   assert.equal((await idle.collect(now + 30000)).visibleAgentCount, 0);

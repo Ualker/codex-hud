@@ -45,7 +45,7 @@ export const colors = {
   dim: (text: string) => HIGH_CONTRAST ? text : ansi('2', text),
   bold: (text: string) => ansi('1', text),
   italic: (text: string) => ansi('3', text),
-  underline: (text: string) => ansi('4', text),
+  underline: (text: string) => ansi('4', text.replace(/\x1b\[0m/g, '\x1b[0m\x1b[4m')),
   inverse: (text: string) => ansi('7', text.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')),
 };
 

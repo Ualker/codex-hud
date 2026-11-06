@@ -41,6 +41,7 @@ const data = {
 const sessions = ['Review compact layout', 'Check async collectors', 'Release checklist'].map((title, i) => ({
   id: `session-demo-00${i + 1}`, projectName: 'codex-hud', title,
   model: 'gpt-6-astra', tmuxSession: `codex-hud-demo-20260909${100000 + i * 1000}-${11223 + i}`,
+  tmuxPane: `%${11 + i * 2}`,
   turnActivity: { phase: ['running-tool', 'awaiting-approval', 'idle'][i] },
   contextUsage: { used: 1, total: 2, percent: [28, 65, 12][i] }, lastActivityAt: ago([1, 45, 600][i]),
 }));
@@ -127,3 +128,5 @@ preview('coexist-pressure', 'Codex HUD / coexist / critical context / 5 rows', {
 }, 100, 5);
 
 preview('help-narrow', 'Codex HUD / paginated help / 40 columns', { ...data, helpVisible: true }, 40, 5);
+
+preview('inspection', 'Codex HUD / target and diagnostics / 60 columns', { ...overviewData, inspectionVisible: true, hudSession: 'codex-hud-review-20261106120000-12345' }, 60, 5);

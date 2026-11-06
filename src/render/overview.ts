@@ -1,7 +1,7 @@
 /** Overview rows, column budgets and selection visibility. */
 import type { HudData, LayoutConfig, SessionOverviewItem } from '../types.js';
 import { filteredSessions, needsAttention } from '../ui/state.js';
-import { colors, theme, stripAnsi, remainingBar, getContextColor, padEnd,
+import { colors, theme, remainingBar, getContextColor, padEnd,
   sanitizeTerminalText, truncate, truncateAnsi, truncateStart, visualLength } from './colors.js';
 import { renderHealthLine, renderRateLimitLine } from './lines/index.js';
 import { hudDetailsExpanded } from './detail-level.js';
@@ -73,6 +73,9 @@ function overviewAddress(
   session: SessionOverviewItem,
   maxWidth: number = OVERVIEW_ADDRESS_WIDTH
 ): string {
+  if (!hudDetailsExpanded() && session.tmuxPane && /^%\d+$/.test(session.tmuxPane)) {
+    return session.tmuxPane;
+  }
   if (session.tmuxSession) {
     return truncateStart(
       sanitizeTerminalText(session.tmuxSession),
@@ -274,7 +277,7 @@ export function renderOverviewLayout(
   const markerWidth = 2;
   // Identity, phase and remaining context get a budget before decoration.
   // A narrow table must still tell two sessions in the same project apart.
-  const addressMinimum = Math.min(desiredTitleWidth > 0 && !hudDetailsExpanded() ? 6 : OVERVIEW_ADDRESS_MIN_WIDTH,
+  const addressMinimum = Math.min(OVERVIEW_ADDRESS_MIN_WIDTH,
     Math.max(...overview.sessions.map((session) => visualLength(overviewAddress(session)))));
   const titleReserve = desiredTitleWidth > 0 ? Math.min(12, desiredTitleWidth) + separatorWidth : 0;
   const projectColumnWidth = Math.max(1, Math.min(desiredProjectWidth,
@@ -327,7 +330,7 @@ export function renderOverviewLayout(
     const selected = session.id === data.overviewSelectionId && Boolean(session.tmuxSession);
     const marker = selected ? theme.info('> ') : '  ';
     const row = truncateAnsi(marker + parts.join(columnSeparator), width);
-    return selected ? colors.inverse(padEnd(stripAnsi(row), width)) : row;
+    return selected ? colors.underline(row) : row;
   });
 
   if (scanningNote) {

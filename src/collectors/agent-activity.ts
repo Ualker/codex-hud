@@ -11,8 +11,7 @@ import {
 } from './session-finder.js';
 import { scanCompleteJsonl } from '../utils/jsonl-tail.js';
 import { logHudError } from '../utils/hud-log.js';
-import { stat } from 'node:fs/promises';
-import { fileWasReplaced, sameFileVersion, type FileVersion } from '../utils/file-version.js';
+import { readFileVersion, fileWasReplaced, sameFileVersion, type FileVersion } from '../utils/file-version.js';
 
 export const AGENT_INACTIVITY_TIMEOUT_ENV =
   'CODEX_HUD_AGENT_INACTIVITY_TIMEOUT_MS';
@@ -806,7 +805,7 @@ export class AgentActivityCollector {
       return false;
     }
 
-    const observedVersion = await stat(root.session.path);
+    const observedVersion = readFileVersion(root.session.path, root.lastObservedVersion);
     if (generation !== this.generation) return false;
     if (
       root.canonicalValidated &&
@@ -883,7 +882,7 @@ export class AgentActivityCollector {
       return false;
     }
 
-    if (fileWasReplaced(observedVersion, await stat(root.session.path))) {
+    if (fileWasReplaced(observedVersion, readFileVersion(root.session.path, observedVersion))) {
       if (generation !== this.generation) return false;
       throw new Error('Root rollout changed while reading; retrying.');
     }
@@ -986,7 +985,7 @@ export class AgentActivityCollector {
 
       let observedVersion: FileVersion | null = null;
       try {
-        observedVersion = await stat(rolloutPath);
+        observedVersion = readFileVersion(rolloutPath, current.lastObservedVersion);
       } catch (error) {
         // A previously validated rollout can move from active sessions to the
         // archive. Let the existing read/re-resolve path handle ENOENT.
@@ -1055,14 +1054,14 @@ export class AgentActivityCollector {
         }
         rolloutPath = resolved.path;
         resolvedSessionId = resolved.sessionId;
-        observedVersion = await stat(rolloutPath);
+        observedVersion = readFileVersion(rolloutPath, current.lastObservedVersion);
         replaced = true;
         readOffset = 0;
         candidate = { ...resetNode(current), rolloutPath };
         seeds.length = 0;
         await replay();
       }
-      const finalVersion = await stat(rolloutPath);
+      const finalVersion = readFileVersion(rolloutPath, observedVersion);
       if (replaced && current.localBoundaryFound && !candidate.localBoundaryFound) {
         throw new Error('Agent rollout replacement has no local task_started boundary yet.');
       }

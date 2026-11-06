@@ -24,6 +24,7 @@ import { runShellCommand } from './notify-command.js';
 export { runShellCommand, stopNotifications } from './notify-command.js';
 
 import { logHudError } from './utils/hud-log.js';
+import { claimQuotaNotification } from './utils/quota-notification.js';
 import type { RateLimitSnapshot } from './types.js';
 
 export type HudNotifyEvent =
@@ -88,10 +89,12 @@ export function isCompletedTurnNotifiable(
 /** A state that clears and trips again within this window fires once. */
 const REFIRE_COOLDOWN_MS = 5 * 60_000;
 
-export function rateLimitNotificationScope(account: string, limits?: RateLimitSnapshot): string {
+export function rateLimitNotificationScope(account: string, limits?: RateLimitSnapshot, nowMs: number = Date.now()): string {
   return JSON.stringify([account, limits?.limit_id,
     limits?.primary?.window_minutes, limits?.primary?.resets_at,
-    limits?.secondary?.window_minutes, limits?.secondary?.resets_at]);
+    limits?.secondary?.window_minutes, limits?.secondary?.resets_at,
+    // A windowless exhaustion cannot leave a permanent account-wide tombstone.
+    limits?.primary?.resets_at || limits?.secondary?.resets_at ? undefined : Math.floor(nowMs / 86_400_000)]);
 }
 
 function eventScope(event: HudNotifyEvent, context: NotifyContext): string {
@@ -168,6 +171,8 @@ export class HudNotifier {
           continue;
         }
         this.lastFiredMs[event] = nowMs;
+        if (event === 'limit-reached' && context.quotaScope &&
+          !claimQuotaNotification(scope, this.command, nowMs)) continue;
         fired.push(event);
         const payload = JSON.stringify({
           event,

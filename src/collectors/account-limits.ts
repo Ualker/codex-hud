@@ -16,9 +16,15 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'node:path';
 
 import type { RateLimitSnapshot } from '../types.js';
-import { findActiveRollouts } from './session-finder.js';
+import { findActiveRollouts, peekRolloutMetadata, type SessionFile } from './rollout-discovery.js';
+import { getStateDatabaseCandidates } from './state-databases.js';
+import { querySqlite } from './sqlite.js';
+import { listOpenHudBindings } from './open-huds.js';
+import { getSessionsDir } from '../utils/codex-path.js';
+import { validRateLimits } from '../protocol/rollout-record.js';
 import { retainRateLimitWindows } from './rate-limit-windows.js';
 import { readCompleteJsonl } from '../utils/jsonl-tail.js';
 
@@ -135,7 +141,7 @@ async function readTailSnapshot(
   for (let index = records.length - 1; index >= 0; index--) {
     const record = records[index];
     const payload = record?.payload;
-    if (!payload?.rate_limits) {
+    if (!payload?.rate_limits || !validRateLimits(payload.rate_limits)) {
       continue;
     }
     if (payload.type !== 'token_count' && payload.type !== 'rate_limit') {
@@ -167,14 +173,47 @@ async function readTailSnapshot(
 /**
  * The newest rate-limit snapshot written by any Codex session on this machine.
  */
-export async function findLatestAccountRateLimits(): Promise<AccountRateLimits | null> {
+export async function findLatestAccountRateLimits(activePaths: readonly string[] = []): Promise<AccountRateLimits | null> {
   let candidates;
   try {
     candidates = findActiveRollouts(
       LOOKBACK_SECONDS,
       undefined,
       LOOKBACK_DAYS
-    ).slice(0, MAX_FILES_SEARCHED);
+    );
+    // A resumed rollout stays in its creation-date directory. The state index
+    // supplies paths, never rendered quota values. Bound paths also work while
+    // Codex is still updating that index or on versions without updated_at.
+    const paths = new Set(activePaths);
+    for (const binding of process.env.TMUX ? await listOpenHudBindings() : []) {
+      if (binding.rolloutPath) paths.add(binding.rolloutPath);
+    }
+    for (const database of getStateDatabaseCandidates().slice(0, 2)) {
+      const columns = await querySqlite(database, ['PRAGMA table_info(threads)']);
+      if (!columns?.split('\n').some(row => row.split('\x1f')[1] === 'updated_at')) continue;
+      const cutoff = Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS;
+      const rows = await querySqlite(database, [
+        `SELECT rollout_path FROM threads WHERE updated_at >= ${cutoff} AND archived = 0 ORDER BY updated_at DESC LIMIT 96`,
+      ]);
+      for (const file of rows?.split('\n') ?? []) if (file) paths.add(file);
+    }
+    const sessionsRoot = fs.realpathSync(getSessionsDir()) + path.sep;
+    const known = new Set(candidates.map(candidate => candidate.path));
+    for (const file of [...paths].slice(0, 192)) {
+      try {
+        const canonical = fs.realpathSync(file);
+        if (!canonical.startsWith(sessionsRoot) || known.has(canonical)) continue;
+        const stat = fs.statSync(canonical);
+        if (!stat.isFile() || Date.now() - stat.mtimeMs > LOOKBACK_SECONDS * 1000) continue;
+        const meta = peekRolloutMetadata(canonical);
+        if (!meta?.sessionId) continue;
+        candidates.push({ path: canonical, sessionId: meta.sessionId, timestamp: stat.birthtime,
+          size: stat.size, modifiedAt: stat.mtime } satisfies SessionFile);
+        known.add(canonical);
+      } catch { /* A session may disappear between index lookup and read. */ }
+    }
+    candidates.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+    candidates = candidates.slice(0, MAX_FILES_SEARCHED);
   } catch {
     return null;
   }

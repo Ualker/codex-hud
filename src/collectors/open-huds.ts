@@ -67,6 +67,8 @@ interface BoundPayload {
 export interface OpenHudBinding {
   label?: string;
   tmuxSession: string;
+  /** Live HUD pane, usable as an exact wrapper --target on this tmux server. */
+  tmuxPane?: string;
   sessionId: string;
   /** Absent when the bound session has not produced a rollout yet. */
   rolloutPath?: string;
@@ -304,7 +306,7 @@ export async function listOpenHudBindings(options: { strict?: boolean; namespace
       continue;
     }
     if (decoded.tmuxSession !== match[1]) continue;
-    candidates.push(decoded);
+    candidates.push({ ...decoded, tmuxPane: match[2] });
   }
   const owners = await liveOwners(candidates);
   for (const decoded of candidates) {

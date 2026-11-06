@@ -803,7 +803,7 @@ export function renderHealthLine(
     return null;
   }
   return truncateAnsi(
-    theme.warning(`${healthIcon()} ${warnings.join(' · ')}`),
+    theme.warning(`${healthIcon()} ${warnings.join(' · ')} · i info`),
     width
   );
 }

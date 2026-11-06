@@ -37,6 +37,13 @@ try {
  assert.ok(capture().includes('交互修复')&&!capture().includes('discarded'),'cancel preserves saved label');
  tmux(['send-keys','-t',hud,'?']);await waitFor(()=>capture().includes('HUD help'),'help opens');
  tmux(['send-keys','-t',hud,'Escape']);await waitFor(()=>!capture().includes('HUD help'),'Escape closes help');
+ tmux(['send-keys','-t',hud,'i']);await waitFor(()=>capture().includes('HUD info'),'info opens');
+ assert.ok(capture().includes('Target: hud-one'));
+ tmux(['send-keys','-t',hud,'j']);await waitFor(()=>capture().includes('HUD info 2/'),'info pages');
+ tmux(['send-keys','-t',hud,'Escape']);await waitFor(()=>!capture().includes('HUD info'),'Escape closes info');
+ tmux(['send-keys','-t',hud,'i']);await waitFor(()=>capture().includes('HUD info'),'info reopens');
+ tmux(['send-keys','-t',hud,'C-t']);await waitFor(()=>!capture().includes('HUD info'),'switching view closes info');
+ tmux(['send-keys','-t',hud,'C-t']);
  tmux(['send-keys','-t',hud,'c','d','t','C-t']);
  await waitFor(()=>{try{const v=JSON.parse(Buffer.from(tmux(['show-option','-qv','-t','hud-one','@codex_hud_ui']),'base64'));return v.preferences.mode==='overview' && v.preferences.layout==='coexist' && v.preferences.details==='full' && v.preferences.tools==='full';}catch{return false;}},'keyboard choices persisted');
  const mainPid=tmux(['display-message','-p','-t',main,'#{pane_pid}']);

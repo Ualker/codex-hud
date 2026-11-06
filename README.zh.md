@@ -14,6 +14,43 @@
 ![Codex HUD — 单 Session 模式](./doc/fig/single.svg)
 
 
+## 快速开始
+
+### macOS/Linux（本仓库）
+
+```bash
+git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
+cd codex-hud
+./bin/codex-hud-install
+
+# 刷新 shell，然后直接输入：
+codex
+```
+
+本仓库的 macOS/Linux 功能以 `integrate/upstream-main-20260714` 为维护分支；需要容器轮询兼容时使用 `74server`，该分支保留 `CHOKIDAR_USEPOLLING=1` 监听策略。Windows/WSL 属于上游的独立分支，不作为本 fork 的已验证安装入口。
+
+已有 checkout：`codex-hud-upgrade` 更新当前跟踪分支；`codex-hud-sync` 只构建当前源码并刷新别名。安装/同步会保留 shell 配置的符号链接、文件权限与托管段后面的用户覆盖，重复执行不会累积空行。构建完成后，用 `codex-hud --reload --target 完整会话名` 重启指定 HUD；同目录全部 HUD 使用 `--reload --all`。重启会检查 HUD Node 进程是否启动并保持存活，任何失败（含部分失败）均返回非零；主 Codex pane 保留。
+
+如果源码快进后的运行产物切换失败，升级会尝试恢复旧依赖和构建；恢复也失败时会保留暂存目录与备份，报告路径并打印带目标检查的恢复命令。先解决文件系统错误、恢复缺失目录，再运行 `codex-hud-sync`。
+
+### 管理命令
+
+首次安装后，以下命令自动加入 shell：
+
+| 命令 | 说明 |
+|------|------|
+| `codex-hud-sync` | 重新构建并刷新当前 checkout 的别名 |
+| `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
+| `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
+| `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias，并打印最近的 HUD 诊断日志 |
+| `codex-hud --kill` | 终止当前/唯一会话（`--all`：本目录全部会话） |
+| `codex-hud --reload` | 必要时先重建，再重启当前/唯一会话的 HUD pane；支持 `--target` 明确指定 |
+| `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
+| `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
+| `codex-hud --cycle-details` | 不切换焦点，循环切换工具详情级别 |
+| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着——HUD 进程比磁盘上的构建更旧时标注 `HUD: outdated`；当前目录最新的会话标注 `(newest here)` |
+| `codex-hud --hud-version` | 显示包版本和 checkout revision |
+
 ## 交互、恢复与诊断
 
 以下按键在 HUD pane 获得焦点时使用；主 pane 中仍可通过 `Prefix+H` 切换视图。
@@ -21,11 +58,13 @@
 | 按键 | 操作 |
 | --- | --- |
 | `?` | 打开／关闭帮助；窄屏时用 `j/k` 翻页 |
-| `Esc` | 关闭帮助；没有帮助时返回 Codex 主 pane |
+| `i` | 打开／关闭完整目标与诊断详情；`j/k` 或滚轮翻页 |
+| `r` | 修改当前 HUD 短标签；`Enter` 保存，`Esc` 取消，`Ctrl+U` 清空 |
+| `Esc` | 关闭帮助或信息页；否则返回 Codex 主 pane |
 | `Ctrl+T` | 切换单会话／overview |
 | `t` / `d` | 循环工具详情／切换 HUD 完整详情 |
 | `c` | 切换 `standard`／`coexist` 布局 |
-| `j` / `k`、方向键 | 选择可跳转的 overview 行；选中行带下划线并保持可见 |
+| `j` / `k`、方向键 | 选择可跳转的 overview 行；选中行带下划线、保留状态颜色并保持可见 |
 | `Enter` | 重新验证绑定后，进入选中会话的主 pane |
 | `f` | 筛选等待审批、失败、中断或日志不可用的会话；再次按下显示全部 |
 
@@ -48,30 +87,11 @@ HUD 参数放在 Codex 参数或控制命令前。`standard` 保留常规布局�
 
 紧凑详情将协议警告按类型汇总；`d` 展示类型名称及异常记录数量，完整详情也显示额度来源和观测时间。`--doctor --json` 提供绑定依据、CLI/Node 版本、读取位置／积压、采集器健康状态和偏好。运行时快照最多每 10 秒刷新，进程已退出或快照过旧时标记为不新鲜；不包含提示词正文或认证信息。
 
-Codex 0.164.0 的 `additional_tools` 记录已按工具定义识别，不触发兼容警告，也不计为工具执行；其他未知记录类型仍保留诊断提示。
+额度采集结合最近活跃的状态索引和现有绑定，因此很早创建、今天仍在写入的会话也会参与比较。额度通知按数据范围、额度窗口和通知命令在多个 HUD 进程之间去重；没有重置时间的额度按天划分范围。首次观察仍只建立基线。通知执行失败会写入诊断日志，不会自动重复同一个已领取窗口。
 
-Codex 0.165.0 的 `configuration_update` 记录会更新显示的推理强度，不改变工具或任务状态。会话日志较大时，重载 HUD 也能恢复该设置；已消费字段格式异常及其他未知记录类型仍保留诊断提示。
+自动重连及按目录执行的管理命令跟随已保存的当前工作目录和数据范围；旧会话没有目录记录时继续兼容启动名称。`--target` 可精确选择会话或 pane。
 
-日志解析会丢弃重绑定之前的旧读取，校验记录结构，并分批追赶大段积压。`Catching up` 表示仍在读取历史；首次绑定日志读完后才建立通知基线，积压尚未追平时暂停通知。任务通知按会话／回合隔离，额度通知按数据范围／额度窗口去重，切换回合不会重复提醒同一个额度告警。显式 `CODEX_HOME` 不可用时报告该目录错误，避免串到默认账号目录。
-
-
-已知主 pane 时，只接受进程／连接或有效 pane snapshot 的归属证据；缺少证据时保持未绑定，不按目录或启动时间猜测。当前 rollout 的普通追加直接解析，不等待绑定查询；新文件、删除和周期检查仍处理换绑。跨文件额度采集保留最新耗尽状态及尚未重置的有效窗口。
-
-连接 span 已被裁剪时，TUI 自身进程的 app-server 消息处理／发送模块日志仍可证明其运行的是进程内服务端；其他进程的服务端日志和客户端消息不算归属证据。长会话因此能在 HUD 重载后重新绑定，不依赖旧渲染器的内存状态。
-
-daemon 绑定会保留仍存活 TUI 的已确认连接，即使数小时没有请求日志。优先使用明确的连接证据；启动时间重叠且证据不足时保持未绑定，不按启动顺序猜配。共享历史也会保留存活客户端所属的连接。`/side` 旁路会话（未持久化的临时 fork）和已识别的辅助线程不会覆盖主会话，`/side` 结束后也继续跟随原主任务；正常持久化的 fork、`/new`、`/resume` 仍会更新绑定。重新编译后，用 `codex-hud --reload --target <tmux-session>` 重载对应 HUD，主 Codex 进程继续运行。
-
-自动重连、绑定公告、总览和额度共享统一使用 `CODEX_HOME` 与 `CODEX_SESSIONS_PATH` 的规范化目录作为数据范围；符号链接指向同一目录时视为同一范围。相同项目下的不同账号不会串接，总览顶部显示会话总数、待处理数与当前筛选；范围标识保留在诊断中。选择的会话已结束时，Enter 会提示不可用，不会自动跳到其他任务。旧 HUD 没有范围标识时不会被混入总览，重载后会自动发布新标识；`--doctor --json` 将其标为 `scopeVerified: false`。
-
-总览按会话 ID 去重，以活跃 pane 的已验证绑定为准；子代理在进入解析队列前排除，避免缓存淘汰后出现占位残影。
-
-总览最多保留 20 个日志解析器，每轮最多推进 8 个，解析调度预算 100 ms（已开始的单批读取会完成）。当前、选中和需处理的会话优先；其他行按较慢节奏轮换，保留最近快照。排队或积压中的行显示 `Updating`；同范围、同 tmux server 的 HUD 可复用短期总览快照。原生 SQLite 在独立 Worker 中执行，兼容旧 Node 的 CLI 查询仍异步执行；查询最多等待 8 秒，超时后重建 Worker。小型查询结果按数据库与 WAL 版本复用最多 750 ms，进程启动时间也只短暂共享，不缓存完整进程命令。原生 SQLite 与 CLI 查询都计时，原生单条查询超过 50 ms 时记录查询摘要、行数和查询计划，不写入原 SQL 参数。
-
-完整详情里的 `Skills enabled: 已启用/已发现` 是文件与已检查配置的清单，**不是本轮已加载数**。包括项目各级与用户 `~/.agents/skills`、管理目录 `/etc/codex/skills`、旧 `.codex/skills` 和显式系统/管理目录；按真实 `SKILL.md` 路径去重，遵循 `CODEX_HOME/config.toml` 的 `[[skills.config]] enabled=false`。HUD 不模拟 Codex 的项目信任和完整 profile 合并；实际运行时加载数未知。
-
-未捕获的全局异常会结束渲染器，wrapper 仅重启 HUD 进程并限制连续重试次数（三次，逐步退避）；主 Codex 继续运行。正常退出及启动配置错误不会自动重启。卸载也只停止本 checkout 登记的 HUD pane，保留主 pane。alias 备份按原始配置路径恢复，保留 shell 语法；如果用户已有更新的 alias，或遇到缺少来源信息的旧格式备份，会保留备份并提示，不覆盖当前配置。
-
-离线[性能基准](./docs/PERFORMANCE.md)覆盖多种高度、overview 和四个并发长日志读取器。`npm run bench:runtime` 另外覆盖 1／5／20 个 HUD 的进程绑定、SQLite、tmux、Git、watcher 和持续追加日志。正式 tmux 集成测试及运行基准使用隔离 server 或替身。旧的手工 tmux／安装测试入口已停用。运行基准成功后清理，失败时保留日志、退出信息与逐 HUD 指标，并打印诊断目录。
+协议兼容、绑定依据、采集预算与故障恢复的开发细节见[运行与恢复说明](./docs/RUNTIME.md)。
 
 ## 为什么需要 Codex HUD？
 
@@ -120,48 +140,13 @@ session 名——即 `tmux ls` 和 session 选择器里显示的那个名字，�
 
 概览窄窗优先保留地址、状态和上下文数值，再分配标题、进度条等可选列。扫描失败保留上次成功结果并显示警告；无法读取的会话保留身份、标记 `Unknown`。失效或已关闭的 HUD pane 不再作为在线绑定。配额快照和燃速基线按真实 `CODEX_HOME` 与 sessions 目录隔离共享，升级后的首次读取会建立新基线。
 
-## 快速开始
-
-### macOS/Linux（本仓库）
-
-```bash
-git clone --branch integrate/upstream-main-20260714 https://github.com/Ualker/codex-hud.git
-cd codex-hud
-./bin/codex-hud-install
-
-# 刷新 shell，然后直接输入：
-codex
-```
-
-本仓库的 macOS/Linux 功能以 `integrate/upstream-main-20260714` 为维护分支；需要容器轮询兼容时使用 `74server`，该分支保留 `CHOKIDAR_USEPOLLING=1` 监听策略。Windows/WSL 属于上游的独立分支，不作为本 fork 的已验证安装入口。
-
-已有 checkout：`codex-hud-upgrade` 更新当前跟踪分支；`codex-hud-sync` 只构建当前源码并刷新别名。安装/同步会保留 shell 配置的符号链接、文件权限与托管段后面的用户覆盖，重复执行不会累积空行。构建完成后，用 `codex-hud --reload --target 完整会话名` 重启指定 HUD；同目录全部 HUD 使用 `--reload --all`。重启会检查 HUD Node 进程是否启动并保持存活，任何失败（含部分失败）均返回非零；主 Codex pane 保留。
-
-如果源码快进后的运行产物切换失败，升级会尝试恢复旧依赖和构建；恢复也失败时会保留暂存目录与备份，报告路径并打印带目标检查的恢复命令。先解决文件系统错误、恢复缺失目录，再运行 `codex-hud-sync`。
-
-### 管理命令
-
-首次安装后，以下命令自动加入 shell：
-
-| 命令 | 说明 |
-|------|------|
-| `codex-hud-sync` | 重新构建并刷新当前 checkout 的别名 |
-| `codex-hud-upgrade` | 隔离构建当前跟踪分支的更新，通过后再快进并刷新别名 |
-| `codex-hud-uninstall` | 移除别名并停止 HUD 会话 |
-| `codex-hud --doctor` | 检查 Codex、Node、tmux、构建产物和 alias，并打印最近的 HUD 诊断日志 |
-| `codex-hud --kill` | 终止当前/唯一会话（`--all`：本目录全部会话） |
-| `codex-hud --reload` | 必要时先重建，再重启当前/唯一会话的 HUD pane；支持 `--target` 明确指定 |
-| `codex-hud --reload --all` | 同上，但重启当前目录所有会话的 HUD pane |
-| `codex-hud --toggle-mode` | 不切换焦点，切换单 Session/概览模式 |
-| `codex-hud --cycle-details` | 不切换焦点，循环切换工具详情级别 |
-| `codex-hud --list` | 列出所有 codex-hud session，附带工作目录、attach 状态，以及 HUD pane 是否还活着——HUD 进程比磁盘上的构建更旧时标注 `HUD: outdated`；当前目录最新的会话标注 `(newest here)` |
-| `codex-hud --hud-version` | 显示包版本和 checkout revision |
-
 ## HUD 显示了什么？
 
-默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。切换 `d` 后，标题行会短暂显示三秒 `Details: compact/full`，即使两种模式当前显示的行相同也有反馈。单会话和概览标题统一将绝对路径缩成项目名或文件名，宽窗口适度增加标题空间，任务文字优先于运行时长和长分支。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
+默认使用终端前景色与青色强调，项目名加粗，标签弱化，默认收起已完成工具历史；黄色表示需要注意的权限、审批或容量状态，红色表示错误或容量危险。概览以留白对齐各列。按 `d` 可查看完整环境清单、Git 文件统计、token 拆分与会话标识；按 `t` 只改变工具详情。切换 `d` 后，标题行会短暂显示当前详情设置，即使两种模式当前显示的行相同也有反馈。单会话和概览标题统一将绝对路径缩成项目名或文件名，宽窗口适度增加标题空间，任务文字优先于运行时长和长分支。窄窗先缩减进度条及剩余 token 数，保留 Context 百分比和加粗的 compact 次数；标题为 `[view]` 按钮保留位置。
 
-预览：[浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg) · [概览选中行](./doc/fig/overview-narrow.svg) · [浅色概览](./doc/fig/overview-light.svg) · [面板内改名](./doc/fig/label-edit.svg) · [窄屏分页帮助](./doc/fig/help-narrow.svg) · [5 行 coexist 容量告警](./doc/fig/coexist-pressure.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
+概览的紧凑地址列显示 `%11` 这样的完整 pane 标识，可直接用于 `--target`；完整详情保留会话名称。按 `i` 可查看完整目标、绑定状态、采集错误、日志积压与额度数据年龄；告警行也会提示该入口。
+
+预览：[目标与诊断详情](./doc/fig/inspection.svg) · [浅色终端](./doc/fig/single-light.svg) · [60 列窄窗](./doc/fig/single-narrow.svg) · [概览选中行](./doc/fig/overview-narrow.svg) · [浅色概览](./doc/fig/overview-light.svg) · [面板内改名](./doc/fig/label-edit.svg) · [窄屏分页帮助](./doc/fig/help-narrow.svg) · [5 行 coexist 容量告警](./doc/fig/coexist-pressure.svg)。预览来自实际渲染器，可用 `npm run docs:previews` 重新生成。
 
 ```text
 my-project git:(main *)  gpt-5.6-sol high  fix the flaky e2e run  up 12m
@@ -345,6 +330,8 @@ enabled = true
 
 ## 开发
 
+协议兼容、绑定依据、采集预算与故障恢复的开发细节见[运行与恢复说明](./docs/RUNTIME.md)。
+
 ```bash
 npm ci                         # 安装依赖
 npm run typecheck              # 仅类型检查
@@ -381,7 +368,7 @@ npm run test:render            # 运行渲染示例
 
 ## 许可证
 
-MIT
+[MIT](./LICENSE)
 
 ## 致谢
 
