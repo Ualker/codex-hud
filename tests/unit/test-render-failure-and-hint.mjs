@@ -28,6 +28,7 @@ function renderInChild(body, env = {}) {
   const result = spawnSync(
     process.execPath,
     [
+      '--input-type=module',
       '-e',
       `const render = await import(${JSON.stringify(renderModule)});
        const { stripAnsi } = await import(${JSON.stringify(colorsModule)});

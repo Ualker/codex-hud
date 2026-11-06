@@ -28,6 +28,7 @@ function logInChild(env) {
   const result = spawnSync(
     process.execPath,
     [
+      '--input-type=module',
       '-e',
       `const { logHudError } = await import(${JSON.stringify(modulePath)});
        logHudError('scope', new Error('child-message'));`,

@@ -150,6 +150,7 @@ function scan(codexHome) {
   const result = spawnSync(
     process.execPath,
     [
+      '--input-type=module',
       '-e',
       `const { findLatestAccountRateLimits } = await import(${JSON.stringify(
         modulePath
