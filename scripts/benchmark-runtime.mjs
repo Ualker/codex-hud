@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { executeSql } from '../tests/helpers/sqlite.mjs';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const args = process.argv.slice(2);
@@ -60,7 +61,7 @@ try {
       tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'bootstrap', `exec sleep ${sleeperSeconds}`]);
       const serverPid = tmux(['display-message', '-p', '#{pid}']);
       const sqlQuote = value => `'${String(value).replaceAll("'", "''")}'`;
-      const sql = (file, statement) => execFileSync('sqlite3', [path.join(codexHome, file), statement], { stdio: 'pipe' });
+      const sql = (file, statement) => executeSql(path.join(codexHome, file), statement);
       // Match the journal mode observed in Codex's logs/state databases. A
       // rollback-journal fixture adds startup reader/writer contention that
       // is absent from the WAL setup being measured.
