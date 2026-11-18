@@ -15,15 +15,23 @@ for (const dir of ['home', 'bin', 'tmux', 'project-a', 'project b', 'codex-hud/s
 fs.cpSync(path.join(source, 'bin'), path.join(fixture, 'bin'), { recursive: true });
 fs.copyFileSync(path.join(source, 'package.json'), path.join(fixture, 'package.json'));
 for (const file of ['namespace.js', 'utils/codex-path.js']) fs.copyFileSync(path.join(source, 'dist', file), path.join(fixture, 'dist', file));
-fs.writeFileSync(path.join(fixture, 'dist/index.js'), `import fs from 'node:fs';
+// The parent polls these files while the fixture processes are running.
+const reportWriter = `import fs from 'node:fs';
+function writeReport(name, value) {
+  const file = process.env.HUD_TEST_ROOT + '/' + name + '.json';
+  const temporary = file + '.' + process.pid + '.tmp';
+  fs.writeFileSync(temporary, JSON.stringify(value));
+  fs.renameSync(temporary, file);
+}`;
+fs.writeFileSync(path.join(fixture, 'dist/index.js'), `${reportWriter}
 const report = {pid: process.pid, cwd: process.cwd(), hudCwd: process.env.CODEX_HUD_CWD, signals: 0};
-const save = () => fs.writeFileSync(process.env.HUD_TEST_ROOT + '/hud.json', JSON.stringify(report));
+const save = () => writeReport('hud', report);
 for (const signal of ['SIGUSR1','SIGUSR2']) process.on(signal, () => {report.signals++; save();});
 save(); setInterval(() => {}, 1000);
 `);
 // This CLI fixture independently applies the supported --cd forms, retaining
 // argv so the test also catches wrappers that accidentally rewrite a prompt.
-fs.writeFileSync(path.join(root, 'main.mjs'), `import fs from 'node:fs';
+fs.writeFileSync(path.join(root, 'main.mjs'), `${reportWriter}
 const args = process.argv.slice(2); let directory;
 for(let i=0;i<args.length;i++) {
  if(args[i]==='--') break;
@@ -33,7 +41,7 @@ for(let i=0;i<args.length;i++) {
  else if(args[i].startsWith('-C')) directory=args[i].slice(2).replace(/^=/,'');
 }
 if(directory) process.chdir(directory);
-fs.writeFileSync(process.env.HUD_TEST_ROOT + '/main.json', JSON.stringify({pid:process.pid,cwd:process.cwd(),args}));
+writeReport('main', {pid:process.pid,cwd:process.cwd(),args});
 setInterval(() => {}, 1000);
 `);
 fs.writeFileSync(path.join(root, 'bin/codex'), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.join(root, 'main.mjs'))} "$@"\n`, { mode: 0o755 });
