@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import type { SessionOverviewItem, HudDisplayMode } from '../types.js';
 import { sanitizeTerminalText } from '../render/colors.js';
 import { getCodexDataNamespace } from '../utils/codex-path.js';
-import { isHudBindingOwnerAlive } from '../collectors/open-huds.js';
+import { hudBindingRowId, isHudBindingOwnerAlive } from '../collectors/open-huds.js';
 const exec = promisify(execFile);
 export async function saveWorkingDirectory(session: string | undefined, cwd: string): Promise<void> {
   if (!session) return;
@@ -102,7 +102,9 @@ export async function focusSession(tmuxSession: string | undefined, expectedSess
     if (expectedSessionId) {
       const bound = await exec('tmux', ['show-option', '-qv', '-t', tmuxSession, '@codex_hud_bound'], { timeout: 1500 });
       const value = JSON.parse(Buffer.from(bound.stdout.trim(), 'base64').toString('utf8'));
-      if (value.sessionId !== expectedSessionId || value.tmuxSession !== tmuxSession ||
+      const rowId = typeof value.sessionId === 'string' || (value.sessionId === null && value.freshPrompt === true)
+        ? hudBindingRowId({ sessionId: value.sessionId, tmuxSession }) : null;
+      if (rowId !== expectedSessionId || value.tmuxSession !== tmuxSession ||
         value.namespace !== getCodexDataNamespace() || !await isHudBindingOwnerAlive(value))
         return false;
     }

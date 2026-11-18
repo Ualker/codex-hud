@@ -176,11 +176,9 @@ export function renderOverviewLayout(
     if (session.neverStarted) {
       return colors.dim('Ready');
     }
-    // A confirmed fresh `/new` prompt outranks the stale phase word: the
-    // phase describes the previous session, and the single view one keypress
-    // away already says "New session at the prompt".
+    // A confirmed new session outranks the previous task's phase.
     if (session.freshPrompt) {
-      return colors.dim('New prompt');
+      return colors.dim('Ready');
     }
     const phase = session.turnActivity?.phase;
     switch (phase) {

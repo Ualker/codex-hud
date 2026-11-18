@@ -31,6 +31,11 @@ esac
  assert.equal(await focusSession('target','stale-thread'),false);assert.equal(fs.existsSync(log),false,'stale binding causes no navigation');
  assert.equal(await focusSession('target','thread'),true);
  assert.match(fs.readFileSync(log,'utf8'),/switch-client -t %11\nselect-pane -t %11/);
+ process.env.HUD_TEST_BOUND=Buffer.from(JSON.stringify({namespace:getCodexDataNamespace(),sessionId:null,tmuxSession:'target',freshPrompt:true})).toString('base64');
+ assert.equal(await focusSession('target','hud:target'),true,'a confirmed pending row navigates by pane identity');
+ assert.equal(await focusSession('target','thread'),false,'the previous session cannot navigate after clear');
+ process.env.HUD_TEST_BOUND=Buffer.from(JSON.stringify({namespace:getCodexDataNamespace(),sessionId:'replacement',tmuxSession:'target'})).toString('base64');
+ assert.equal(await focusSession('target','hud:target'),false,'a pending row expires when its real thread arrives');
  fs.writeFileSync(state,'bad-base64');assert.equal((await loadPreferences('target')).mode,'single');
  console.log('test-ui-preferences-and-navigation: PASS');
 }finally{

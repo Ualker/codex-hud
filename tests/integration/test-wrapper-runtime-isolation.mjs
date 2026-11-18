@@ -102,7 +102,7 @@ try {
   const oldHudPid = readPane(first.hud).pid;
   execFileSync(path.join(fixture, 'bin/codex-hud'), ['--reload', '--target', first.session], {
     cwd: fixture, env: { ...caller, CODEX_HOME: path.join(root, 'different-reload-home'),
-      CODEX_SESSIONS_PATH: path.join(root, 'different-reload-sessions'), CODEX_HUD_DETAILS: 'full',
+      CODEX_SESSIONS_PATH: path.join(root, 'different-reload-sessions'), CODEX_HUD_DETAILS: 'full', NO_COLOR: '1',
       CODEX_HUD_TMUX_STYLE: undefined, CODEX_HUD_HIDE_TITLES: undefined },
     stdio: 'pipe', timeout: 15_000,
   });
@@ -110,6 +110,7 @@ try {
   assert.equal(readPane(first.hud).CODEX_HOME, caller.CODEX_HOME, 'reload stays with the main Codex data root');
   assert.equal(readPane(first.hud).CODEX_SESSIONS_PATH, caller.CODEX_SESSIONS_PATH);
   assert.equal(readPane(first.hud).CODEX_HUD_DETAILS, 'full');
+  assert.equal(readPane(first.hud).NO_COLOR, '1', 'an explicit no-color reload reaches the renderer');
   assert.equal(readPane(first.hud).CODEX_HUD_TMUX_STYLE, 'blue-purple', 'theme survives reload from an unstyled shell');
   assert.equal(readPane(first.hud).CODEX_HUD_HIDE_TITLES, '1', 'a plain reload must not reveal private titles');
   assert.equal(paneValue(first.main, '#{pane_pid}'), mainPid);
@@ -121,6 +122,7 @@ try {
   assert.equal(readPane(first.hud).CODEX_HUD_TMUX_STYLE, 'default');
   assert.equal(option(first.session, '@codex_hud_tmux_style'), 'default');
   assert.equal(readPane(first.hud).CODEX_HUD_HIDE_TITLES, '0', 'explicit 0 disables title privacy');
+  assert.equal(readPane(first.hud).NO_COLOR, null, 'a corrected reload clears both the old command and server color override');
 
   const noRoots = { ...caller };
   delete noRoots.CODEX_HOME;

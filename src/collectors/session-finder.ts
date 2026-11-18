@@ -523,7 +523,7 @@ interface SharedDaemonLedger {
   ledger: LedgerSnapshot;
 }
 
-function mergeSharedDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number): void {
+function mergeSharedDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: number, scope = 'daemon'): void {
   if (
     !ledger.processUuid ||
     nowMs - (ledgerSharedAt.get(ledger) ?? Number.NEGATIVE_INFINITY) < LEDGER_SHARE_INTERVAL_MS
@@ -531,7 +531,7 @@ function mergeSharedDaemonLedger(ledger: DaemonLedger, dbPath: string, nowMs: nu
     return;
   }
   try {
-    const name = `daemon-ledger-${getCodexDataNamespace()}`;
+    const name = `${scope}-ledger-${getCodexDataNamespace()}`;
     const shared = readSharedSnapshot(
       name,
       LEDGER_SHARE_MAX_AGE_MS,
@@ -554,7 +554,8 @@ function shareDaemonLedger(
   ledger: DaemonLedger,
   dbPath: string,
   nowMs: number,
-  retainedConnections: ReadonlySet<number>
+  retainedConnections: ReadonlySet<number>,
+  scope = 'daemon'
 ): void {
   if (!ledger.processUuid ||
     nowMs - (ledgerSharedAt.get(ledger) ?? Number.NEGATIVE_INFINITY) < LEDGER_SHARE_INTERVAL_MS) {
@@ -565,7 +566,7 @@ function shareDaemonLedger(
     ledger.prune(nowMs, retainedConnections);
     const snapshot = ledger.snapshot();
     if (snapshot) {
-      writeSharedSnapshot(`daemon-ledger-${getCodexDataNamespace()}`,
+      writeSharedSnapshot(`${scope}-ledger-${getCodexDataNamespace()}`,
         { dbPath, ledger: snapshot } satisfies SharedDaemonLedger, nowMs);
     }
   } catch {
@@ -641,7 +642,8 @@ async function findInProcessTuis(pids: readonly string[]): Promise<Set<string>> 
 async function refreshDaemonLedger(
   daemonPid: string,
   sinceMs: number,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  scope = 'daemon'
 ): Promise<DaemonLedger | null> {
   const dbPath = getLogDatabaseCandidates()[0];
   if (!dbPath || !/^\d+$/.test(daemonPid)) {
@@ -659,18 +661,27 @@ async function refreshDaemonLedger(
   }
 
   const sinceSeconds = Math.max(0, Math.floor(sinceMs / 1000));
-  for (let batch = 0; batch < DAEMON_LEDGER_MAX_BATCHES; batch++) {
+  // Advance across unrelated rows too. Otherwise a quiet TUI rereads all
+  // traffic from busy neighbours on every poll. Bound the scan to this
+  // watermark so writes during the read are picked up next time.
+  const watermark = Number(await querySqlite(dbPath, ['SELECT COALESCE(MAX(id), 0) FROM logs']));
+  if (!Number.isSafeInteger(watermark) || watermark <= 0) return ledger.lastRowId > 0 ? ledger : null;
+  for (let batch = 0; batch < DAEMON_LEDGER_MAX_BATCHES && ledger.lastRowId < watermark; batch++) {
     // Newlines and the column separator are flattened so each row stays one
     // line; the span header sits at the start of the body.
     const sql = `
-SELECT id, ts, ts_nanos, COALESCE(thread_id, ''), COALESCE(process_uuid, ''),
+SELECT id, ts, ts_nanos, COALESCE(thread_id, ''), COALESCE(process_uuid, ''), COALESCE(target, ''),
   substr(replace(replace(replace(COALESCE(feedback_log_body, ''), char(10), ' '), char(13), ' '), char(31), ' '), 1, 1500)
 FROM logs
 WHERE id > ${ledger.lastRowId}
+  AND id <= ${watermark}
   AND ts >= ${sinceSeconds}
   AND (
     (process_uuid LIKE 'pid:${daemonPid}:%' AND feedback_log_body LIKE '%app_server.connection_id=%')
-    OR feedback_log_body LIKE 'connected app-server%'
+    ${scope === 'daemon' ? "OR feedback_log_body LIKE 'connected app-server%'" : ''}
+    ${scope !== 'daemon' ? `OR (process_uuid LIKE 'pid:${daemonPid}:%'
+      AND target IN ('codex_core::session::turn', 'codex_core::session::world_state')
+      AND feedback_log_body LIKE 'session_loop%codex.turn_input%')` : ''}
   )
 ORDER BY id
 LIMIT ${DAEMON_LEDGER_BATCH}
@@ -685,7 +696,7 @@ LIMIT ${DAEMON_LEDGER_BATCH}
       if (!line) {
         continue;
       }
-      const [idRaw, tsRaw, nanosRaw, threadId = '', processUuid = '', body = ''] = line.split('\x1f');
+      const [idRaw, tsRaw, nanosRaw, threadId = '', processUuid = '', target = '', body = ''] = line.split('\x1f');
       const id = Number(idRaw);
       const ts = Number(tsRaw);
       const nanos = Number(nanosRaw);
@@ -697,17 +708,19 @@ LIMIT ${DAEMON_LEDGER_BATCH}
         tsMs: ts * 1000 + (Number.isFinite(nanos) ? nanos / 1_000_000 : 0),
         threadId,
         processUuid,
+        target,
         body,
       });
     }
     ledger.ingest(rows);
     if (rows.length < DAEMON_LEDGER_BATCH) {
+      ledger.lastRowId = Math.max(ledger.lastRowId, watermark);
       break;
     }
   }
   // Recover shared identity before pairing; prune only after identifying
   // the connections of surviving clients, including long-idle ones.
-  mergeSharedDaemonLedger(ledger, dbPath, nowMs);
+  mergeSharedDaemonLedger(ledger, dbPath, nowMs, scope);
   return ledger;
 }
 
@@ -1031,6 +1044,7 @@ interface AnnotatedThread {
 interface PaneThreadBinding {
   threadId: string | null;
   keepCurrent: boolean;
+  freshKey?: string;
   /**
    * The pane's Codex is a managed-daemon client. Its binding comes from the
    * daemon's connection ledger only: the shell-snapshot and cwd fallbacks
@@ -1044,6 +1058,9 @@ interface DaemonLink {
   tuiPid: string;
   connectionId: number;
   threadId: string | null;
+  processUuid: string | null;
+  sinceMs: number;
+  scope: string;
 }
 
 export class SessionFinder {
@@ -1070,6 +1087,11 @@ export class SessionFinder {
   private runtimeHooksEnabled: boolean | null = null;
   private threadFactsCache = new Map<string, ThreadFacts>();
   private daemonLink: DaemonLink | null = null;
+  private freshSessionKey: string | null = null;
+  private previousSessionId: string | undefined;
+
+  isAwaitingSessionId(): boolean { return this.freshSessionKey !== null; }
+  getPreviousSessionId(): string | undefined { return this.previousSessionId; }
 
   constructor(
     targetCwd?: string,
@@ -1144,8 +1166,31 @@ export class SessionFinder {
       }
     }
 
-    // Full resolution spawns subprocesses (tmux/ps/sqlite3); between resolves
-    // just refresh the cached binding.
+    // Selection changes create no rollout until the first message. Read only
+    // new request rows for the already-proven process/connection, even in deep
+    // idle; leave process discovery and historical scans on their slow clock.
+    const link = this.daemonLink;
+    if (!force && process.env.CODEX_HUD_MAIN_PANE === this.currentPaneId && link &&
+      isProcessAlive(link.daemonPid) && isProcessAlive(link.tuiPid)) {
+      const ledger = await refreshDaemonLedger(link.daemonPid, link.sinceMs, now, link.scope);
+      if (ledger && ledger.processUuid === link.processUuid) {
+        const binding = await this.connectionBinding(ledger, link);
+        if (binding.freshKey && binding.freshKey !== this.freshSessionKey) {
+          return this.enterFreshSession(binding.freshKey);
+        }
+        if (binding.threadId && binding.threadId !== this.currentThreadId) {
+          this.boundViaProcess = true;
+          return this.bindThread(binding.threadId, currentExists);
+        }
+      } else if (ledger && ledger.processUuid !== link.processUuid) {
+        // A PID with a different log UUID must prove its pane ownership again.
+        this.daemonLink = null;
+        this.processTree = null;
+        force = true;
+      }
+    }
+
+    // Full resolution spawns subprocesses (tmux/ps/sqlite3).
     if (!force && now - this.lastFullResolveAt < this.fullResolveIntervalMs) {
       return this.currentSession;
     }
@@ -1174,6 +1219,7 @@ export class SessionFinder {
     }
 
     const binding = await this.resolvePaneThreadBinding(mainPaneId, now);
+    if (binding.freshKey) return this.enterFreshSession(binding.freshKey);
     if (binding.threadId) {
       this.boundViaProcess = true;
       return this.applyResolveBackoff(
@@ -1181,6 +1227,7 @@ export class SessionFinder {
         previousPath
       );
     }
+    if (this.freshSessionKey) return null;
 
     // The pane process is known to be bound but this probe failed or came back
     // empty (sqlite hiccup, codex exited, idle beyond the log window): keep the
@@ -1329,6 +1376,8 @@ export class SessionFinder {
     this.runtimeHookOverrides = [];
     this.runtimeHooksEnabled = null;
     this.daemonLink = null;
+    this.freshSessionKey = null;
+    this.previousSessionId = undefined;
     return paneChanged;
   }
 
@@ -1388,7 +1437,9 @@ export class SessionFinder {
     threadId: string,
     currentExists: boolean
   ): Promise<SessionFile | null> {
+    this.freshSessionKey = null;
     const current = this.currentSession;
+    if (current && current.sessionId !== threadId) this.previousSessionId = current.sessionId;
     const facts = this.threadFactsCache.get(threadId);
     const pathChanged = Boolean(facts?.rolloutPath && facts.rolloutPath !== current?.path);
 
@@ -1450,6 +1501,13 @@ export class SessionFinder {
     if (getLogDatabaseCandidates().length === 0) {
       // This Codex install has no logs database; use the legacy paths.
       return { threadId: null, keepCurrent: false };
+    }
+
+    // In-process TUIs own their request spans too. Selection evidence wins
+    // over persistence rank: a blank /clear thread has no rollout yet.
+    if (processTree) {
+      const inProcess = await this.resolveInProcessThread(processTree, now);
+      if (inProcess) return inProcess;
     }
 
     // A managed-daemon client runs no thread itself: its daemon connection
@@ -1524,7 +1582,6 @@ export class SessionFinder {
     }
     const inProcess = await findInProcessTuis(tree.tuiPids);
     if (inProcess.has(tuiPid)) {
-      this.daemonLink = null;
       return null;
     }
 
@@ -1535,11 +1592,8 @@ export class SessionFinder {
     const starts = await getProcessStartTimesMs([daemonPid, ...tree.tuiPids]);
     const daemonStartedAtMs = starts.get(daemonPid);
     // Connections cannot predate their daemon: read its rows from its start.
-    const ledger = await refreshDaemonLedger(
-      daemonPid,
-      (starts.get(daemonPid) ?? now - DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS) - 60_000,
-      now
-    );
+    const sinceMs = (starts.get(daemonPid) ?? now - DEFAULT_LOOKBACK_DAYS * THREAD_CANDIDATE_WINDOW_MS) - 60_000;
+    const ledger = await refreshDaemonLedger(daemonPid, sinceMs, now);
     if (!ledger) {
       return { threadId: previous?.threadId ?? null, keepCurrent: Boolean(previous), daemonClient: true };
     }
@@ -1567,13 +1621,62 @@ export class SessionFinder {
       return { threadId: null, keepCurrent: false, daemonClient: true };
     }
 
-    const events = ledger.connections.get(connectionId)?.events ?? [];
+    this.daemonLink = { daemonPid, tuiPid, connectionId, threadId: previous?.threadId ?? null,
+      sinceMs, processUuid: ledger.processUuid, scope: 'daemon' };
+    return this.connectionBinding(ledger, this.daemonLink);
+  }
+
+  private async resolveInProcessThread(tree: ProcessTreeSnapshot, now: number): Promise<PaneThreadBinding | null> {
+    const tuiPid = [...tree.processIds].reverse().find(pid => tree.tuiPids.includes(pid));
+    if (!tuiPid || !(await findInProcessTuis([tuiPid])).has(tuiPid)) return null;
+    const previous = this.daemonLink?.tuiPid === tuiPid && this.daemonLink.daemonPid === tuiPid
+      ? this.daemonLink : null;
+    const starts = previous ? null : await getProcessStartTimesMs([tuiPid]);
+    const sinceMs = previous?.sinceMs ?? ((starts?.get(tuiPid) ?? this.targetStartTime?.getTime() ??
+      now - THREAD_CANDIDATE_WINDOW_MS) - 2000);
+    const scope = `in-process-${tuiPid}`;
+    const ledger = await refreshDaemonLedger(tuiPid, sinceMs, now, scope);
+    if (!ledger) return previous ? { threadId: previous.threadId, keepCurrent: true } : null;
+    // The native TUI has one in-process client. Ambiguity cannot authorize a
+    // clear: keep the existing binding until ownership can be proved.
+    const connections = [...ledger.connections].filter(([, connection]) => connection.client === 'codex-tui');
+    if (connections.length !== 1) {
+      this.daemonLink = null;
+      return connections.length > 1 ? { threadId: null, keepCurrent: true, daemonClient: true } : null;
+    }
+    const connectionId = connections[0][0];
+    const dbPath = getLogDatabaseCandidates()[0];
+    if (dbPath) shareDaemonLedger(ledger, dbPath, now, new Set([connectionId]), scope);
+    this.daemonLink = { daemonPid: tuiPid, tuiPid, connectionId, threadId: previous?.threadId ?? null,
+      sinceMs, processUuid: ledger.processUuid, scope };
+    const binding = await this.connectionBinding(ledger, this.daemonLink);
+    // While request evidence is pruned or absent, keep the incremental watch
+    // running and give legacy process discovery a chance to recover.
+    return binding.threadId || binding.freshKey ? binding : null;
+  }
+
+  private enterFreshSession(key: string): null {
+    if (key !== this.freshSessionKey || this.currentSession) {
+      if (this.currentSession) this.previousSessionId = this.currentSession.sessionId;
+      this.freshSessionKey = key;
+      this.currentSession = null;
+      this.currentThreadId = null;
+      this.boundViaProcess = true;
+      // Also invalidates asynchronous parser results in the owner callback.
+      this.onSessionChange?.(null);
+    }
+    return null;
+  }
+
+  private async connectionBinding(ledger: DaemonLedger, link: DaemonLink): Promise<PaneThreadBinding> {
+    const events = [...(ledger.connections.get(link.connectionId)?.events ?? [])].reverse();
     // A thread/fork request may create an in-memory side conversation while
     // the main task keeps running on this connection (Codex 0.163). Only a
     // persisted fork can replace it. Walk this connection's own history so
     // a cold HUD also recovers instead of retaining an already-wrong thread.
-    let threadId: string | null = null;
-    for (const event of [...events].reverse()) {
+    let selection: typeof events[number] | undefined;
+    for (const event of events) {
+      if (!event.threadId) { selection = event; break; }
       const [candidate] = await this.annotateCandidates([
         { threadId: event.threadId, lastTs: event.atMs },
       ]);
@@ -1581,19 +1684,34 @@ export class SessionFinder {
         ((event.method === 'thread/fork' || event.forked) && candidate.rank < THREAD_RANK_ROLLOUT)) {
         continue;
       }
-      threadId = event.threadId;
+      selection = event;
       break;
     }
-    // Rows of a long-idle connection may have rotated out of the logs.
-    if (events.length === 0 && previous?.connectionId === connectionId) {
-      threadId = previous.threadId;
-    }
-    this.daemonLink = { daemonPid, tuiPid, connectionId, threadId };
-    if (!threadId) {
-      return { threadId: null, keepCurrent: false, daemonClient: true };
+
+    // A cold HUD may see an old empty thread/start after Codex pruned the
+    // later resume/turn request. A newer user turn in a persisted root of
+    // this in-process TUI can recover that selection. Compare creation time
+    // so delayed old-turn output cannot undo /clear.
+    if (link.scope !== 'daemon') {
+      const selectedAt = selection?.atMs ?? 0;
+      const turns = [...ledger.turns].filter(([, at]) => at > selectedAt).sort((a, b) => b[1] - a[1]);
+      for (const [threadId, at] of turns) {
+        const [candidate] = await this.annotateCandidates([{ threadId, lastTs: at }]);
+        if (candidate.isSubagent || candidate.rank < THREAD_RANK_ROLLOUT) continue;
+        link.threadId = threadId;
+        return { threadId, keepCurrent: true, daemonClient: true };
+      }
     }
 
-    return { threadId, keepCurrent: true, daemonClient: true };
+    if (selection?.threadId === null) {
+      link.threadId = null;
+      return { threadId: null, keepCurrent: false, daemonClient: true,
+        freshKey: `${ledger.processUuid}:${link.connectionId}:${selection.requestId}` };
+    }
+    // Rows of a long-idle connection may have rotated out of the logs.
+    const threadId = selection?.threadId ?? (events.length === 0 ? link.threadId : null);
+    link.threadId = threadId;
+    return { threadId, keepCurrent: Boolean(threadId), daemonClient: true };
   }
 
   /**
@@ -1730,7 +1848,9 @@ export class SessionFinder {
    */
   getDiagnostics() {
     return {sessionId:this.currentSession?.sessionId ?? null, paneId:this.currentPaneId,
-      source:!this.currentSession ? 'unbound' : this.daemonLink ? 'daemon-connection' :
+      awaitingSessionId: this.isAwaitingSessionId(),
+      source: this.freshSessionKey ? 'session-ready' : !this.currentSession ? 'unbound' : this.daemonLink
+        ? (this.daemonLink.scope === 'daemon' ? 'daemon-connection' : 'in-process-connection') :
         this.boundViaProcess ? 'process' : this.acceptedSnapshotThreadId===this.currentSession.sessionId ? 'pane-snapshot' : 'cwd-fallback',
       daemonConnectionId:this.daemonLink?.connectionId, lastCheckAt:this.lastCheckAt || null,
       lastResolveAt:this.lastFullResolveAt || null, error:this.lastCheckError};

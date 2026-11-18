@@ -207,7 +207,7 @@ const render = (data) =>
 
 {
   const withFlag = render(hudData({ paneFreshSession: true }));
-  assert.match(withFlag, /New session at the prompt · binds on its first message/);
+  assert.match(withFlag, /Session ready · no turns yet/);
   assert.doesNotMatch(
     withFlag,
     /Turn aborted/,
@@ -216,7 +216,7 @@ const render = (data) =>
 
   const withoutFlag = render(hudData({}));
   assert.match(withoutFlag, /Turn aborted/);
-  assert.doesNotMatch(withoutFlag, /New session at the prompt/);
+  assert.doesNotMatch(withoutFlag, /Session ready · no turns yet/);
 
   // A working phase outranks a stale flag: the rollout being written is the
   // fresher evidence, whatever the last capture said.
@@ -231,7 +231,7 @@ const render = (data) =>
     })
   );
   assert.match(working, /Thinking/);
-  assert.doesNotMatch(working, /New session at the prompt/);
+  assert.doesNotMatch(working, /Session ready · no turns yet/);
 }
 
 {
@@ -302,7 +302,7 @@ const render = (data) =>
       }).map(stripAnsi).join('\n');
       assert.doesNotMatch(frame, /Previous task title|Ctx:|42 total|01a02279|0\.149\.1|Turn aborted|\bup \d/,
         `${preset}/${maxLines} hides the previous session`);
-      assert.match(frame, /New session/, `${preset}/${maxLines} explains the empty state`);
+      assert.match(frame, /Session ready/, `${preset}/${maxLines} explains the empty state`);
       if (preset !== 'compact') assert.match(frame, /7d 86% left/, 'account quota survives');
     }
   }

@@ -58,6 +58,16 @@ const listBody = `
 
 try {
   {
+    const parsed = JSON.parse(withStubTmux(emitStub([
+      encode({ tmuxSession: 'pending-a', sessionId: null, freshPrompt: true, previousSessionId: 'old-a' }),
+      encode({ tmuxSession: 'pending-b', sessionId: null, freshPrompt: true }),
+      encode({ tmuxSession: 'invalid', sessionId: null }),
+    ]), listBody));
+    assert.equal(parsed.length, 2, 'pending panes stay distinct, while null without a confirmed start is invalid');
+    assert.equal(parsed[0].sessionId, null, 'a ready pane never invents a Codex thread ID');
+    assert.equal(parsed[0].previousSessionId, 'old-a');
+  }
+  {
     // A HUD bound before its first turn has no rollout path. That is exactly
     // the case no file-timestamp scan can represent, so it must survive.
     const parsed = JSON.parse(
