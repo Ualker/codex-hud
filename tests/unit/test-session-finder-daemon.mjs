@@ -35,10 +35,10 @@ const THREAD_START_BODY =
   '"app_server.thread_start.create_thread" thread_start.dynamic_tool_count=0}:shell_snapshot' +
   '{thread_id=01a0cd66-960e-7300-85f4-a302e3c3e015}: Shell snapshot successfully created';
 
-function span(method, connectionId, client = 'codex-tui') {
+function span(method, connectionId, client = 'codex-tui', requestId = 7) {
   return (
     `app_server.request{otel.kind="server" otel.name="${method}" rpc.system="jsonrpc" ` +
-    `rpc.method="${method}" rpc.transport="unix_socket" rpc.request_id=7 ` +
+    `rpc.method="${method}" rpc.transport="unix_socket" rpc.request_id=${requestId} ` +
     `app_server.connection_id=${connectionId} app_server.api_version="v2" ` +
     `app_server.client_name="${client}" app_server.client_version="0.156.1"}: handled`
   );
@@ -83,12 +83,26 @@ for (const body of [
 // ---------------------------------------------------------------- ledger
 
 {
+  const ledger = new DaemonLedger('42');
+  const row = (id, request, threadId, uuid = 'one') => ({ id, tsMs: id * 1000, threadId,
+    processUuid: `pid:42:${uuid}`, body: span('thread/start', 0, 'codex-tui', request) });
+  ledger.ingest([row(1, '"startup-thread-start-first"', 'old'), row(2, '1', 'new'),
+    row(3, '"startup-thread-start-first"', 'old')]);
+  assert.equal(connectionThreads(ledger.connections.get(0)).current, 'new',
+    'late string-ID startup work cannot reverse the first numeric request');
+  ledger.ingest([row(4, '1', 'replacement', 'two')]);
+  assert.deepEqual(connectionThreads(ledger.connections.get(0)), { current: 'replacement', before: [] },
+    'a reused PID and connection number cannot retain another process incarnation');
+}
+
+{
   const ledger = new DaemonLedger('49747');
   ledger.ingest([
     { id: 1, tsMs: 1000, threadId: '', processUuid: 'pid:49030:u', body: 'connected app-server platform has_platform_family=true' },
     { id: 2, tsMs: 1100, threadId: '', processUuid: 'pid:49747:u', body: span('thread/start', 2) },
     { id: 3, tsMs: 13000, threadId: 'aaaa', processUuid: 'pid:49747:u', body: THREAD_START_BODY },
-    { id: 4, tsMs: 40000, threadId: 'bbbb', processUuid: 'pid:49747:u', body: span('thread/resume', 2) },
+    { id: 4, tsMs: 40000, threadId: 'bbbb', processUuid: 'pid:49747:u',
+      body: span('thread/resume', 2, 'codex-tui', 26) },
     // previewing another session does not move the connection
     { id: 5, tsMs: 50000, threadId: 'cccc', processUuid: 'pid:49747:u', body: span('thread/read', 2) },
     { id: 6, tsMs: 90000, threadId: '', processUuid: 'pid:49747:u', body: span('account/rateLimits/read', 2) },
@@ -707,6 +721,16 @@ try {
   log(Date.now() - 4_000, 103, span('thread/resume', 2), THREAD_A);
   assert.equal((await resolve('%1', a.finder)).session?.path, rolloutA,
     'an explicit /resume still selects the requested persisted conversation');
+
+  const clearRequest = span('thread/start', 2, 'codex-tui', 41);
+  log(Date.now(), 103, clearRequest.replace(/: handled$/, ': app-server event: thread/started targeted_connections=0'),
+    null, 'codex_app_server::outgoing_message');
+  assert.equal((await resolve('%1', a.finder)).session, null, 'a successful daemon start can be Ready before its ID');
+  assert.equal(a.finder.isAwaitingSessionId(), true);
+  assert.equal((await resolve('%2', b.finder)).session?.path, rolloutB, 'another connection on the same daemon is unaffected');
+  log(Date.now(), 103, clearRequest, THREAD_A2);
+  assert.equal((await resolve('%1', a.finder)).session?.sessionId, THREAD_A2);
+  assert.equal(a.finder.isAwaitingSessionId(), false);
 
   // A HUD reloaded hours later. B and C grew into long sessions, and Codex
   // keeps 1000 rows per thread and 1000 thread-less rows per process: the

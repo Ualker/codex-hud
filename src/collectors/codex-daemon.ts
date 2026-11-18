@@ -61,7 +61,9 @@ export const LEDGER_KEEP_MS = 24 * 60 * 60_000;
 export interface ThreadEvent {
   atMs: number;
   method: string;
-  threadId: string;
+  /** Null only after a successful thread/start notification, before its ID arrives. */
+  threadId: string | null;
+  requestId?: string;
   /** This stay began with thread/fork, before compacted turn/start rows. */
   forked?: boolean;
 }
@@ -85,6 +87,7 @@ export interface LedgerRow {
   threadId: string;
   processUuid: string;
   body: string;
+  target?: string;
 }
 
 /** A ledger as plain JSON, handed from one HUD process to the next. */
@@ -94,6 +97,8 @@ export interface LedgerSnapshot {
   lastRowId: number;
   connections: Array<[number, DaemonConnection]>;
   connectedAtMs: Array<[string, number]>;
+  /** In-process recovery after per-thread pruning removed a resume request. */
+  turns?: Array<[string, number]>;
 }
 
 export function isManagedDaemonCommand(command: string): boolean {
@@ -146,8 +151,23 @@ export function parseConnectionSpan(
  * otherwise keep every row of it.
  */
 function compactEvents(events: readonly ThreadEvent[]): ThreadEvent[] {
+  const resolvedStarts = new Set(events.filter(event => event.threadId &&
+    event.method === 'thread/start' && event.requestId).map(event => event.requestId));
+  const ordered = events.filter(event => event.threadId || !resolvedStarts.has(event.requestId));
+  ordered.sort((left, right) => {
+    // Request order is selection order. An old request's teardown/snapshot
+    // can finish after /clear; wall-clock arrival must not select it again.
+    const a = left.requestId;
+    const b = right.requestId;
+    if (a && b && a !== b) {
+      if (/^\d+$/.test(a) && /^\d+$/.test(b)) return BigInt(a) < BigInt(b) ? -1 : 1;
+      if (a.startsWith('startup-thread-') && /^\d+$/.test(b)) return -1;
+      if (b.startsWith('startup-thread-') && /^\d+$/.test(a)) return 1;
+    }
+    return left.atMs - right.atMs;
+  });
   const compacted: ThreadEvent[] = [];
-  for (const event of [...events].sort((left, right) => left.atMs - right.atMs)) {
+  for (const event of ordered) {
     const previous = compacted[compacted.length - 1];
     if (previous?.threadId === event.threadId) {
       // Temporary side threads can use the TUI's own connection. Keep their
@@ -198,8 +218,10 @@ export function reviveLedgerSnapshot(raw: unknown): LedgerSnapshot | null {
         event !== null &&
         isFiniteNumber((event as ThreadEvent).atMs) &&
         typeof (event as ThreadEvent).method === 'string' &&
-        typeof (event as ThreadEvent).threadId === 'string' &&
-        (event as ThreadEvent).threadId !== '' &&
+        ((typeof (event as ThreadEvent).threadId === 'string' && (event as ThreadEvent).threadId !== '') ||
+          ((event as ThreadEvent).threadId === null && (event as ThreadEvent).method === 'thread/start' &&
+            typeof (event as ThreadEvent).requestId === 'string')) &&
+        ((event as ThreadEvent).requestId === undefined || typeof (event as ThreadEvent).requestId === 'string') &&
         ((event as ThreadEvent).forked === undefined || typeof (event as ThreadEvent).forked === 'boolean')
     );
     connections.push([id as number, { firstMs, lastMs, client, events: compactEvents(kept) }]);
@@ -208,7 +230,11 @@ export function reviveLedgerSnapshot(raw: unknown): LedgerSnapshot | null {
     (entry): entry is [string, number] =>
       Array.isArray(entry) && /^\d+$/.test(String(entry[0])) && isFiniteNumber(entry[1])
   );
-  return { processUuid: value.processUuid, lastRowId: value.lastRowId, connections, connectedAtMs };
+  const turns = Array.isArray(value.turns) ? value.turns.filter(
+    (entry): entry is [string, number] => Array.isArray(entry) && typeof entry[0] === 'string' &&
+      entry[0] !== '' && isFiniteNumber(entry[1])).slice(-64) : undefined;
+  return { processUuid: value.processUuid, lastRowId: value.lastRowId, connections, connectedAtMs,
+    ...(turns ? { turns } : {}) };
 }
 
 /**
@@ -217,6 +243,8 @@ export function reviveLedgerSnapshot(raw: unknown): LedgerSnapshot | null {
  */
 export class DaemonLedger {
   readonly connections = new Map<number, DaemonConnection>();
+  /** Start of each thread's latest user turn, not its latest output arrival. */
+  readonly turns = new Map<string, number>();
   /** Latest `connected app-server` line per TUI pid. */
   readonly connectedAtMs = new Map<string, number>();
   lastRowId = 0;
@@ -241,7 +269,29 @@ export class DaemonLedger {
       if (pid !== this.daemonPid) {
         continue;
       }
+      if (this.processUuid && this.processUuid !== row.processUuid) {
+        // PID reuse is a new server, even if its connection numbers repeat.
+        this.connections.clear();
+        this.connectedAtMs.clear();
+        this.turns.clear();
+      }
       this.processUuid = row.processUuid;
+      if (row.threadId && (row.target === 'codex_core::session::turn' ||
+        row.target === 'codex_core::session::world_state') &&
+        row.body.startsWith(`session_loop{thread_id=${row.threadId}}:`)) {
+        const turn = /codex\.turn_input\{conversation\.id=([\da-f-]+) turn\.id="([\da-f]{8}-[\da-f]{4}-7[\da-f]{3}-[\da-f]{4}-[\da-f]{12})"/.exec(row.body);
+        if (turn?.[1] === row.threadId) {
+          // Codex turn IDs are UUIDv7: the first 48 bits are creation time.
+          // Using the row timestamp would mistake late old-turn output for
+          // input after /clear when Codex has pruned the original start row.
+          const startedAt = parseInt(turn[2].slice(0, 13).replace('-', ''), 16);
+          if (startedAt <= row.tsMs + 2000 && startedAt > (this.turns.get(row.threadId) ?? 0)) {
+            this.turns.delete(row.threadId);
+            this.turns.set(row.threadId, startedAt);
+            if (this.turns.size > 64) this.turns.delete(this.turns.keys().next().value!);
+          }
+        }
+      }
       const span = parseConnectionSpan(row.body);
       if (!span) {
         continue;
@@ -256,10 +306,17 @@ export class DaemonLedger {
       if (span.client) {
         connection.client = span.client;
       }
-      if (row.threadId && span.method && THREAD_METHODS.has(span.method)) {
+      const fields = /^app_server\.request\{([^}]*)\}/.exec(row.body)?.[1];
+      const request = fields && /\brpc\.request_id=(?:"([^"\s]{1,128})"|(\d+))(?=\s|$)/.exec(fields);
+      const requestId = request ? request[1] ?? request[2] : undefined;
+      const freshStart = !row.threadId && requestId && span.method === 'thread/start' &&
+        span.client === 'codex-tui' && row.target === 'codex_app_server::outgoing_message' &&
+        /: app-server event: thread\/started(?:\s|$)/.test(row.body);
+      if ((row.threadId || freshStart) && span.method && THREAD_METHODS.has(span.method)) {
         connection.events = compactEvents([
           ...connection.events,
-          { atMs: row.tsMs, method: span.method, threadId: row.threadId },
+          { atMs: row.tsMs, method: span.method, threadId: row.threadId || null,
+            ...(requestId ? { requestId } : {}) },
         ]);
       }
     }
@@ -278,6 +335,7 @@ export class DaemonLedger {
         { ...connection, events: [...connection.events] },
       ]),
       connectedAtMs: [...this.connectedAtMs],
+      ...(this.turns.size ? { turns: [...this.turns] } : {}),
     };
   }
 
@@ -305,6 +363,10 @@ export class DaemonLedger {
       this.connectedAtMs.set(pid, Math.max(this.connectedAtMs.get(pid) ?? atMs, atMs));
     }
     this.lastRowId = Math.max(this.lastRowId, snapshot.lastRowId);
+    for (const [threadId, startedAt] of snapshot.turns ?? []) {
+      this.turns.set(threadId, Math.max(this.turns.get(threadId) ?? 0, startedAt));
+    }
+    while (this.turns.size > 64) this.turns.delete(this.turns.keys().next().value!);
     return true;
   }
 
@@ -474,7 +536,7 @@ export function mapReconnectedClients(
       const first = connection.events[0];
       const client = (connection.client ?? '').toLowerCase();
       if (client && !client.includes('tui')) continue;
-      if (first?.method === 'thread/resume' && threads.has(first.threadId) &&
+      if (first?.method === 'thread/resume' && first.threadId && threads.has(first.threadId) &&
         connection.firstMs >= daemonStartedAtMs - START_SLACK_MS &&
         first.atMs - connection.firstMs >= 0 && first.atMs - connection.firstMs <= 30_000) {
         ids.push(id);
@@ -502,7 +564,7 @@ export function connectionThreads(
   }
   const before: string[] = [];
   for (const event of events) {
-    if (event.threadId !== last.threadId && !before.includes(event.threadId)) {
+    if (event.threadId && event.threadId !== last.threadId && !before.includes(event.threadId)) {
       before.push(event.threadId);
     }
   }

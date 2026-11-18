@@ -29,6 +29,7 @@ import {
   type SlowProjectSnapshot,
 } from './collectors/slow-project.js';
 import {
+  hudBindingRowId,
   publishHudBinding,
 } from './collectors/open-huds.js';
 import {
@@ -315,6 +316,7 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   bindingGeneration++;
   notificationBaselineReady = false;
   const rolloutSession = session && fs.existsSync(session.path) ? session : null;
+  const freshSession = sessionFinder.isAwaitingSessionId();
   approvalDetector.reset();
   stallDetector.reset();
   codexLiveness.reset();
@@ -331,9 +333,15 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
     false,
     false,
     false,
-    false,
-    uiPreferences.label
-  ).catch(() => {
+    freshSession,
+    uiPreferences.label,
+    sessionFinder.getPreviousSessionId()
+  ).then(async () => {
+    if (displayMode === 'overview') {
+      await overviewCache.refresh(true);
+      renderNow();
+    }
+  }).catch(() => {
     // The overview degrades to the mtime scan; never fail a binding on this.
   });
   agentActivityCollector.setRootSession(rolloutSession);
@@ -343,6 +351,21 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
   delete collectorHealth.agents;
   recordCollectorAttempt('session');
   recordCollectorSuccess('session');
+
+  // Drop the old row synchronously, including any load begun before this
+  // selection. A pending thread uses pane identity until its real ID arrives.
+  overviewCollector.noteBindingChanged();
+  const previousId = sessionFinder.getPreviousSessionId();
+  const overview = overviewCache.get();
+  overviewCache.reset({ ...overview, sessions: [
+    ...overview.sessions.filter(row => (!HUD_TMUX_SESSION || row.tmuxSession !== HUD_TMUX_SESSION) &&
+      (row.id !== previousId || Boolean(row.tmuxSession))),
+    ...(!rolloutSession && (session || freshSession) ? [{
+      id: hudBindingRowId({ sessionId: session?.sessionId ?? null, tmuxSession: HUD_TMUX_SESSION ?? '' }),
+      cwd: HUD_CWD, projectName: path.basename(HUD_CWD), tmuxSession: HUD_TMUX_SESSION,
+      title: uiPreferences.label, label: uiPreferences.label, neverStarted: true,
+    }] : []),
+  ] });
 
   // When session changes, update rollout path
   if (rolloutSession) {
@@ -354,6 +377,7 @@ const sessionFinder = new SessionFinder(HUD_CWD_REAL, (session) => {
 
   rolloutParser.setRolloutPath(null);
   hudFileWatcher.setRolloutPath(null);
+  renderNow();
 }, HUD_SESSION_START);
 
 const rolloutParser = new RolloutParser(10);
@@ -519,10 +543,19 @@ function updateWorkingDirectory(cwd: string): void {
 }
 
 const overviewCollector = new OverviewCollector();
+function currentOverviewRowId(): string | undefined {
+  const sessionId = sessionFinder.getCurrentSession()?.sessionId;
+  if (sessionId) return sessionId;
+  if (sessionFinder.isAwaitingSessionId() && HUD_TMUX_SESSION) {
+    return hudBindingRowId({ sessionId: null, tmuxSession: HUD_TMUX_SESSION });
+  }
+  return undefined;
+}
+
 async function refreshOverviewData(): Promise<SessionOverview> {
   return overviewCollector.refresh([
     overviewSelectionId,
-    sessionFinder.getCurrentSession()?.sessionId,
+    currentOverviewRowId(),
     ...overviewCache.get().sessions.slice(0, 8).map(row => row.id),
   ].filter((id): id is string => Boolean(id)));
 }
@@ -550,8 +583,9 @@ async function publishCurrentHudBinding(): Promise<void> {
     approvalDetector.isApprovalNeeded(),
     stallDetector.isLikelyInterrupted(),
     codexLiveness.isCodexGone(),
-    freshPromptDetector.isPaneOnFreshSession(),
-    uiPreferences.label
+    sessionFinder.isAwaitingSessionId() || freshPromptDetector.isPaneOnFreshSession(),
+    uiPreferences.label,
+    sessionFinder.getPreviousSessionId()
   );
 }
 
@@ -811,7 +845,7 @@ function collectData(): HudData {
       displayMode,
       overview: overviewCache.get(),
       // Lets the overview mark the row this HUD is bound to.
-      overviewSelfSessionId: session?.sessionId,
+      overviewSelfSessionId: currentOverviewRowId(),
       // The overview states the account quota, which belongs to every row at
       // once, and lists the bound session before the scan finishes. Both read
       // the same already-collected values the single view uses; leaving them
@@ -854,7 +888,7 @@ function collectData(): HudData {
     turnActivity,
     protocolHealth: rolloutData?.protocolHealth,
     ...(codexExited ? { codexExited: true } : {}),
-    ...(freshPromptDetector.isPaneOnFreshSession()
+    ...(sessionFinder.isAwaitingSessionId() || freshPromptDetector.isPaneOnFreshSession()
       ? { paneFreshSession: true }
       : {}),
     ...(paneCliPolicy ? { paneCliPolicy } : {}),
@@ -1303,12 +1337,12 @@ function setupKeyListener(): void {
       }
       if (navigation) {
         overviewSelectionId = moveSelection(rows,
-          overviewSelectionId ?? sessionFinder.getCurrentSession()?.sessionId, direction);
+          overviewSelectionId ?? currentOverviewRowId(), direction);
         renderNow();
         return;
       }
       if (input === '\r' || input === '\n') {
-        const selected = selectedSession(rows, overviewSelectionId, sessionFinder.getCurrentSession()?.sessionId);
+        const selected = selectedSession(rows, overviewSelectionId, currentOverviewRowId());
         void focusSession(selected?.tmuxSession, selected?.id).then(ok => {
           if (!ok) {
             showUiNotice('Session unavailable; refreshing overview');
@@ -1464,7 +1498,7 @@ async function main(): Promise<void> {
   });
 
   hudFileWatcher.start();
-  sessionFinder.start(5000); // Check for session changes every 5 seconds
+  sessionFinder.start(2000); // Incremental lifecycle reads; full discovery retains its backoff.
 
   // Paint a provisional frame immediately; the initial collector round used
   // to gate the first frame (~940ms measured, longer under load) and the

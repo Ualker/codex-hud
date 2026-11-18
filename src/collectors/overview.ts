@@ -9,7 +9,7 @@ import { withDetectorPhases } from '../utils/detector-phases.js';
 import { sessionTitle } from '../utils/privacy.js';
 import { isSubagentSessionSource } from './agent-activity.js';
 import { findActiveRollouts, peekRolloutMetadata, type SessionFile } from './rollout-discovery.js';
-import { listOpenHudBindings, type OpenHudBinding } from './open-huds.js';
+import { hudBindingRowId, listOpenHudBindings, type OpenHudBinding } from './open-huds.js';
 import { compareOverviewSessions } from './overview-order.js';
 import { RolloutParser } from './rollout.js';
 
@@ -51,6 +51,7 @@ export class OverviewCollector {
   private checkedAt = new Map<string, number>();
   private checkedVersions = new Map<string, { size: number; modifiedAt: number }>();
   private changeGeneration = 0;
+  private bindingGeneration = 0;
   private collectedGeneration = 0;
   private previous: SessionOverview = { sessions: [], updatedAt: new Date(0) };
   private lastParseCount = 0;
@@ -58,6 +59,10 @@ export class OverviewCollector {
   constructor(private options: { shared?: boolean; now?: () => number } = {}) {}
 
   noteRolloutChanged(): void { this.changeGeneration++; }
+  noteBindingChanged(): void {
+    this.bindingGeneration++;
+    this.noteRolloutChanged();
+  }
   hasPendingChanges(): boolean { return this.changeGeneration !== this.collectedGeneration; }
 
   getDiagnostics(): { parserCount: number; parsedLastRefresh: number; sessionCount: number } {
@@ -67,6 +72,7 @@ export class OverviewCollector {
   async refresh(priorityIds: readonly string[] = []): Promise<SessionOverview> {
     const now = (this.options.now ?? Date.now)();
     const generation = this.changeGeneration;
+    const bindingGeneration = this.bindingGeneration;
     const namespace = getCodexDataNamespace();
     // Scope snapshots to the tmux server as well: panes from a private test
     // socket or another user's server are never valid navigation targets here.
@@ -95,11 +101,14 @@ export class OverviewCollector {
     const byId = new Map(bindings.map(binding => [binding.sessionId, binding]));
     const withoutRollout: OpenHudBinding[] = [];
     for (const binding of bindings) {
+      if (binding.previousSessionId && !byId.has(binding.previousSessionId)) {
+        filesById.delete(binding.previousSessionId);
+      }
       // A live pane's binding wins over historical rollouts of a resumed ID.
-      filesById.delete(binding.sessionId);
+      if (binding.sessionId) filesById.delete(binding.sessionId);
       const stats = binding.rolloutPath ? statSafely(binding.rolloutPath) : null;
       const metadata = binding.rolloutPath ? peekRolloutMetadata(binding.rolloutPath) : null;
-      if (!binding.rolloutPath || !stats ||
+      if (!binding.sessionId || binding.freshPrompt || !binding.rolloutPath || !stats ||
         (metadata?.sessionId && metadata.sessionId !== binding.sessionId)) {
         withoutRollout.push(binding);
       } else {
@@ -191,11 +200,12 @@ export class OverviewCollector {
     }
     for (const binding of withoutRollout) {
       sessions.push({
-        id: binding.sessionId, cwd: binding.cwd,
+        id: hudBindingRowId(binding), cwd: binding.cwd,
         projectName: binding.cwd ? path.basename(binding.cwd) : undefined,
         tmuxSession: binding.tmuxSession, tmuxPane: binding.tmuxPane, title: binding.label, label: binding.label,
-        neverStarted: !binding.rolloutPath,
-        ...(binding.rolloutPath ? { unavailable: true } : {}),
+        neverStarted: binding.freshPrompt || !binding.rolloutPath,
+        ...(binding.freshPrompt ? { freshPrompt: true } : {}),
+        ...(!binding.freshPrompt && binding.rolloutPath ? { unavailable: true } : {}),
       });
     }
     const activePaths = new Set(files.map(file => file.path));
@@ -203,6 +213,9 @@ export class OverviewCollector {
     for (const file of this.checkedVersions.keys()) if (!activePaths.has(file)) this.checkedVersions.delete(file);
     for (const file of this.parsers.keys()) if (!activePaths.has(file)) this.parsers.delete(file);
     sessions.sort(compareOverviewSessions);
+    // A binding changed while tmux/parsers were awaited. That result belongs
+    // to the previous selection and must not republish its old task rows.
+    if (bindingGeneration !== this.bindingGeneration) return this.previous;
     this.previous = { sessions, updatedAt: new Date(now), namespace };
     this.collectedGeneration = generation;
     if (this.options.shared !== false) writeSharedSnapshot(cacheKey, this.previous, now);

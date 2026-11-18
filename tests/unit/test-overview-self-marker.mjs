@@ -91,7 +91,7 @@ const freshRows = renderHud(
   options
 ).map(stripAnsi);
 assert.ok(
-  freshRows[0].includes('New prompt'),
+  freshRows[0].includes('Ready'),
   `a fresh-prompt row says so: ${freshRows[0]}`
 );
 assert.ok(

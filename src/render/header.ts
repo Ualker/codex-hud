@@ -79,7 +79,7 @@ function renderCompactLayout(data: HudData, layout: LayoutConfig, width: number)
   
   // Project + git
   parts.push(renderProjectLine(data));
-  if (data.paneFreshSession) parts.push(colors.dim('New session · awaiting first message'));
+  if (data.paneFreshSession) parts.push(colors.dim('Session ready · no turns yet'));
 
   const agentSummary = renderCompactAgentSummary(data.agentActivity);
   if (agentSummary) {
@@ -302,18 +302,13 @@ function renderExpandedLayout(
         )
       : null;
 
-  // A fresh `/new` session at the prompt is invisible to every data source
-  // until its first message (codex 0.149 creates the rollout, the threads
-  // row, and the open-file footprint lazily), so the bound session's last
-  // state — measured live as "✗ Turn aborted · event 5h ago" — would stand
-  // indefinitely. Only quiet terminal phases are overridden: a working phase
-  // is live proof the pane still runs the bound session, and `exited` is the
-  // more specific fact.
+  // A successful thread/start can precede the new ID and rollout. The same
+  // presentation also serves the conservative footer fallback for old CLIs.
   const paneFreshLine =
     data.paneFreshSession === true
       ? truncateAnsi(
           colors.dim(
-            `${icons.pending} New session at the prompt · binds on its first message`
+            `${icons.pending} Session ready · no turns yet`
           ),
           width
         )
@@ -604,7 +599,7 @@ function renderCoexistLayout(data: HudData, layout: LayoutConfig, width: number,
   } : undefined;
   // Actionable state and capacity precede expandable agent/history rows.
   const state = data.paneFreshSession
-    ? colors.dim('New session at the prompt · binds on its first message')
+    ? colors.dim('Session ready · no turns yet')
     : renderTurnActivityLine(data.turnActivity, width) ?? renderBindingHintLine(data, width);
   const rows = [
     identity, state,

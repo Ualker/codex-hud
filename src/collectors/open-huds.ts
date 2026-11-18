@@ -53,7 +53,8 @@ interface BoundPayload {
   namespace: string;
   label?: string;
   tmuxSession: string;
-  sessionId: string;
+  sessionId: string | null;
+  previousSessionId?: string;
   ownerPid?: number;
   ownerStartedAt?: number;
   rolloutPath?: string;
@@ -69,7 +70,9 @@ export interface OpenHudBinding {
   tmuxSession: string;
   /** Live HUD pane, usable as an exact wrapper --target on this tmux server. */
   tmuxPane?: string;
-  sessionId: string;
+  /** Null while a confirmed new session is waiting for its real thread ID. */
+  sessionId: string | null;
+  previousSessionId?: string;
   /** Absent when the bound session has not produced a rollout yet. */
   rolloutPath?: string;
   /**
@@ -89,13 +92,16 @@ export interface OpenHudBinding {
   /** The owning HUD confirmed the Codex process left the main pane. */
   codexExited?: boolean;
   /**
-   * The owning HUD confirmed a fresh `/new` session at the main pane's
-   * prompt: the bound session's state is the previous session's, and the
-   * pane will rebind on its first message. Same pane-text evidence class as
-   * `approvalNeeded` — without it the dashboard row keeps advertising the
-   * stale idle state the single view already annotates.
+   * The owning HUD confirmed a new session through the current connection's
+   * successful start notification, or the legacy footer fallback. The old
+   * task's data must not remain visible while the new ID/rollout is pending.
    */
   freshPrompt?: boolean;
+}
+
+/** A pending row has pane identity, never a fabricated Codex session ID. */
+export function hudBindingRowId(binding: Pick<OpenHudBinding, 'sessionId' | 'tmuxSession'>): string {
+  return binding.sessionId ?? `hud:${binding.tmuxSession}`;
 }
 
 function tmux(args: readonly string[]): Promise<string | null> {
@@ -170,7 +176,8 @@ export async function publishHudBinding(
   likelyInterrupted: boolean = false,
   codexExited: boolean = false,
   freshPrompt: boolean = false,
-  label?: string
+  label?: string,
+  previousSessionId?: string
 ): Promise<void> {
   if (!tmuxSession) {
     return;
@@ -179,11 +186,12 @@ export async function publishHudBinding(
   // Resolve once, including unbind calls, so concurrent calls keep their order.
   const ownerStartedAt = await getOwnerStart();
 
-  const payload: BoundPayload | null = sessionId
+  const payload: BoundPayload | null = sessionId || freshPrompt
     ? {
         tmuxSession,
         namespace: getCodexDataNamespace(),
         sessionId,
+        ...(previousSessionId ? { previousSessionId } : {}),
         ownerPid: process.pid,
         ...(ownerStartedAt !== undefined ? { ownerStartedAt } : {}),
         ...(label ? { label } : {}),
@@ -236,6 +244,7 @@ function decodeBinding(encoded: string): DecodedBinding | null {
     const {
       tmuxSession,
       sessionId,
+      previousSessionId,
       rolloutPath,
       cwd,
       approvalNeeded,
@@ -247,15 +256,17 @@ function decodeBinding(encoded: string): DecodedBinding | null {
       ownerPid,
       ownerStartedAt,
     } = parsed as Record<string, unknown>;
-    if (typeof tmuxSession !== 'string' || typeof sessionId !== 'string') {
+    if (typeof tmuxSession !== 'string' ||
+      !(typeof sessionId === 'string' || (sessionId === null && freshPrompt === true))) {
       return null;
     }
-    if (!tmuxSession || !sessionId) {
+    if (!tmuxSession || sessionId === '') {
       return null;
     }
     return {
       tmuxSession,
       sessionId,
+      ...(typeof previousSessionId === 'string' && previousSessionId ? { previousSessionId } : {}),
       ...(typeof namespace === 'string' ? { namespace } : {}),
       ...(typeof ownerPid === 'number' && Number.isInteger(ownerPid) && ownerPid > 0 ? { ownerPid } : {}),
       ...(typeof ownerStartedAt === 'number' && Number.isFinite(ownerStartedAt) ? { ownerStartedAt } : {}),
@@ -316,10 +327,11 @@ export async function listOpenHudBindings(options: { strict?: boolean; namespace
     const { namespace: _namespace, ownerPid: _pid, ownerStartedAt: _started, ...binding } = decoded;
     // The same Codex session can be bound by more than one pane; the dashboard
     // shows a session once.
-    if (seen.has(binding.sessionId)) {
+    const rowId = hudBindingRowId(binding);
+    if (seen.has(rowId)) {
       continue;
     }
-    seen.add(binding.sessionId);
+    seen.add(rowId);
     bindings.push(binding);
   }
   return bindings;
