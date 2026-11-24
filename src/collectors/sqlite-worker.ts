@@ -16,19 +16,28 @@ try {
 } catch { /* Node 20 uses the async CLI fallback in the parent. */ }
 finally { process.emitWarning = emitWarning; }
 
-const handles = new Map<string, { db: Database; dev: number; ino: number }>();
+// A writer can replace the WAL and its shared-memory index while a reader
+// still holds the old files open. Ordinary writes keep these identities.
+function databaseIdentity(file: string): string {
+  return ['', '-wal', '-shm'].map(suffix => {
+    const stat = fs.statSync(file + suffix, { bigint: true, throwIfNoEntry: false });
+    return stat ? `${stat.dev}:${stat.ino}` : '-';
+  }).join('|');
+}
+
+const handles = new Map<string, { db: Database; identity: string }>();
 function close(file: string): void {
   try { handles.get(file)?.db.close(); } catch { /* Broken handle. */ }
   handles.delete(file);
 }
 function database(file: string): Database {
-  const stat = fs.statSync(file);
+  const identity = databaseIdentity(file);
   const cached = handles.get(file);
-  if (cached && cached.dev === stat.dev && cached.ino === stat.ino) return cached.db;
+  if (cached && cached.identity === identity) return cached.db;
   close(file);
   if (handles.size >= 4) close(handles.keys().next().value!);
   const db = new sqlite!.DatabaseSync(file, { readOnly: true });
-  handles.set(file, { db, dev: stat.dev, ino: stat.ino });
+  handles.set(file, { db, identity });
   return db;
 }
 
