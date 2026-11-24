@@ -11,6 +11,37 @@ process.env.CODEX_HUD_LOG_FILE = path.join(root, 'hud.log');
 const { querySqlite, releaseIdleSqliteWorker, getSqliteWorkerResources } = await import('../../dist/collectors/sqlite.js');
 const { getSqliteDiagnostics } = await import('../../dist/utils/sqlite-probe.js');
 const file = path.join(root, 'test.sqlite');
+
+async function checkReplacedWalFiles(DatabaseSync) {
+  const dbPath = path.join(root, 'rotated.sqlite');
+  const read = () => querySqlite(dbPath, ['SELECT value FROM facts']);
+  const first = new DatabaseSync(dbPath);
+  const originalInode = fs.statSync(dbPath).ino;
+  try {
+    first.exec(`PRAGMA journal_mode=WAL;
+      CREATE TABLE facts(value TEXT);
+      INSERT INTO facts VALUES ('original');
+      PRAGMA wal_checkpoint(TRUNCATE);`);
+    assert.equal(await read(), 'original');
+  } finally {
+    first.close();
+  }
+
+  // The writer has stopped, but the HUD worker still has its reader open.
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = dbPath + suffix;
+    if (fs.existsSync(sidecar)) fs.renameSync(sidecar, sidecar + '.old');
+  }
+  const next = new DatabaseSync(dbPath);
+  try {
+    next.exec("PRAGMA wal_autocheckpoint=0; UPDATE facts SET value='resumed';");
+    assert.equal(fs.statSync(dbPath).ino, originalInode);
+    assert.equal(await read(), 'resumed', 'a warm reader must follow the replacement WAL');
+  } finally {
+    next.close();
+  }
+}
+
 try {
   executeSql(file, 'CREATE TABLE facts (value TEXT); INSERT INTO facts VALUES ("first");'.replaceAll('"', "'"));
   assert.equal(await querySqlite(file, ['SELECT value FROM facts']), 'first');
@@ -71,6 +102,7 @@ try {
   try { ({ DatabaseSync } = await import('node:sqlite')); }
   catch (error) { if (error.code !== 'ERR_UNKNOWN_BUILTIN_MODULE') throw error; }
   if (DatabaseSync) {
+    await checkReplacedWalFiles(DatabaseSync);
     const writer = new DatabaseSync(wal);
     writer.exec('PRAGMA wal_autocheckpoint=0');
     const databaseHeader = fs.readFileSync(wal).subarray(0, 32);
